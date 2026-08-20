@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv sync
+      - name: Lint, type-check, import-boundary check
+        run: |
+          uv run ruff check .
+          uv run mypy momcare_platform
+          uv run lint-imports
+      - name: Run pytest
+        run: uv run pytest
