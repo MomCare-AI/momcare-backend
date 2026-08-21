@@ -129,6 +129,13 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
             update_fields=["status", "reviewed_at", "reviewed_by", "review_note", "updated_at"],
         )
 
+        # An approved hospital needs somewhere to admit patients to: Patient
+        # requires a Location, so without this the first enrolment would fail.
+        if status == self.STATUS_APPROVED:
+            from momcare_platform.core.locations.services import ensure_default_location  # noqa: PLC0415
+
+            ensure_default_location(self)
+
         # Only on a genuine change, so re-running an action doesn't re-notify.
         if not (notify and self.owner and previous != status):
             return
@@ -152,7 +159,10 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
     def patient_count(self) -> int:
         from momcare_platform.core.patients.models import Patient  # noqa: PLC0415
 
-        return Patient.objects.filter(is_active=True, user__organization=self).count()
+        # Counted through Location, not User: a patient need not have an app
+        # account, and counting via ``user__organization`` silently reported
+        # zero for every patient enrolled without one.
+        return Patient.objects.filter(is_active=True, location__organization=self).count()
 
 
 class ModuleRegistry(UUIDPrimaryKeyModel):
