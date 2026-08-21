@@ -197,6 +197,27 @@ def test_admin_cannot_revoke_another_hospitals_invite(client, make_hospital, aut
     assert StaffInvite.objects.get(id=beta_invite["id"]).revoked_at is None
 
 
+def test_platform_admin_gets_no_cross_tenant_staff_list(client, make_hospital, make_staff, auth):
+    """The scoping mixin treats platform admins as unrestricted, which is right
+    for admin tooling and wrong for a hospital portal. They have no hospital, so
+    these endpoints must refuse rather than return every hospital's team."""
+    alpha = make_hospital("Alpha Platform")
+    make_staff(alpha.org, settings.ROLE_PROVIDER, "alpha.doc@platform.test")
+
+    platform_admin = User.objects.create_user(
+        email="platform@momcare.test",
+        password="TestPass!2026",
+        first_name="Platform",
+        last_name="Admin",
+        role=Role.objects.get(code=settings.ROLE_PLATFORM_ADMIN),
+    )
+
+    response = client.get(STAFF, **auth(platform_admin.email))
+
+    assert response.status_code == 404
+    assert "not attached to a hospital" in response.json()["detail"]
+
+
 def test_organization_endpoint_returns_only_your_own_hospital(client, make_hospital, auth):
     alpha = make_hospital("Alpha Org")
     make_hospital("Beta Org")
