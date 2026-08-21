@@ -4,6 +4,13 @@ from rest_framework.routers import DefaultRouter, SimpleRouter
 
 from momcare_platform.core.common.programs import iter_programs
 from momcare_platform.core.organization.api.views import MyOrganizationView
+from momcare_platform.core.patients.api.views import (
+    PatientConsentView,
+    PatientDetailView,
+    PatientListCreateView,
+    PregnancyDetailView,
+    PregnancyListCreateView,
+)
 from momcare_platform.core.staff.api.views import (
     InviteAcceptView,
     InviteDetailView,
@@ -64,6 +71,29 @@ core_urlpatterns = [
         r"^staff/invites/(?P<invite_id>[0-9a-f-]{36})/revoke/?$",
         StaffInviteRevokeView.as_view(),
         name="staff-invite-revoke",
+    ),
+    # Patients — mounted under /api/patients/ so AuditLogMiddleware's PHI
+    # prefix already covers every mutation here.
+    re_path(r"^patients/?$", PatientListCreateView.as_view(), name="patient-list"),
+    re_path(
+        r"^patients/(?P<patient_id>[0-9a-f-]{36})/?$",
+        PatientDetailView.as_view(),
+        name="patient-detail",
+    ),
+    re_path(
+        r"^patients/(?P<patient_id>[0-9a-f-]{36})/consent/?$",
+        PatientConsentView.as_view(),
+        name="patient-consent",
+    ),
+    re_path(
+        r"^patients/(?P<patient_id>[0-9a-f-]{36})/pregnancies/?$",
+        PregnancyListCreateView.as_view(),
+        name="pregnancy-list",
+    ),
+    re_path(
+        r"^patients/(?P<patient_id>[0-9a-f-]{36})/pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/?$",
+        PregnancyDetailView.as_view(),
+        name="pregnancy-detail",
     ),
     # Public — the recipient holds only the token.
     re_path(r"^invites/(?P<token>[A-Za-z0-9_-]+)/?$", InviteDetailView.as_view(), name="invite-detail"),

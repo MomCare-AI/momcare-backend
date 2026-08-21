@@ -1,1 +1,235 @@
-"""TODO: implement."""
+"""Patient and pregnancy endpoints.
+
+Every queryset here is scoped through ``location__organization`` by the shared
+tenancy mixin. Nothing accepts an organization or location from the client:
+tenant membership is taken from the authenticated user, so there is no
+identifier a caller could tamper with to reach another hospital's patients.
+"""
+
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Q, Value
+from django.db.models.functions import Concat
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from momcare_platform.core.common.pagination import DefaultPagination
+from momcare_platform.core.common.permissions import IsHospitalStaff
+from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
+from momcare_platform.core.patients.api.serializers import (
+    ConsentInputSerializer,
+    ConsentSerializer,
+    PatientCreateSerializer,
+    PatientDetailSerializer,
+    PatientListSerializer,
+    PregnancySerializer,
+    PregnancyWriteSerializer,
+)
+from momcare_platform.core.patients.models import Consent, Patient, Pregnancy
+from momcare_platform.core.patients.services import EnrolmentError, create_pregnancy, enrol_patient
+
+NO_HOSPITAL = {"detail": "This account is not attached to a hospital."}
+
+
+class PatientScopedView(OrganizationScopedQuerysetMixin, APIView):
+    """Base for patient endpoints — tenant-scoped, hospital staff only."""
+
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+    # Patient reaches its hospital through Location, so the scope walks that FK.
+    organization_lookup = "location__organization"
+
+    def hospital_or_error(self, request):
+        org = request.user.organization
+        if org is None:
+            return None, Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        return org, None
+
+    def patients(self):
+        return self.scope_to_organization(Patient.objects.all())
+
+    def get_patient_or_404(self, patient_id):
+        """Scope first, then look up.
+
+        A patient in another hospital resolves to nothing rather than being
+        found and then refused — the 404 is identical either way, so the API
+        never reveals that a patient exists elsewhere.
+        """
+        # A malformed UUID raises ValidationError; that is a bad identifier, not
+        # a server fault, so it reads as "not found" like any other miss.
+        try:
+            return self.patients().select_related("location", "user").get(pk=patient_id), None
+        except (Patient.DoesNotExist, DjangoValidationError, ValueError):
+            return None, Response({"detail": "Patient not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
+class PatientListCreateView(PatientScopedView):
+    """List and search this hospital's patients, or enrol a new one."""
+
+    def get(self, request):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+
+        queryset = self.patients().select_related("location")
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            # Server-side: the client never receives rows it then filters away,
+            # which would mean shipping the whole patient list to the browser.
+            queryset = queryset.annotate(
+                _full_name=Concat("first_name", Value(" "), "last_name"),
+            ).filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(_full_name__icontains=search)
+                | Q(phone__icontains=search)
+                | Q(cnic__icontains=search)
+                | Q(mrn__icontains=search),
+            )
+
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(queryset.order_by("-created_at", "id"), request, view=self)
+        return paginator.get_paginated_response(PatientListSerializer(page, many=True).data)
+
+    def post(self, request):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+
+        serializer = PatientCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        patient_data, pregnancy_data, risk_factors, consent = serializer.split()
+
+        try:
+            patient = enrol_patient(
+                organization=org,
+                recorded_by=request.user,
+                patient_data=patient_data,
+                pregnancy_data=pregnancy_data,
+                risk_factor_data=risk_factors,
+                consent=consent,
+            )
+        except EnrolmentError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(PatientDetailSerializer(patient).data, status=status.HTTP_201_CREATED)
+
+
+class PatientDetailView(PatientScopedView):
+    def get(self, request, patient_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        return missing or Response(PatientDetailSerializer(patient).data)
+
+    def patch(self, request, patient_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+
+        serializer = PatientDetailSerializer(patient, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class PregnancyListCreateView(PatientScopedView):
+    """A patient's pregnancy history, and opening a new episode."""
+
+    def get(self, request, patient_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+
+        pregnancies = patient.pregnancies.select_related("risk_factors", "assigned_staff__user")
+        return Response(PregnancySerializer(pregnancies, many=True).data)
+
+    def post(self, request, patient_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+
+        serializer = PregnancyWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        risk_factors = data.pop("risk_factors", None)
+
+        try:
+            pregnancy = create_pregnancy(patient=patient, data=data, risk_factor_data=risk_factors)
+        except EnrolmentError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(PregnancySerializer(pregnancy).data, status=status.HTTP_201_CREATED)
+
+
+class PregnancyDetailView(PatientScopedView):
+    """Read or correct one pregnancy. Deliberately no DELETE — a pregnancy is
+    historical clinical fact, corrected rather than removed."""
+
+    def _get(self, patient, pregnancy_id):
+        try:
+            return patient.pregnancies.select_related("risk_factors").get(pk=pregnancy_id), None
+        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+            return None, Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    def get(self, request, patient_id, pregnancy_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+        pregnancy, gone = self._get(patient, pregnancy_id)
+        return gone or Response(PregnancySerializer(pregnancy).data)
+
+    def patch(self, request, patient_id, pregnancy_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+        pregnancy, gone = self._get(patient, pregnancy_id)
+        if gone:
+            return gone
+
+        serializer = PregnancyWriteSerializer(pregnancy, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(PregnancySerializer(serializer.instance).data)
+
+
+class PatientConsentView(PatientScopedView):
+    """Record a further consent event — a withdrawal, or a re-grant.
+
+    Append-only: earlier records are never altered, so the history of what was
+    agreed and when survives intact.
+    """
+
+    def post(self, request, patient_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+
+        serializer = ConsentInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        consent = Consent.objects.create(
+            patient=patient,
+            recorded_by=request.user,
+            **serializer.validated_data,
+        )
+        return Response(ConsentSerializer(consent).data, status=status.HTTP_201_CREATED)
