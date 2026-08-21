@@ -303,6 +303,12 @@ REFRESH_COOKIE_SAMESITE = env("DJANGO_REFRESH_COOKIE_SAMESITE", default="Lax")
 REFRESH_COOKIE_SECURE = env.bool("DJANGO_REFRESH_COOKIE_SECURE", default=True)
 REFRESH_COOKIE_DOMAIN = env("DJANGO_REFRESH_COOKIE_DOMAIN", default=None)
 
+# Frontend origin — used to build links that are opened in the SPA, not the API
+# (invitation acceptance, password reset). Must not be derived from the request:
+# an attacker-supplied Host header would otherwise end up inside an email.
+# -------------------------------------------------------------------------------
+FRONTEND_URL = env("DJANGO_FRONTEND_URL", default="http://localhost:3000")
+
 # CORS / CSRF — required for the SPA to send the credentialed refresh cookie.
 # -------------------------------------------------------------------------------
 CORS_ALLOW_CREDENTIALS = True

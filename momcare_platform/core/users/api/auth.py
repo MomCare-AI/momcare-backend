@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from momcare_platform.core.common.mail import send_application_received
 from momcare_platform.core.users.api.serializers import RegisterSerializer, UserMeSerializer
 
 REFRESH_COOKIE = "refresh_token"
@@ -77,6 +78,10 @@ class RegisterView(APIView):
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+
+        # Best-effort: the application is already saved, so a mail failure must
+        # not turn a successful registration into an error.
+        send_application_received(user, user.organization)
 
         return Response(
             {

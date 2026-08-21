@@ -84,12 +84,18 @@ class OrganizationAdmin(admin.ModelAdmin):
         The bulk actions go through ``set_review_status``; this covers the other
         path so a decision is never recorded without who made it and when.
         """
-        from django.utils import timezone  # noqa: PLC0415
+        status_changed = change and "status" in form.changed_data
+        if status_changed:
+            # Save the rest of the form with the *old* status, then let the model
+            # apply the new one — so the reviewer stamp and the applicant
+            # notification happen here exactly as they do for the bulk actions.
+            new_status = obj.status
+            obj.status = form.initial["status"]
 
-        if change and "status" in form.changed_data:
-            obj.reviewed_by = request.user
-            obj.reviewed_at = timezone.now()
         super().save_model(request, obj, form, change)
+
+        if status_changed:
+            obj.set_review_status(new_status, by=request.user, note=obj.review_note)
 
     def _review(self, request, queryset, status: str, verb: str) -> None:
         count = 0

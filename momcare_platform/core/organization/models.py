@@ -105,10 +105,21 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
         """Members may sign in only once the hospital is approved and still active."""
         return self.status == self.STATUS_APPROVED and self.is_active
 
-    def set_review_status(self, status: str, *, by=None, note: str = "") -> None:
-        """Record a platform-admin review decision, with who decided and when."""
+    def set_review_status(self, status: str, *, by=None, note: str = "", notify: bool = True) -> None:
+        """Record a platform-admin review decision, with who decided and when.
+
+        Notifies the owner by default: an applicant who is told to wait for a
+        decision has no other way of learning one was made. Pass
+        ``notify=False`` for data migrations and backfills.
+        """
         from django.utils import timezone  # noqa: PLC0415
 
+        from momcare_platform.core.common.mail import (  # noqa: PLC0415
+            send_application_approved,
+            send_application_rejected,
+        )
+
+        previous = self.status
         self.status = status
         self.reviewed_at = timezone.now()
         self.reviewed_by = by
@@ -117,6 +128,14 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
         self.save(
             update_fields=["status", "reviewed_at", "reviewed_by", "review_note", "updated_at"],
         )
+
+        # Only on a genuine change, so re-running an action doesn't re-notify.
+        if not (notify and self.owner and previous != status):
+            return
+        if status == self.STATUS_APPROVED:
+            send_application_approved(self.owner, self)
+        elif status == self.STATUS_REJECTED:
+            send_application_rejected(self.owner, self, note=self.review_note)
 
     # ── Computed counts (no denormalization — always fresh) ───────────────────
     @property

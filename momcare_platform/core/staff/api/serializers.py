@@ -67,6 +67,10 @@ class StaffInviteCreateSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
     last_name = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
     role_code = serializers.ChoiceField(choices=sorted(INVITABLE_ROLE_CODES))
+    # Optional by design: clinical staff here often reach each other by WhatsApp
+    # rather than email, so the admin may prefer to copy the link and send it
+    # themselves. The invitation is created either way.
+    send_email = serializers.BooleanField(required=False, default=True)
 
     def validate_email(self, value):
         value = value.lower().strip()
@@ -97,6 +101,14 @@ class StaffInviteCreateSerializer(serializers.Serializer):
             role=Role.objects.get(code=validated_data["role_code"]),
             invited_by=self.context["request"].user,
         )
+
+    def validate_role_code(self, value):
+        # ChoiceField already restricts this; the explicit check documents *why*
+        # platform_admin and patient are absent — no privilege escalation, and
+        # patients are enrolled clinically rather than invited onto the team.
+        if value not in INVITABLE_ROLE_CODES:
+            raise serializers.ValidationError("That role cannot be invited into a hospital.")
+        return value
 
 
 class InvitePreviewSerializer(serializers.ModelSerializer):
