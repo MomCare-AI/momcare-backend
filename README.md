@@ -11,11 +11,40 @@ to this service over `/api/`.
 
 ## Current status
 
-This is a **freshly built foundation**, not a finished product — it's the scaffolding every
-feature gets built on top of, verified working end-to-end but with no maternal-health
-features yet.
+The foundation plus the **access-control layer** — hospital onboarding and staff
+management work end to end. There are no maternal-health features yet.
+
+**Access model.** Tenant membership is granted from *inside* a tenant, never claimed from
+outside it:
+
+- **Hospitals** apply at `/api/auth/register/`. Registration issues **no token**:
+  `Organization.status` starts `pending` and `LoginView` refuses sign-in until a platform
+  admin approves it. No public API verifies Pakistani facility licences — PMDC registers
+  practitioners, while facilities are licensed provincially (PHC, SHCC, KP HCC, Balochistan
+  HCC, IHRA) — so approval is a human check with recorded evidence: issuing authority,
+  licence document, reviewer, timestamp, and a note of what was verified. The applicant is
+  emailed on submission and again on the decision.
+- **Clinical staff** are invited by their hospital admin and set their own password via a
+  single-use link. Organization and role are read from the invite row on acceptance, never
+  from the request, so nobody can join another hospital or claim a higher role.
+- **Patients** are enrolled clinically — not yet implemented.
+
+**Testing.** 23 API-level integration tests cover authentication, authorization and tenant
+isolation, validated by fault injection: removing the tenant filter fails the isolation
+test, and disabling the login gate fails four others.
+
+```bash
+uv run pytest momcare_platform/core -q
+```
 
 **Implemented and verified working:**
+
+- Hospital registration, review gate, and admin review actions (approve / reject / suspend);
+  tenants are never hard-deleted.
+- Staff invitations with expiry, revocation, and replay protection.
+- `/api/organization/me/` and the staff endpoints, scoped via `OrganizationScopedQuerysetMixin`.
+- Best-effort transactional email (`core/common/mail.py`) — a mail outage never fails a
+  registration or rolls back an approval.
 
 - Full project structure — settings split (`local`/`test`/`production`), Celery + Redis,
   JWT auth config, CORS/CSRF for a cookie-based refresh token.
@@ -36,7 +65,8 @@ separate future step, see `docs/design/`):
 
 - Any application/business logic — `services.py`, `signals.py`, and `tests/factories.py` are
   stubs across every app (e.g. no staff auto-creation, no patient onboarding logic yet).
-- API endpoints — every app's `serializers.py`/`views.py` is currently a stub.
+- API endpoints beyond auth, organization and staff — `locations` and `patients` are still
+  stubs, and `patients` has no medical fields.
 - Postgres Row-Level Security policies (tenant isolation currently relies on the
   application-level scoping mixin alone — RLS is the planned second layer, not yet written).
 - Any actual maternal-health feature (pregnancy tracking, vitals, care plans) — no feature
