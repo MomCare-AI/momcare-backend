@@ -8,3 +8,4 @@ class OrganizationConfig(AppConfig):
 
     def ready(self):
         from momcare_platform.core.organization import signals  # noqa: F401,PLC0415
+        import momcare_platform.core.organization.admin  # noqa: F401,PLC0415

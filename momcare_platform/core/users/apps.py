@@ -8,3 +8,4 @@ class UsersConfig(AppConfig):
 
     def ready(self):
         from momcare_platform.core.users import signals  # noqa: F401,PLC0415
+        import momcare_platform.core.users.admin  # noqa: F401,PLC0415

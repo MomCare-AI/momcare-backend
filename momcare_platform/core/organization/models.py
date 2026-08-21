@@ -10,6 +10,19 @@ DATE_FORMAT_CHOICES = [
     ("YYYY-MM-DD", "YYYY-MM-DD"),
 ]
 
+# Facilities in Pakistan are licensed provincially, not federally (PMDC registers
+# individual practitioners, not establishments). Recording the issuing body tells
+# the reviewer which public register to search for a given licence number.
+LICENSE_AUTHORITY_CHOICES = [
+    ("phc", "Punjab Healthcare Commission (PHC)"),
+    ("shcc", "Sindh Healthcare Commission (SHCC)"),
+    ("kphcc", "KP Healthcare Commission"),
+    ("bhcc", "Balochistan Healthcare Commission"),
+    ("ihra", "Islamabad Healthcare Regulatory Authority (IHRA)"),
+    ("ajk_gb", "AJK / Gilgit-Baltistan health department"),
+    ("other", "Other / not listed"),
+]
+
 
 class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStampedModel):
     """One hospital (tenant). Unlike Neuro_RPM's singleton Organization, MomCare
@@ -17,9 +30,56 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
     database, each as its own Organization row. Every tenant-owned model
     carries an ``organization`` FK (directly or via ``Location``), enforced by
     the scoping mixin in ``core.common.scoping`` and, per-app, Postgres RLS.
+
+    ``status`` gates tenant access: self-registration creates a PENDING row and
+    its members cannot authenticate until a platform admin approves it. This is
+    separate from ``is_active`` (soft-deactivation) — a hospital can be rejected
+    without ever having been active, or suspended long after approval.
     """
 
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_SUSPENDED = "suspended"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending review"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_SUSPENDED, "Suspended"),
+    ]
+
     name = models.CharField(max_length=255)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    review_note = models.TextField(
+        blank=True,
+        help_text="What the reviewer actually checked — registry consulted, date, callback outcome.",
+    )
+    license_no = models.CharField(max_length=100, blank=True)
+    license_authority = models.CharField(
+        max_length=20,
+        choices=LICENSE_AUTHORITY_CHOICES,
+        blank=True,
+        help_text="Which regulator issued the licence — tells the reviewer whose register to search.",
+    )
+    license_document = models.FileField(
+        upload_to="licenses/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="Scan of the licence certificate, for the reviewer to inspect.",
+    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -39,6 +99,24 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
 
     def __str__(self) -> str:
         return self.name
+
+    @property
+    def can_authenticate(self) -> bool:
+        """Members may sign in only once the hospital is approved and still active."""
+        return self.status == self.STATUS_APPROVED and self.is_active
+
+    def set_review_status(self, status: str, *, by=None, note: str = "") -> None:
+        """Record a platform-admin review decision, with who decided and when."""
+        from django.utils import timezone  # noqa: PLC0415
+
+        self.status = status
+        self.reviewed_at = timezone.now()
+        self.reviewed_by = by
+        if note:
+            self.review_note = note
+        self.save(
+            update_fields=["status", "reviewed_at", "reviewed_by", "review_note", "updated_at"],
+        )
 
     # ── Computed counts (no denormalization — always fresh) ───────────────────
     @property
