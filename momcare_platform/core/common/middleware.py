@@ -1,8 +1,8 @@
 """AuditLogMiddleware — HIPAA-essential PHI access logging.
 
 Records one ``AuditLog`` row per request to a PHI-touching endpoint
-(currently ``/api/patients/...`` — extend ``_PHI_PREFIXES`` as feature modules
-add their own PHI-bearing endpoints). Writes are synchronous (a single cheap
+(``/api/patients``, ``/api/alerts``, ``/api/attention`` — extend
+``_PHI_PREFIXES`` as feature modules add their own PHI-bearing endpoints). Writes are synchronous (a single cheap
 insert) and best-effort — logging must never break a request.
 
 Note: user attribution relies on ``request.user``. Session-authenticated
@@ -26,7 +26,9 @@ from momcare_platform.core.common.request_logging import request_id_ctx, user_id
 logger = logging.getLogger(__name__)
 
 # Path prefixes considered PHI-touching.
-_PHI_PREFIXES = ("/api/patients",)
+# Alerts and the attention queue carry patient names and clinical findings, so
+# reading them is access to PHI exactly as reading the record is.
+_PHI_PREFIXES = ("/api/patients", "/api/alerts", "/api/attention")
 
 _METHOD_TO_ACTION = {
     "GET": "READ",

@@ -67,6 +67,8 @@ LOCAL_APPS = [
     "momcare_platform.core.locations",
     "momcare_platform.core.staff",
     "momcare_platform.core.patients",
+    "momcare_platform.core.monitoring",
+    "momcare_platform.core.alerts",
     # No feature modules yet — the first one (momcare_platform.modules.<name>)
     # gets added here once it exists, following the Section 6 self-registration
     # pattern from the blueprint.
@@ -314,7 +316,7 @@ FRONTEND_URL = env("DJANGO_FRONTEND_URL", default="http://localhost:3000")
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list(
     "DJANGO_CORS_ALLOWED_ORIGINS",
-    default=["http://localhost:5173", "http://127.0.0.1:5173"],
+    default=["http://localhost:3000", "http://127.0.0.1:3000"],
 )
 CORS_ALLOW_HEADERS = [*default_headers, "ngrok-skip-browser-warning"]
 CSRF_TRUSTED_ORIGINS = env.list(
@@ -325,6 +327,6 @@ CSRF_TRUSTED_ORIGINS = env.list(
 # Password Reset
 # ------------------------------------------------------------------------------
 PASSWORD_RESET_TIMEOUT = 3600
-
-# The SPA origin — used to build the clickable reset link inside the email.
-FRONTEND_URL = env("DJANGO_FRONTEND_URL", default="http://localhost:5173")
+# NOTE: the reset link uses FRONTEND_URL, defined once above. It was redefined
+# here with a stale :5173 default, which silently won and sent every invitation
+# email to a port nothing runs on. Define it in one place only.

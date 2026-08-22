@@ -3,6 +3,22 @@ from django.urls import re_path
 from rest_framework.routers import DefaultRouter, SimpleRouter
 
 from momcare_platform.core.common.programs import iter_programs
+from momcare_platform.core.alerts.api.views import (
+    AlertAcknowledgeView,
+    AlertDetailView,
+    AlertListView,
+    AlertResolveView,
+)
+from momcare_platform.core.monitoring.api.views import (
+    AcknowledgeRiskView,
+    AttentionQueueView,
+    DeviceAssignView,
+    DeviceListCreateView,
+    LatestReadingsView,
+    ReadingListCreateView,
+    RiskAssessmentView,
+    SimulateReadingsView,
+)
 from momcare_platform.core.organization.api.views import MyOrganizationView
 from momcare_platform.core.patients.api.views import (
     PatientConsentView,
@@ -94,6 +110,59 @@ core_urlpatterns = [
         r"^patients/(?P<patient_id>[0-9a-f-]{36})/pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/?$",
         PregnancyDetailView.as_view(),
         name="pregnancy-detail",
+    ),
+    # Monitoring — readings hang off a pregnancy, never a patient, because a
+    # reading only means something in the context of gestational age.
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/readings/?$",
+        ReadingListCreateView.as_view(),
+        name="reading-list",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/readings/latest/?$",
+        LatestReadingsView.as_view(),
+        name="reading-latest",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/readings/simulate/?$",
+        SimulateReadingsView.as_view(),
+        name="reading-simulate",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/device/?$",
+        DeviceAssignView.as_view(),
+        name="pregnancy-device",
+    ),
+    re_path(r"^devices/?$", DeviceListCreateView.as_view(), name="device-list"),
+    # Risk — assessments record transitions, not every reading.
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/risk/?$",
+        RiskAssessmentView.as_view(),
+        name="risk-assessments",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/risk/(?P<assessment_id>[0-9a-f-]{36})/acknowledge/?$",
+        AcknowledgeRiskView.as_view(),
+        name="risk-acknowledge",
+    ),
+    # The queue a clinician works from.
+    re_path(r"^attention/?$", AttentionQueueView.as_view(), name="attention-queue"),
+    # Alerts — the push side of the same information.
+    re_path(r"^alerts/?$", AlertListView.as_view(), name="alert-list"),
+    re_path(
+        r"^alerts/(?P<alert_id>[0-9a-f-]{36})/?$",
+        AlertDetailView.as_view(),
+        name="alert-detail",
+    ),
+    re_path(
+        r"^alerts/(?P<alert_id>[0-9a-f-]{36})/acknowledge/?$",
+        AlertAcknowledgeView.as_view(),
+        name="alert-acknowledge",
+    ),
+    re_path(
+        r"^alerts/(?P<alert_id>[0-9a-f-]{36})/resolve/?$",
+        AlertResolveView.as_view(),
+        name="alert-resolve",
     ),
     # Public — the recipient holds only the token.
     re_path(r"^invites/(?P<token>[A-Za-z0-9_-]+)/?$", InviteDetailView.as_view(), name="invite-detail"),

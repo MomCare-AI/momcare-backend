@@ -9,8 +9,12 @@ Two properties are being defended here:
   hospital's clinical team to another.
 """
 
+from pathlib import Path
+
 import pytest
 from django.conf import settings
+from django.core import mail
+from django.test import override_settings
 
 from momcare_platform.core.staff.models import StaffInvite
 from momcare_platform.core.users.models import Role, User
@@ -226,3 +230,42 @@ def test_organization_endpoint_returns_only_your_own_hospital(client, make_hospi
 
     assert response.status_code == 200
     assert response.json()["name"] == "Alpha Org"
+
+# ── The invitation link ──────────────────────────────────────────────────────
+
+
+@override_settings(FRONTEND_URL="https://momcare.example.pk")
+def test_the_emailed_invite_link_points_at_the_running_frontend(
+    client, make_hospital, auth,
+):
+    """Guards a bug that shipped silently.
+
+    ``FRONTEND_URL`` was defined twice in base settings. The second definition
+    defaulted to port 5173 — a Vite default this project has never used — and
+    quietly won, so every invitation email carried a link to a port nothing runs
+    on. The portal's copy-link button builds its own URL from the browser, which
+    is why nobody noticed: only the emailed path was dead.
+    """
+    hospital = make_hospital("Link Hospital")
+    mail.outbox.clear()
+
+    response = _create_invite(client, auth(hospital.admin.email), email="new.doc@link.test")
+
+    assert response.status_code == 201
+    token = StaffInvite.objects.get(email="new.doc@link.test").token
+    assert len(mail.outbox) == 1, "the invitation email was not sent"
+    assert f"https://momcare.example.pk/invite/{token}" in mail.outbox[0].body
+
+
+def test_the_invite_link_has_exactly_one_source_of_truth():
+    """A second ``FRONTEND_URL =`` line would win silently, as one already did."""
+    # Ask the module where it lives rather than counting directories upward,
+    # so moving this test file cannot break the check.
+    import config.settings.base as base_settings  # noqa: PLC0415
+
+    settings_file = Path(base_settings.__file__)
+    definitions = [
+        line for line in settings_file.read_text(encoding="utf-8").splitlines()
+        if line.startswith("FRONTEND_URL")
+    ]
+    assert len(definitions) == 1, f"FRONTEND_URL defined {len(definitions)} times: {definitions}"
