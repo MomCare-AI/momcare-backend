@@ -153,3 +153,101 @@ What does **not** exist yet (all deliberately deferred, not oversights):
 - Pagination envelope: `{count, page, page_size, total_pages, next, previous, results}`
   (`core/common/pagination.py`, `DefaultPagination`). Any viewset with `ordering_fields` must
   use `StableOrderingFilter` from the same module.
+
+---
+
+## The clinical modules (added Aug 2026)
+
+Read `../docs/PLAN.md` first — current status, decisions not to revisit, known gaps.
+
+### Apps and what each owns
+
+| App | Models | The thing to know |
+|---|---|---|
+| `patients` | `Patient` `Pregnancy` `PregnancyRiskFactors` `Consent` | `Patient.user` is **optional** (`SET_NULL`) — a rural patient may have no email and must still have a record |
+| `monitoring` | `Device` `VitalReading` `RiskAssessment` | Readings attach to a **pregnancy**, not a patient — a heart rate of 110 means different things at 12 and 38 weeks |
+| `alerts` | `Alert` `AlertEvent` | The push side. `AlertEvent` is append-only: escalation not written down is escalation that never happened |
+
+### Two pure-function policy modules
+
+Both are framework-free and database-free, so they test in milliseconds and the
+clinical logic is readable in one place.
+
+- `core/monitoring/risk_rules.py` — the obstetric thresholds. `ENGINE_VERSION` is
+  recorded on every assessment.
+- `core/alerts/escalation.py` — the tier ladder and its deadlines.
+
+Neither has been reviewed by a practising obstetrician. That is stated in the docs
+as a requirement before real use — do not quietly imply otherwise.
+
+### Gestational age has exactly one home
+
+`core/common/obstetrics.py::calculate_gestational_age()`. Derived from EDD on every
+read, **never stored** — a stored column is wrong the next day. Never recompute it
+anywhere else, or the list, the chart and the risk engine will disagree about how
+pregnant someone is.
+
+### Scoping paths
+
+```
+Patient    → location__organization          (never user__organization)
+Pregnancy  → patient__location__organization
+Reading    → pregnancy__patient__location__organization
+Alert      → pregnancy__patient__location__organization
+Staff      → user__organization
+Device     → organization
+```
+
+Scope **before** lookup, so another tenant's row resolves to nothing. Cross-tenant
+reads return **404, never 403** — a 403 confirms the record exists elsewhere.
+
+### The AI seam
+
+`RiskAssessment.source` is `"rules"` today and `"model"` when Ahmed's model lands —
+same table, same endpoint, two producers. The rules engine leaves `score` and
+`confidence` **null** rather than inventing numbers. Do not collapse this.
+
+### Scoring and alerting are one transaction
+
+`reassess_risk()` writes an assessment **only when the level changed**, then calls
+`alerts.services.sync_alert_for()`. An assessment saying "critical" with no alert is
+a state this system must not be able to reach.
+
+Both imports are function-local: `alerts` imports `monitoring`, so a module-level
+import the other way closes the cycle.
+
+### Escalation needs a scheduler
+
+Alerts are *raised* inside the request that recorded the reading. They only *climb*
+when `manage.py escalate_alerts` runs — cron or Task Scheduler, every minute.
+Idempotent and safe to run late: the target tier is computed from the clock, so a
+missed hour lands on the right rung instead of stepping up once per missed run.
+
+### Things the admin must never allow
+
+No delete for organizations, patients, pregnancies, readings, assessments or alerts.
+Readings and assessments are also not editable — an observation of a moment in time
+is not editable; a correction is a new reading.
+
+### Testing
+
+```bash
+uv run pytest momcare_platform/core -q      # 186 tests, ~10s
+```
+
+Mostly **API-level integration tests** — a real request through routing, middleware,
+JWT, permissions, serializer and a real Postgres. Nothing mocked. The two policy
+modules are tested as pure functions.
+
+Security tests were validated by **fault injection** — deliberately removing each
+protection and confirming the tests failed. If you add a protection, prove its test
+fails without it.
+
+`conftest.py` clears the throttle cache between tests. Without it the suite shares
+one `100/day` anon bucket and starts returning 429 once enough tests have logged in.
+
+### Demo helper
+
+`manage.py demo_setup [--reset-alerts]` — known passwords for a walkthrough.
+Refuses to run with `DEBUG` off. **Skips superusers and platform admins by default**;
+never pass `--include-admins` unless the user asks for exactly that.
