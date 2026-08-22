@@ -637,3 +637,73 @@ def test_enrolment_is_audited_with_the_acting_user(client, make_hospital, auth):
     assert entry is not None, "patient creation was not written to the audit log"
     assert entry.endpoint == PATIENTS
     assert entry.user == hospital.admin, "audit log did not attribute the acting user"
+
+
+# ── Risk on the list ─────────────────────────────────────────────────────────
+
+
+def test_the_list_carries_the_current_risk_level(client, make_hospital, auth):
+    """The list is triage: a clinician decides which row to open from it, so the
+    risk level has to travel with the row rather than one click away."""
+    from django.utils import timezone  # noqa: PLC0415
+
+    from momcare_platform.core.monitoring.models import VitalReading  # noqa: PLC0415
+    from momcare_platform.core.monitoring.services import reassess_risk  # noqa: PLC0415
+
+    hospital = make_hospital("Triage Hospital")
+    post_patient(
+        client,
+        auth(hospital.admin.email),
+        first_name="AtRisk",
+        pregnancy={"lmp": (date.today() - timedelta(weeks=24)).isoformat()},
+    )
+    pregnancy = Patient.objects.get(first_name="AtRisk").current_pregnancy
+    assert pregnancy is not None
+    VitalReading.objects.create(
+        pregnancy=pregnancy,
+        reading_type=VitalReading.TYPE_BLOOD_PRESSURE,
+        value=168,
+        value_secondary=112,
+        recorded_at=timezone.now(),
+        source=VitalReading.SOURCE_MANUAL,
+    )
+    reassess_risk(pregnancy)
+
+    row = client.get(PATIENTS, **auth(hospital.admin.email)).json()["results"][0]
+
+    assert row["risk_level"] == "critical"
+    assert row["risk_assessed_at"] is not None
+    assert row["pregnancy_id"] == str(pregnancy.id)
+
+
+def test_a_patient_never_assessed_reports_no_level_rather_than_stable(
+    client, make_hospital, auth,
+):
+    """Absent is not the same as safe. Reporting "stable" for someone nobody has
+    measured would be the system inventing reassurance it has no basis for."""
+    hospital = make_hospital("Unassessed Hospital")
+    post_patient(client, auth(hospital.admin.email))
+
+    row = client.get(PATIENTS, **auth(hospital.admin.email)).json()["results"][0]
+
+    assert row["risk_level"] is None
+    assert row["risk_assessed_at"] is None
+
+
+def test_listing_more_patients_does_not_cost_more_queries(
+    client, make_hospital, auth, django_assert_max_num_queries,
+):
+    """Guards the prefetch. Without it each row queries for its pregnancy and
+    again for its latest assessment, so a page of twenty costs forty round
+    trips — the kind of regression that only shows up once a hospital has real
+    numbers on the ward."""
+    hospital = make_hospital("Volume Hospital")
+    headers = auth(hospital.admin.email)
+    for index in range(6):
+        post_patient(client, headers, first_name=f"Patient{index}", cnic=f"61101-000000{index}-1")
+
+    with django_assert_max_num_queries(12):
+        response = client.get(PATIENTS, **headers)
+
+    assert response.status_code == 200
+    assert response.json()["count"] == 6

@@ -169,11 +169,19 @@ class ConsentSerializer(serializers.ModelSerializer):
 
 
 class PatientListSerializer(serializers.ModelSerializer):
-    """Deliberately lean — a list view should not carry a whole clinical record."""
+    """Deliberately lean — a list view should not carry a whole clinical record.
+
+    It does carry the current risk level, because that is what decides which
+    row a clinician opens first. Without it the list is alphabetical noise and
+    the deteriorating patient sits between two stable ones.
+    """
 
     full_name = serializers.CharField(read_only=True)
+    pregnancy_id = serializers.SerializerMethodField()
     gestational_age_display = serializers.SerializerMethodField()
     pregnancy_status = serializers.SerializerMethodField()
+    risk_level = serializers.SerializerMethodField()
+    risk_assessed_at = serializers.SerializerMethodField()
 
     class Meta:
         model = Patient
@@ -184,20 +192,51 @@ class PatientListSerializer(serializers.ModelSerializer):
             "phone",
             "cnic",
             "date_of_birth",
+            "pregnancy_id",
             "gestational_age_display",
             "pregnancy_status",
+            "risk_level",
+            "risk_assessed_at",
             "is_active",
             "created_at",
         ]
         read_only_fields = fields
 
+    def _pregnancy(self, obj):
+        """Prefer the prefetched active pregnancy over a fresh query.
+
+        ``current_pregnancy`` hits the database once per patient, which on a
+        paginated list is one query per row. The list view prefetches into
+        ``active_pregnancies``; anything that has not done so still works, just
+        without the saving.
+        """
+        prefetched = getattr(obj, "active_pregnancies", None)
+        if prefetched is not None:
+            return prefetched[0] if prefetched else None
+        return obj.current_pregnancy
+
+    def get_pregnancy_id(self, obj) -> str | None:
+        pregnancy = self._pregnancy(obj)
+        return str(pregnancy.id) if pregnancy else None
+
     def get_gestational_age_display(self, obj) -> str | None:
-        pregnancy = obj.current_pregnancy
+        pregnancy = self._pregnancy(obj)
         return pregnancy.gestational_age_display if pregnancy else None
 
     def get_pregnancy_status(self, obj) -> str | None:
-        pregnancy = obj.current_pregnancy
+        pregnancy = self._pregnancy(obj)
         return pregnancy.status if pregnancy else None
+
+    def get_risk_level(self, obj) -> str | None:
+        """None means never assessed — which is not the same as stable, and the
+        interface has to keep the two apart."""
+        pregnancy = self._pregnancy(obj)
+        return getattr(pregnancy, "latest_risk_level", None) if pregnancy else None
+
+    def get_risk_assessed_at(self, obj) -> str | None:
+        pregnancy = self._pregnancy(obj)
+        assessed_at = getattr(pregnancy, "latest_risk_at", None) if pregnancy else None
+        return assessed_at.isoformat() if assessed_at else None
 
 
 class PatientDetailSerializer(serializers.ModelSerializer):

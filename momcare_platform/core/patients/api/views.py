@@ -7,7 +7,7 @@ identifier a caller could tamper with to reach another hospital's patients.
 """
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Q, Value
+from django.db.models import OuterRef, Prefetch, Q, Subquery, Value
 from django.db.models.functions import Concat
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -63,6 +63,32 @@ class PatientScopedView(OrganizationScopedQuerysetMixin, APIView):
             return None, Response({"detail": "Patient not found."}, status=status.HTTP_404_NOT_FOUND)
 
 
+def _active_pregnancy_prefetch() -> Prefetch:
+    """The active pregnancy for each listed patient, carrying its latest risk level.
+
+    Two things are being avoided here. ``current_pregnancy`` queries once per
+    patient, so a page of twenty costs twenty round trips; and reading the
+    latest assessment through the related manager would cost twenty more. Both
+    collapse into one prefetch with a correlated subquery.
+
+    Imported inside the function: monitoring already imports patients, so a
+    module-level import the other way would close the cycle.
+    """
+    from momcare_platform.core.monitoring.models import RiskAssessment
+
+    latest = RiskAssessment.objects.filter(pregnancy=OuterRef("pk")).order_by("-assessed_at")
+
+    active = (
+        Pregnancy.objects.filter(status=Pregnancy.STATUS_ACTIVE)
+        .annotate(
+            latest_risk_level=Subquery(latest.values("level")[:1]),
+            latest_risk_at=Subquery(latest.values("assessed_at")[:1]),
+        )
+        .order_by("-created_at")
+    )
+    return Prefetch("pregnancies", queryset=active, to_attr="active_pregnancies")
+
+
 class PatientListCreateView(PatientScopedView):
     """List and search this hospital's patients, or enrol a new one."""
 
@@ -71,7 +97,9 @@ class PatientListCreateView(PatientScopedView):
         if error:
             return error
 
-        queryset = self.patients().select_related("location")
+        queryset = self.patients().select_related("location").prefetch_related(
+            _active_pregnancy_prefetch(),
+        )
 
         search = request.query_params.get("search", "").strip()
         if search:
