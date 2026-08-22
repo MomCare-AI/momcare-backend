@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from momcare_platform.core.patients.models import Consent, Patient, Pregnancy, PregnancyRiskFactors
+from momcare_platform.core.staff.models import Staff
 
 
 class PregnancyRiskFactorsSerializer(serializers.ModelSerializer):
@@ -33,6 +34,14 @@ class PregnancySerializer(serializers.ModelSerializer):
         read_only=True,
         default="",
     )
+    # Surfaced so the UI can warn: an assignment to someone who has left the
+    # hospital is as good as no assignment once alerts start routing.
+    has_responsible_clinician = serializers.BooleanField(read_only=True)
+    assigned_staff_is_active = serializers.BooleanField(
+        source="assigned_staff.is_active",
+        read_only=True,
+        default=False,
+    )
     risk_factors = PregnancyRiskFactorsSerializer(read_only=True)
 
     class Meta:
@@ -52,6 +61,8 @@ class PregnancySerializer(serializers.ModelSerializer):
             "para",
             "assigned_staff",
             "assigned_staff_name",
+            "assigned_staff_is_active",
+            "has_responsible_clinician",
             "status",
             "status_display",
             "outcome_date",
@@ -64,6 +75,8 @@ class PregnancySerializer(serializers.ModelSerializer):
             "id",
             "patient",
             "edd_confirmed_at",
+            "assigned_staff_is_active",
+            "has_responsible_clinician",
             "gestational_age_weeks",
             "gestational_age_days",
             "gestational_age_display",
@@ -92,10 +105,30 @@ class PregnancySerializer(serializers.ModelSerializer):
         return attrs
 
 
+class OrganizationStaffField(serializers.PrimaryKeyRelatedField):
+    """A Staff reference restricted to the requesting user's own hospital.
+
+    A plain PrimaryKeyRelatedField accepts any Staff id on the platform, so a
+    hospital admin could name another hospital's clinician as responsible for
+    their patient — leaking that clinician's existence and making the
+    accountability record false. The queryset is narrowed per-request instead,
+    which also means the API never depends on the dropdown having been filtered
+    correctly.
+    """
+
+    def get_queryset(self):
+        user = self.context["request"].user
+        organization_id = getattr(user, "organization_id", None)
+        if organization_id is None:
+            return Staff.objects.none()
+        return Staff.objects.filter(user__organization_id=organization_id, is_active=True)
+
+
 class PregnancyWriteSerializer(PregnancySerializer):
     """Create/update, allowing risk factors to be set alongside the pregnancy."""
 
     risk_factors = PregnancyRiskFactorsSerializer(required=False)
+    assigned_staff = OrganizationStaffField(required=False, allow_null=True)
 
     class Meta(PregnancySerializer.Meta):
         read_only_fields = [

@@ -183,6 +183,11 @@ class Pregnancy(UUIDPrimaryKeyModel, TimeStampedModel):
     gravida = models.PositiveSmallIntegerField(null=True, blank=True)
     para = models.PositiveSmallIntegerField(null=True, blank=True)
 
+    # The lead clinician — one accountable name for this pregnancy. This field
+    # is permanent, not a placeholder: a future PregnancyCareTeam will add
+    # supporting members *alongside* it rather than replacing it, so that
+    # change stays additive and needs no migration of live clinical records.
+    #
     # PROTECT preserves who was responsible. Staff is soft-deleted, so this
     # never blocks anything in practice — it guarantees history survives.
     assigned_staff = models.ForeignKey(
@@ -238,6 +243,17 @@ class Pregnancy(UUIDPrimaryKeyModel, TimeStampedModel):
     @property
     def is_active(self) -> bool:
         return self.status == self.STATUS_ACTIVE
+
+    @property
+    def has_responsible_clinician(self) -> bool:
+        """Whether someone is actually accountable for this pregnancy.
+
+        A clinician who has left the hospital is soft-deleted, so the FK still
+        resolves and the record still *looks* assigned. For a system that will
+        route alerts to this person, an inactive assignment is the same silent
+        failure as no assignment at all, and both must surface.
+        """
+        return self.assigned_staff is not None and self.assigned_staff.is_active
 
 
 class PregnancyRiskFactors(UUIDPrimaryKeyModel, TimeStampedModel):

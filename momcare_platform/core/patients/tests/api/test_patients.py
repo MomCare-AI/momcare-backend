@@ -367,6 +367,118 @@ def test_pregnancy_cannot_be_deleted(client, make_hospital, auth):
     assert Pregnancy.objects.filter(id=pregnancy.id).exists()
 
 
+# ── Clinical responsibility ──────────────────────────────────────────────────
+
+
+def test_a_clinician_can_be_assigned_at_enrolment(client, make_hospital, make_staff, auth):
+    hospital = make_hospital("Assign Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "lead@assign.test")
+
+    response = post_patient(
+        client,
+        auth(hospital.admin.email),
+        pregnancy={
+            "lmp": date(2026, 2, 5).isoformat(),
+            "assigned_staff": str(doctor.staff.id),
+        },
+    )
+
+    pregnancy = response.json()["current_pregnancy"]
+    assert pregnancy["assigned_staff"] == str(doctor.staff.id)
+    assert pregnancy["has_responsible_clinician"] is True
+
+
+def test_cannot_assign_a_clinician_from_another_hospital(client, make_hospital, make_staff, auth):
+    """The dropdown is filtered, but the API must not depend on that.
+
+    Naming another hospital's clinician would leak that they exist and would
+    make the accountability record false — the pregnancy would point at someone
+    with no relationship to the patient.
+    """
+    alpha = make_hospital("Alpha Assign")
+    beta = make_hospital("Beta Assign")
+    beta_doctor = make_staff(beta.org, settings.ROLE_PROVIDER, "beta.lead@assign.test")
+
+    response = post_patient(
+        client,
+        auth(alpha.admin.email),
+        pregnancy={
+            "lmp": date(2026, 2, 5).isoformat(),
+            "assigned_staff": str(beta_doctor.staff.id),
+        },
+    )
+
+    assert response.status_code == 400
+    errors = response.json()["pregnancy"]["assigned_staff"]
+    # "does not exist" rather than "belongs to another hospital": the message
+    # must not confirm that this clinician is real somewhere else.
+    assert "does not exist" in errors[0]
+    assert not Patient.objects.exists(), "patient was created despite an invalid assignment"
+
+
+def test_cannot_patch_in_another_hospitals_clinician(client, make_hospital, make_staff, auth):
+    """Scoping must hold on update, not only on create."""
+    alpha = make_hospital("Alpha Patch Assign")
+    beta = make_hospital("Beta Patch Assign")
+    beta_doctor = make_staff(beta.org, settings.ROLE_PROVIDER, "beta.patch@assign.test")
+    headers = auth(alpha.admin.email)
+
+    patient_id = post_patient(
+        client,
+        headers,
+        pregnancy={"lmp": date(2026, 2, 5).isoformat()},
+    ).json()["id"]
+    pregnancy = Patient.objects.get(id=patient_id).current_pregnancy
+
+    response = client.patch(
+        f"{PATIENTS}{patient_id}/pregnancies/{pregnancy.id}/",
+        data=json.dumps({"assigned_staff": str(beta_doctor.staff.id)}),
+        content_type="application/json",
+        **headers,
+    )
+
+    assert response.status_code == 400
+    pregnancy.refresh_from_db()
+    assert pregnancy.assigned_staff is None
+
+
+def test_an_unassigned_pregnancy_reports_no_responsible_clinician(client, make_hospital, auth):
+    hospital = make_hospital("Unassigned Hospital")
+
+    response = post_patient(
+        client,
+        auth(hospital.admin.email),
+        pregnancy={"lmp": date(2026, 2, 5).isoformat()},
+    )
+
+    assert response.json()["current_pregnancy"]["has_responsible_clinician"] is False
+
+
+def test_a_departed_clinician_no_longer_counts_as_responsible(client, make_hospital, make_staff, auth):
+    """The FK still resolves after a clinician leaves, so the record looks
+    assigned. For alert routing that is the same silent failure as no
+    assignment, and it has to surface."""
+    hospital = make_hospital("Departure Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "leaver@departure.test")
+    headers = auth(hospital.admin.email)
+
+    patient_id = post_patient(
+        client,
+        headers,
+        pregnancy={
+            "lmp": date(2026, 2, 5).isoformat(),
+            "assigned_staff": str(doctor.staff.id),
+        },
+    ).json()["id"]
+
+    doctor.staff.deactivate(reason="Left the hospital")
+
+    detail = client.get(f"{PATIENTS}{patient_id}/", **headers).json()
+    pregnancy = detail["current_pregnancy"]
+    assert pregnancy["assigned_staff"] is not None, "the historical assignment must be kept"
+    assert pregnancy["has_responsible_clinician"] is False, "an inactive clinician must not count"
+
+
 # ── Consent history ──────────────────────────────────────────────────────────
 
 

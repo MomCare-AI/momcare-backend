@@ -97,7 +97,9 @@ class PatientListCreateView(PatientScopedView):
         if error:
             return error
 
-        serializer = PatientCreateSerializer(data=request.data)
+        # Context carries the request so the nested assigned_staff field can
+        # narrow its queryset to this hospital's own clinicians.
+        serializer = PatientCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         patient_data, pregnancy_data, risk_factors, consent = serializer.split()
 
@@ -160,7 +162,7 @@ class PregnancyListCreateView(PatientScopedView):
         if missing:
             return missing
 
-        serializer = PregnancyWriteSerializer(data=request.data)
+        serializer = PregnancyWriteSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = dict(serializer.validated_data)
         risk_factors = data.pop("risk_factors", None)
@@ -204,7 +206,12 @@ class PregnancyDetailView(PatientScopedView):
         if gone:
             return gone
 
-        serializer = PregnancyWriteSerializer(pregnancy, data=request.data, partial=True)
+        serializer = PregnancyWriteSerializer(
+            pregnancy,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(PregnancySerializer(serializer.instance).data)
