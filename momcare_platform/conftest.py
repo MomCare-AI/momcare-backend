@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from django.conf import settings
+from django.core.cache import cache
 
 from momcare_platform.core.organization.models import Organization
 from momcare_platform.core.staff.models import Staff
@@ -20,6 +21,23 @@ DEFAULT_PASSWORD = "TestPass!2026"
 @pytest.fixture(autouse=True)
 def _media_storage(settings, tmpdir) -> None:
     settings.MEDIA_ROOT = tmpdir.strpath
+
+
+@pytest.fixture(autouse=True)
+def _reset_throttles() -> None:
+    """Give every test a fresh rate-limit budget.
+
+    DRF keeps throttle counters in the default cache, keyed by client IP — and
+    every test shares 127.0.0.1. Without this the suite shares one ``100/day``
+    anon bucket, so tests start returning 429 once enough of them have logged
+    in, and which ones fail depends on execution order rather than on the code.
+
+    Clearing between tests keeps that from being a silent ceiling on how many
+    tests this project can have.
+    """
+    cache.clear()
+    yield
+    cache.clear()
 
 
 @pytest.fixture
