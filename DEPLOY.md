@@ -55,6 +55,7 @@ process will refuse to start without them.
 
 | Variable | Value |
 |---|---|
+| `DJANGO_EMAIL_BACKEND` | `momcare_platform.core.common.email_backends.ResendHTTPEmailBackend` - **see the note below** |
 | `DJANGO_EMAIL_HOST` | `smtp.resend.com` |
 | `DJANGO_EMAIL_PORT` | `587` |
 | `DJANGO_EMAIL_USE_TLS` | `True` |
@@ -62,6 +63,23 @@ process will refuse to start without them.
 | `DJANGO_EMAIL_HOST_PASSWORD` | The Resend API key |
 | `DJANGO_DEFAULT_FROM_EMAIL` | `MomCare <noreply@momcare.solutions>` |
 | `DJANGO_FRONTEND_URL` | `https://momcare.solutions` — **the base for invitation links.** Leave it as localhost and every invitation opens on the sender's own machine. |
+
+#### Why the HTTPS backend, and not SMTP
+
+Railway blocks outbound SMTP on every port - 25, 465, 587 and the alternates -
+to stop its platform being used for spam. The symptom is not a rejection but a
+`TimeoutError`: every credential is correct, the send simply never completes,
+and because `mail.py` logs failures rather than raising, the portal reports an
+invitation as created while nothing was ever delivered.
+
+`ResendHTTPEmailBackend` posts to `https://api.resend.com/emails` over port 443,
+which no host blocks because blocking it would break the platform itself. It
+uses only the standard library.
+
+The SMTP settings can stay as they are - they are ignored while this backend is
+selected, and switching back is one variable.
+
+---
 
 ### CORS and the refresh cookie
 

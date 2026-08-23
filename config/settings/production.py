@@ -105,7 +105,13 @@ ADMIN_URL = env("DJANGO_ADMIN_URL")
 
 # SMTP
 # ------------------------------------------------------------------------------
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+# Env-driven, not hardcoded. Managed hosts often block outbound SMTP, and the
+# symptom is a connection that times out rather than an error naming the
+# cause - so the transport has to be switchable without a code change.
+EMAIL_BACKEND = env(
+    "DJANGO_EMAIL_BACKEND",
+    default="django.core.mail.backends.smtp.EmailBackend",
+)
 EMAIL_HOST = env("DJANGO_EMAIL_HOST", default="smtp.gmail.com")
 EMAIL_PORT = env.int("DJANGO_EMAIL_PORT", default=587)
 EMAIL_USE_TLS = env.bool("DJANGO_EMAIL_USE_TLS", default=True)
