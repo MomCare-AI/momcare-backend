@@ -17,7 +17,9 @@ from django.core.mail import send_mail
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_EMAIL = "support@momcare.pk"
+# From settings, not hardcoded. It was momcare.pk — a domain this project does
+# not own — so every email invited people to write to an address that bounces.
+SUPPORT_EMAIL = settings.SUPPORT_EMAIL
 
 
 def _send(subject: str, body: str, to: str) -> bool:

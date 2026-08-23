@@ -316,6 +316,11 @@ REFRESH_COOKIE_DOMAIN = env("DJANGO_REFRESH_COOKIE_DOMAIN", default=None)
 # -------------------------------------------------------------------------------
 FRONTEND_URL = env("DJANGO_FRONTEND_URL", default="http://localhost:3000")
 
+# Printed in every transactional email as the address to contact for help, so
+# it has to be one somebody actually reads. Configurable because the right
+# answer differs between a laptop, a demo deployment and a real one.
+SUPPORT_EMAIL = env("DJANGO_SUPPORT_EMAIL", default="support@momcare.solutions")
+
 # CORS / CSRF — required for the SPA to send the credentialed refresh cookie.
 # -------------------------------------------------------------------------------
 CORS_ALLOW_CREDENTIALS = True
