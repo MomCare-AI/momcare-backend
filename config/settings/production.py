@@ -6,6 +6,7 @@ from .base import DATABASES, REDIS_URL, env
 
 # GENERAL
 # ------------------------------------------------------------------------------
+DEBUG = False  # never inherited: an env var or a stray .env must not be able to flip this
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=["momcare.example"])
 
@@ -15,14 +16,16 @@ DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=60)
 
 # CACHES
 # ------------------------------------------------------------------------------
+# The database, not Redis. Throttle counters live in the cache, and a
+# per-process backend gives every Gunicorn worker its own copy — silently
+# multiplying every rate limit by the worker count. A shared backend keeps
+# them correct, and the database is one we already run.
+#
+# Requires `manage.py createcachetable` in the release step.
 CACHES = {
     "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": REDIS_URL,
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-            "IGNORE_EXCEPTIONS": True,
-        },
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": env("DJANGO_CACHE_TABLE", default="django_cache_table"),
     },
 }
 
@@ -46,32 +49,49 @@ SECURE_CONTENT_TYPE_NOSNIFF = env.bool("DJANGO_SECURE_CONTENT_TYPE_NOSNIFF", def
 # S3 backend AWS S3 would use, just pointed at Oracle's endpoint instead (Oracle's
 # Always Free tier already includes object storage; no separate AWS account needed).
 # https://django-storages.readthedocs.io/en/latest/backends/amazon-S3.html#settings
-AWS_ACCESS_KEY_ID = env("DJANGO_STORAGE_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = env("DJANGO_STORAGE_SECRET_ACCESS_KEY")
-AWS_STORAGE_BUCKET_NAME = env("DJANGO_STORAGE_BUCKET_NAME")
+AWS_ACCESS_KEY_ID = env("DJANGO_STORAGE_ACCESS_KEY_ID", default="")
+AWS_SECRET_ACCESS_KEY = env("DJANGO_STORAGE_SECRET_ACCESS_KEY", default="")
+AWS_STORAGE_BUCKET_NAME = env("DJANGO_STORAGE_BUCKET_NAME", default="")
 AWS_S3_REGION_NAME = env("DJANGO_STORAGE_REGION_NAME", default="ap-singapore-1")
 # Oracle's S3-compatible endpoint, e.g.:
 # https://<namespace>.compat.objectstorage.ap-singapore-1.oraclecloud.com
-AWS_S3_ENDPOINT_URL = env("DJANGO_STORAGE_ENDPOINT_URL")
+AWS_S3_ENDPOINT_URL = env("DJANGO_STORAGE_ENDPOINT_URL", default="")
 AWS_QUERYSTRING_AUTH = False
 _STORAGE_EXPIRY = 60 * 60 * 24 * 7
 AWS_S3_OBJECT_PARAMETERS = {
     "CacheControl": f"max-age={_STORAGE_EXPIRY}, s-maxage={_STORAGE_EXPIRY}, must-revalidate",
 }
 
-STORAGES = {
-    "default": {
+# Object storage is used when it is configured, and the app falls back to
+# local disk when it is not. Without this the four settings above have no
+# defaults, so the process refuses to start even on a deployment where nobody
+# has uploaded a file yet — object storage becomes a prerequisite for booting
+# rather than a feature. The fallback is loudly logged, because files written
+# to a container filesystem do not survive a redeploy.
+_OBJECT_STORAGE_CONFIGURED = all(
+    [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_STORAGE_BUCKET_NAME, AWS_S3_ENDPOINT_URL],
+)
+
+if _OBJECT_STORAGE_CONFIGURED:
+    _default_storage = {
         "BACKEND": "storages.backends.s3.S3Storage",
-        "OPTIONS": {
-            "location": "media",
-            "file_overwrite": False,
-        },
-    },
+        "OPTIONS": {"location": "media", "file_overwrite": False},
+    }
+    MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/media/"
+else:
+    logging.getLogger(__name__).warning(
+        "Object storage is not configured (DJANGO_STORAGE_*). Uploaded files will be "
+        "written to local disk and WILL BE LOST on the next deploy. Configure it before "
+        "any real upload.",
+    )
+    _default_storage = {"BACKEND": "django.core.files.storage.FileSystemStorage"}
+
+STORAGES = {
+    "default": _default_storage,
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
-MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/media/"
 
 # EMAIL
 # ------------------------------------------------------------------------------

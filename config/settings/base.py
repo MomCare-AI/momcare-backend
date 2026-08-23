@@ -260,6 +260,11 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    # How many proxies sit in front of the app. Without this DRF keys throttles
+    # on the whole X-Forwarded-For string, which a client can forge to obtain a
+    # fresh bucket on every request — defeating the login rate limit below.
+    # 1 for a single platform load balancer; raise it if a CDN is added.
+    "NUM_PROXIES": env.int("DJANGO_NUM_PROXIES", default=None),
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
