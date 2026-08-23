@@ -134,3 +134,15 @@ def test_mail_helper_still_reports_failure_through_this_backend(settings):
     settings.RESEND_API_KEY = "re_test_key"
     with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
         assert mail._send("Subject", "Body", "doctor@example.com") is False
+
+
+def test_identifies_itself_so_the_edge_does_not_block_it(backend):
+    """Cloudflare fronts the API and refuses urllib's default signature with a
+    403 (error code 1010) before Resend sees the message. Losing this header
+    means every send fails again, with an error that names neither cause."""
+    with patch("urllib.request.urlopen", return_value=FakeResponse()) as urlopen:
+        backend.send_messages([_message()])
+
+    agent = urlopen.call_args[0][0].get_header("User-agent") or ""
+    assert agent.startswith("MomCare/")
+    assert "urllib" not in agent.lower()

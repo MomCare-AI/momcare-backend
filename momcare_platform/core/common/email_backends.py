@@ -35,6 +35,9 @@ from django.core.mail.backends.base import BaseEmailBackend
 logger = logging.getLogger(__name__)
 
 API_URL = "https://api.resend.com/emails"
+# Sent on every request. See the note where the headers are built - without
+# a real User-Agent the edge blocks us before Resend ever sees the message.
+USER_AGENT = "MomCare/1.0 (+https://momcare.solutions)"
 TIMEOUT = 10
 
 
@@ -93,6 +96,13 @@ class ResendHTTPEmailBackend(BaseEmailBackend):
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
+                "Accept": "application/json",
+                # Cloudflare sits in front of the API and refuses urllib's
+                # default "Python-urllib/3.x" signature with a 403 carrying
+                # error code 1010 - a block page, not a Resend response, so
+                # the request never reaches the API at all. Identifying the
+                # client properly is what gets us past it.
+                "User-Agent": USER_AGENT,
             },
             method="POST",
         )
