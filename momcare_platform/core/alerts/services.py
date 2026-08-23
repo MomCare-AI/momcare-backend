@@ -303,18 +303,43 @@ def escalate_due_alerts(now: datetime | None = None) -> int:
     now = now or timezone.now()
     moved = 0
 
-    open_alerts = Alert.objects.filter(status=Alert.STATUS_OPEN).select_related(
-        "pregnancy__patient__location__organization",
-        "pregnancy__assigned_staff__user",
-        "assessment",
+    candidates = list(
+        Alert.objects.filter(status=Alert.STATUS_OPEN)
+        .select_related(
+            "pregnancy__patient__location__organization",
+            "pregnancy__assigned_staff__user",
+            "assessment",
+        )
+        .values_list("pk", flat=True),
     )
 
-    for alert in open_alerts:
-        target = escalation.due_tier(alert.level, alert.raised_at, now)
-        if target <= alert.tier:
-            continue
-
+    for pk in candidates:
         with transaction.atomic():
+            # Locked, and skipped if another sweep already holds it. Two runs
+            # overlapping — a slow database, a late cron firing on top of the
+            # previous one, or a second instance — would otherwise both read the
+            # same alert at the same tier, both escalate it, and both notify:
+            # duplicate emails and a history that records the climb twice.
+            alert = (
+                # of=("self",) locks the alert row only. Without it Postgres
+                # refuses: select_related spans a nullable foreign key, which is
+                # an outer join, and FOR UPDATE cannot apply to its nullable side.
+                Alert.objects.select_for_update(skip_locked=True, of=("self",))
+                .select_related(
+                    "pregnancy__patient__location__organization",
+                    "pregnancy__assigned_staff__user",
+                    "assessment",
+                )
+                .filter(pk=pk, status=Alert.STATUS_OPEN)
+                .first()
+            )
+            if alert is None:
+                continue
+
+            target = escalation.due_tier(alert.level, alert.raised_at, now)
+            if target <= alert.tier:
+                continue
+
             alert.tier = target
             alert.last_escalated_at = now
             alert.save(update_fields=["tier", "last_escalated_at", "updated_at"])
