@@ -96,3 +96,57 @@ def test_registration_issues_no_token(client):
     assert body["status"] == Organization.STATUS_PENDING
     assert "access" not in body
     assert "refresh_token" not in response.cookies
+
+
+# -- The refresh cookie --------------------------------------------------------
+
+
+def test_the_refresh_cookie_follows_its_settings(client, make_hospital, settings):
+    """Guards a bug that would only appear in production.
+
+    The REFRESH_COOKIE_* settings existed but nothing read them: set_cookie
+    hardcoded SameSite and set no Domain. Once the API is served from a
+    subdomain of the site, the browser stops sending the cookie on refresh and
+    the user is silently signed out an hour after logging in - and no env var
+    could fix it without a code change.
+    """
+    settings.REFRESH_COOKIE_DOMAIN = ".momcare.example"
+    settings.REFRESH_COOKIE_SAMESITE = "Lax"
+    hospital = make_hospital("Cookie Hospital")
+
+    response = client.post(
+        "/api/auth/login/",
+        data={"email": hospital.admin.email, "password": "TestPass!2026"},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    cookie = response.cookies["refresh_token"]
+    assert cookie["domain"] == ".momcare.example"
+    assert cookie["samesite"] == "Lax"
+    assert cookie["path"] == "/api/auth"
+    assert cookie["httponly"], "the refresh token must never be readable by JavaScript"
+
+
+def test_logout_clears_the_cookie_with_matching_attributes(client, make_hospital, settings):
+    """A cookie set with a Domain is not removed by a delete without one.
+
+    Logout would appear to succeed and leave the session alive, which is worse
+    than an error because nobody would notice.
+    """
+    settings.REFRESH_COOKIE_DOMAIN = ".momcare.example"
+    hospital = make_hospital("Logout Hospital")
+
+    login = client.post(
+        "/api/auth/login/",
+        data={"email": hospital.admin.email, "password": "TestPass!2026"},
+        content_type="application/json",
+    )
+    token = login.json()["access"]
+
+    response = client.post("/api/auth/logout/", HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    cleared = response.cookies["refresh_token"]
+    assert cleared["domain"] == ".momcare.example", "delete must match the domain it was set with"
+    assert cleared["path"] == "/api/auth"
+    assert cleared.value == ""

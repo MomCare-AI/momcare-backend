@@ -11,8 +11,28 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from momcare_platform.core.common.mail import send_application_received
 from momcare_platform.core.users.api.serializers import RegisterSerializer, UserMeSerializer
 
-REFRESH_COOKIE = "refresh_token"
+REFRESH_COOKIE = settings.REFRESH_COOKIE_NAME
 COOKIE_MAX_AGE = 7 * 24 * 60 * 60  # 7 days, matches JWT REFRESH_TOKEN_LIFETIME
+
+
+def _cookie_attrs() -> dict:
+    """Attributes that must match exactly between setting and deleting the cookie.
+
+    These come from settings rather than being written here, because production
+    needs to change them without a code edit. Once the API is served from a
+    subdomain of the site — api.example.com against example.com — the cookie
+    needs Domain=.example.com or the browser will not send it on the refresh
+    call, and the user is silently signed out an hour after logging in.
+
+    A mismatch between set and delete is the other half of the same trap: a
+    cookie set with a Domain is not removed by a delete without one, so logout
+    would appear to succeed and leave the session alive.
+    """
+    return {
+        "domain": settings.REFRESH_COOKIE_DOMAIN or None,
+        "path": settings.REFRESH_COOKIE_PATH,
+        "samesite": settings.REFRESH_COOKIE_SAMESITE,
+    }
 
 
 def _tenant_access_error(user) -> dict | None:
@@ -55,9 +75,10 @@ def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
         refresh_token,
         max_age=COOKIE_MAX_AGE,
         httponly=True,
-        secure=not settings.DEBUG,
-        samesite="Lax",
-        path="/api/auth",
+        # Secure is settable so it can be switched off for plain-HTTP local work,
+        # but it defaults to on: a refresh token sent over HTTP is readable in transit.
+        secure=settings.REFRESH_COOKIE_SECURE and not settings.DEBUG,
+        **_cookie_attrs(),
     )
 
 
@@ -184,7 +205,7 @@ class LogoutView(APIView):
                 pass  # Already invalid — still clear the cookie
 
         response = Response({"detail": "Logged out."}, status=status.HTTP_200_OK)
-        response.delete_cookie(REFRESH_COOKIE, path="/api/auth")
+        response.delete_cookie(REFRESH_COOKIE, **_cookie_attrs())
         return response
 
 
