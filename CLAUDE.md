@@ -99,53 +99,54 @@ and `core/common/gating.py`.
 
 ## Status of this codebase
 
-This is a freshly scaffolded **foundation only** — infrastructure and structure, deliberately
-stopped short of application/business logic until that's explicitly asked for. It is verified
-working end-to-end against a real PostgreSQL database: `uv sync`, `manage.py check`,
-`makemigrations`, `migrate`, and `createsuperuser` have all actually been run, not just
-reviewed. What exists:
+**Superseded, 24 Aug 2026.** This section previously described a freshly scaffolded
+foundation with stub services and views, and told you not to add business logic. That
+was accurate on 15 August and is now wrong in every particular — it was left in place
+long enough to contradict the rest of this file.
 
-- Full directory structure matching the design in `docs/design/`.
-- Working `config/settings/*.py`, `celery_app.py`, `urls.py` — Celery/Redis, JWT auth,
-  CORS/CSRF all wired and confirmed working (eager-mode Celery in local dev, verified).
-- Real, working implementations of every `core/common/*.py` infrastructure file (permissions,
-  scoping, gating, audit middleware, health check, pagination, exception handler, JSON logging).
-- Real model definitions for `User`, `Role`, `Organization`, `ModuleRegistry`, `AuditLog`,
-  `Location`, `Staff`, `Patient`, with migrations generated and applied.
-- `createsuperuser` bootstraps a `platform_admin` (no `organization`) — verified against a
-  real database.
-- CI (`ci.yml`), pre-commit config, and all quality-gate tooling (`ruff`, `mypy`,
-  `import-linter`) — all confirmed clean/passing.
+The platform is built and running. Seven capabilities are complete, tested and pushed:
 
-What does **not** exist yet (all deliberately deferred, not oversights):
+| # | Capability |
+|---|---|
+| 1 | Hospital registration with a review gate — pending / approved / rejected / suspended, evidence recorded |
+| 2 | Six roles, enforced by DRF permission classes |
+| 3 | Staff invitations — single-use links, revocation, 14-day expiry |
+| 4 | Patients and pregnancy — consent history, obstetric dating, risk factors |
+| 5 | Vitals and devices — ingestion, charts, simulator |
+| 6 | Risk assessment — rules engine, attention queue |
+| 7 | Alerts and escalation — three-tier ladder, email, append-only audit trail |
 
-- Any application/business logic — `services.py`, `signals.py`, and `tests/factories.py` are
-  stubs across every app. This includes things like staff auto-creation and patient
-  onboarding — do not add these until explicitly asked, even if a future task seems to need
-  them; ask first.
-- `api/serializers.py` / `api/views.py` for every app — currently stubs.
-- Postgres RLS policies (see Tenancy section above) — the application-level scoping mixin is
-  the only enforcement layer right now.
-- Any feature module under `modules/`.
-- The `.claude/skills/momcare-*` skill files — folders exist, content does not yet.
+**202 backend tests, 19 frontend.** Security-critical tests validated by fault
+injection: each protection was deliberately removed and the corresponding test
+confirmed to fail.
 
-## Working-copy notes (2026-08-15)
+`services.py` and `api/` are real implementations throughout, not stubs. Business
+logic exists and is expected to.
 
-- No `.env` exists in this checkout yet, so nothing has actually connected to Postgres from
-  here — the "verified against a real database" claim above describes an earlier session's
-  environment, not necessarily this checkout's current state. Follow the `Commands` setup
-  steps (`.env` + `migrate`) before trusting `manage.py check`/`runserver` to work.
-- `users/migrations/0001_initial.py` and `0002_seed_roles.py` were accidentally deleted and
-  then restored on 2026-08-14. The restored `users` migrations are split differently than
-  before: `0001_initial.py` (Role/User schema) → `0002_initial.py` (adds the `organization`
-  FK / `locations` M2M — mirrors how `organization`/`locations` already split their own
-  cross-app FKs to avoid a circular migration dependency) → `0003_seed_roles.py` (role-seed
-  data migration, rewritten from scratch, not a byte-exact restore of the original file,
-  though it seeds the same six roles).
-- This project folder is manually mirrored (not live-synced) between
-  `C:\Users\AHMED.PC\OneDrive\Desktop\FINAL YEAR PROJECT\Momcare_Backend` and
-  `E:\FINAL YEAR PROJECT\Momcare_Backend`. Confirm which copy you're actually editing —
-  changes to one do not automatically appear in the other.
+### One structural divergence from the original design
+
+The clinical work lives under **`core/`**, not `modules/`. `momcare_platform/modules/`
+is still empty and the program-registry machinery in `core/common/programs.py` is
+unused. That was a deliberate call: with one product and one team, a registry that
+mounts routes without naming them added indirection and bought nothing. The
+import-linter contract still holds — nothing imports `modules`.
+
+Do not "restore" the modules layout without a concrete reason.
+
+### What genuinely does not exist yet
+
+- **Postgres RLS policies.** Still the known gap described under Tenancy above. The
+  application-level scoping mixin is the only enforcement layer.
+- **The NGO emergency-response portal.**
+- **Any feature module under `modules/`.**
+- **`.claude/skills/momcare-*`** — folders exist, content does not.
+
+### Deployment
+
+Not yet live. Read `DEPLOY.md` before touching anything deployment-related — every
+environment variable, and which failures are silent. `../docs/deployment-plan.md`
+carries the audit findings and the current blocker.
+
 
 ## Conventions & gotchas
 - API ids are **UUID strings**; never assume integer ids.
@@ -232,7 +233,7 @@ is not editable; a correction is a new reading.
 ### Testing
 
 ```bash
-uv run pytest momcare_platform/core -q      # 186 tests, ~10s
+uv run pytest momcare_platform/core -q      # 202 tests, ~12s
 ```
 
 Mostly **API-level integration tests** — a real request through routing, middleware,
