@@ -2,7 +2,7 @@
 import logging
 
 from .base import *  # noqa: F403
-from .base import DATABASES, REDIS_URL, env
+from .base import DATABASES, env
 
 # GENERAL
 # ------------------------------------------------------------------------------
@@ -37,8 +37,18 @@ SESSION_COOKIE_SECURE = True
 SESSION_COOKIE_NAME = "__Secure-sessionid"
 CSRF_COOKIE_SECURE = True
 CSRF_COOKIE_NAME = "__Secure-csrftoken"
-# TODO: set this to 60 seconds first and then to 518400 once you prove the former works
-SECURE_HSTS_SECONDS = 60
+# One year. The template shipped 60 seconds with a note to raise it "once you
+# prove the former works" - that proof is in: both momcare.solutions and
+# api.momcare.solutions serve HTTPS with valid certificates and redirect plain
+# HTTP. A one-minute max-age protects nobody; the browser has forgotten before
+# the next visit, which is the attack HSTS exists to stop.
+#
+# Env-driven because this is a ratchet, not a switch. Every browser that sees
+# this header refuses plain HTTP to the domain and its subdomains for a year,
+# and lowering the number later does not release the ones already told. If a
+# subdomain ever needs to serve HTTP, it must be excluded before this is sent,
+# not after.
+SECURE_HSTS_SECONDS = env.int("DJANGO_SECURE_HSTS_SECONDS", default=31536000)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", default=True)
 SECURE_HSTS_PRELOAD = env.bool("DJANGO_SECURE_HSTS_PRELOAD", default=True)
 SECURE_CONTENT_TYPE_NOSNIFF = env.bool("DJANGO_SECURE_CONTENT_TYPE_NOSNIFF", default=True)
