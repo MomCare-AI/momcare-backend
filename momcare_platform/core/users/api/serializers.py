@@ -1,6 +1,9 @@
 from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
 from django.db import transaction
+from django.utils.encoding import DjangoUnicodeDecodeError
+from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
 
 from momcare_platform.core.organization.models import LICENSE_AUTHORITY_CHOICES, Organization
@@ -107,3 +110,78 @@ class UserMeSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    """Changing your own password, while signed in.
+
+    The current password is required even though the request is authenticated.
+    An access token proves the session was authenticated at some point, not that
+    the person holding the laptop right now is its owner — an unlocked screen is
+    enough to take an account over otherwise.
+    """
+
+    current_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate_current_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("That is not your current password.")
+        return value
+
+    def validate_new_password(self, value):
+        # Django's configured validators - length, commonness, similarity to the
+        # user's own details. Run against the user so the similarity check has
+        # something to compare with.
+        validate_password(value, user=self.context["request"].user)
+        return value
+
+    def validate(self, attrs):
+        if attrs["current_password"] == attrs["new_password"]:
+            raise serializers.ValidationError(
+                {"new_password": "The new password must be different from the current one."},
+            )
+        return attrs
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """Asking for a reset link.
+
+    Nothing here reveals whether the address is registered — see the view.
+    """
+
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """Setting a new password from a link.
+
+    ``uid`` and ``token`` come from the emailed URL. The token is Django's own
+    reset token: signed rather than stored, derived from the user's current
+    password hash and last login, so it stops working the moment it is used or
+    the password changes by any other route. That is single-use without a table
+    to keep, and without a token sitting in the database waiting to be stolen.
+    """
+
+    uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate(self, attrs):
+        try:
+            user_id = urlsafe_base64_decode(attrs["uid"]).decode()
+            user = User.objects.get(pk=user_id)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist, DjangoUnicodeDecodeError):
+            raise serializers.ValidationError(
+                {"detail": "This reset link is not valid. Request a new one."},
+            ) from None
+
+        if not default_token_generator.check_token(user, attrs["token"]):
+            raise serializers.ValidationError(
+                {"detail": "This reset link has expired or has already been used."},
+            )
+
+        validate_password(attrs["new_password"], user=user)
+        attrs["user"] = user
+        return attrs

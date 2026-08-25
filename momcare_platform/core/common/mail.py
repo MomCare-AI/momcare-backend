@@ -157,3 +157,29 @@ def send_alert_notification(alert, user, tier: int) -> bool:
         ),
         to=user.email,
     )
+
+
+def send_password_reset(user, reset_url: str) -> bool:
+    """The link that lets somebody back into their own account.
+
+    Sent to an address that may not belong to the person who asked — anyone can
+    type an email into a reset form — so it says what to do if the request was
+    not theirs, and names no detail about the account beyond the address it
+    arrived at.
+    """
+    return _send(
+        subject="Reset your MomCare password",
+        body=(
+            f"Hello {user.first_name or 'there'},\n\n"
+            "Someone asked to reset the password for the MomCare account using "
+            "this email address.\n\n"
+            "Open the link below to choose a new one:\n\n"
+            f"{reset_url}\n\n"
+            "The link works once and expires in one hour.\n\n"
+            "If this was not you, no action is needed — your password has not "
+            "changed and this link can be ignored. If you receive these "
+            f"repeatedly, contact {SUPPORT_EMAIL}.\n\n"
+            "— The MomCare team"
+        ),
+        to=user.email,
+    )

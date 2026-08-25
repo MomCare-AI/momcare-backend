@@ -2,13 +2,13 @@ from django.conf import settings
 from django.urls import re_path
 from rest_framework.routers import DefaultRouter, SimpleRouter
 
-from momcare_platform.core.common.programs import iter_programs
 from momcare_platform.core.alerts.api.views import (
     AlertAcknowledgeView,
     AlertDetailView,
     AlertListView,
     AlertResolveView,
 )
+from momcare_platform.core.common.programs import iter_programs
 from momcare_platform.core.monitoring.api.views import (
     AcknowledgeRiskView,
     AttentionQueueView,
@@ -34,7 +34,16 @@ from momcare_platform.core.staff.api.views import (
     StaffInviteRevokeView,
     StaffListView,
 )
-from momcare_platform.core.users.api.auth import LoginView, LogoutView, MeView, RefreshView, RegisterView
+from momcare_platform.core.users.api.auth import (
+    LoginView,
+    LogoutView,
+    MeView,
+    PasswordChangeView,
+    PasswordResetConfirmView,
+    PasswordResetRequestView,
+    RefreshView,
+    RegisterView,
+)
 
 router = DefaultRouter() if settings.DEBUG else SimpleRouter()
 # Make the trailing slash optional on every router-generated URL so the API
@@ -77,6 +86,14 @@ auth_urlpatterns = [
     re_path(r"^auth/refresh/?$", RefreshView.as_view(), name="auth-refresh"),
     re_path(r"^auth/logout/?$", LogoutView.as_view(), name="auth-logout"),
     re_path(r"^auth/me/?$", MeView.as_view(), name="auth-me"),
+    # Passwords. Sensitive enough to be throttled harder than the rest.
+    re_path(r"^auth/password/change/?$", PasswordChangeView.as_view(), name="password-change"),
+    re_path(r"^auth/password/reset/?$", PasswordResetRequestView.as_view(), name="password-reset"),
+    re_path(
+        r"^auth/password/reset/confirm/?$",
+        PasswordResetConfirmView.as_view(),
+        name="password-reset-confirm",
+    ),
 ]
 
 core_urlpatterns = [
@@ -147,6 +164,7 @@ core_urlpatterns = [
     ),
     # The queue a clinician works from.
     re_path(r"^attention/?$", AttentionQueueView.as_view(), name="attention-queue"),
+    # Aggregates for the portal overview.
     # Alerts — the push side of the same information.
     re_path(r"^alerts/?$", AlertListView.as_view(), name="alert-list"),
     re_path(

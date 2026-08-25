@@ -1,5 +1,8 @@
 from django.conf import settings
+from django.contrib.auth.tokens import default_token_generator
 from django.utils.decorators import method_decorator
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -8,8 +11,15 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from momcare_platform.core.common.mail import send_application_received
-from momcare_platform.core.users.api.serializers import RegisterSerializer, UserMeSerializer
+from momcare_platform.core.common.mail import send_application_received, send_password_reset
+from momcare_platform.core.users.api.serializers import (
+    PasswordChangeSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
+    RegisterSerializer,
+    UserMeSerializer,
+)
+from momcare_platform.core.users.models import User
 
 REFRESH_COOKIE = settings.REFRESH_COOKIE_NAME
 COOKIE_MAX_AGE = 7 * 24 * 60 * 60  # 7 days, matches JWT REFRESH_TOKEN_LIFETIME
@@ -217,3 +227,122 @@ class MeView(APIView):
 
     def get(self, request):
         return Response(UserMeSerializer(request.user).data)
+
+
+def _revoke_outstanding_refresh_tokens(user) -> None:
+    """Sign the account out everywhere.
+
+    A password is changed for two reasons: it was weak, or somebody else has it.
+    The second is the one that matters, and leaving existing refresh tokens
+    valid would mean the intruder keeps their session for up to a week while the
+    owner believes they have just locked the door.
+
+    Best-effort: the blacklist app must be installed for this to do anything,
+    and a failure here must not stop the password change itself, which is the
+    part the user asked for.
+    """
+    try:
+        from rest_framework_simplejwt.token_blacklist.models import (  # noqa: PLC0415
+            OutstandingToken,
+        )
+    except ImportError:  # pragma: no cover - the app is installed in this project
+        return
+
+    for outstanding in OutstandingToken.objects.filter(user=user):
+        try:
+            RefreshToken(outstanding.token).blacklist()
+        except TokenError:
+            # Already blacklisted, or expired. Either way there is nothing to revoke.
+            continue
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PasswordChangeView(APIView):
+    """Change your own password while signed in."""
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "auth_sensitive"
+
+    def post(self, request):
+        serializer = PasswordChangeSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        user.set_password(serializer.validated_data["new_password"])
+        user.save(update_fields=["password"])
+
+        _revoke_outstanding_refresh_tokens(user)
+
+        response = Response(
+            {"detail": "Your password has been changed. Please sign in again."},
+            status=status.HTTP_200_OK,
+        )
+        # The refresh cookie in this browser is now blacklisted, so clear it
+        # rather than leaving a credential behind that can only fail.
+        response.delete_cookie(REFRESH_COOKIE, **_cookie_attrs())
+        return response
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PasswordResetRequestView(APIView):
+    """Ask for a reset link by email.
+
+    Always answers the same way, whether or not the address belongs to an
+    account. Anything else turns this endpoint into a way to discover who works
+    at which hospital — and for a clinical system that list is worth having.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_scope = "auth_sensitive"
+
+    def post(self, request):
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+
+        user = User.objects.filter(email__iexact=email, is_active=True).first()
+        if user is not None:
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = default_token_generator.make_token(user)
+            send_password_reset(
+                user,
+                f"{settings.FRONTEND_URL.rstrip('/')}/reset-password/{uid}/{token}",
+            )
+
+        return Response(
+            {
+                "detail": (
+                    "If that address belongs to a MomCare account, a reset link is "
+                    "on its way. Check your spam folder if it does not arrive."
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PasswordResetConfirmView(APIView):
+    """Set a new password using the emailed link."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_scope = "auth_sensitive"
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = serializer.validated_data["user"]
+        user.set_password(serializer.validated_data["new_password"])
+        user.save(update_fields=["password"])
+
+        # Whoever forced the reset may already hold a session. Changing the
+        # password invalidates the token that produced this link, but not the
+        # refresh tokens issued before it.
+        _revoke_outstanding_refresh_tokens(user)
+
+        return Response(
+            {"detail": "Your password has been set. You can now sign in."},
+            status=status.HTTP_200_OK,
+        )

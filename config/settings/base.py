@@ -320,6 +320,12 @@ REFRESH_COOKIE_DOMAIN = env("DJANGO_REFRESH_COOKIE_DOMAIN", default=None)
 # -------------------------------------------------------------------------------
 FRONTEND_URL = env("DJANGO_FRONTEND_URL", default="http://localhost:3000")
 
+# How long a password-reset link stays valid. Django's default is three days,
+# which is a long time for a credential sitting in an inbox. One hour is enough
+# to walk to a computer and short enough that a forwarded or leaked email is
+# usually already useless.
+PASSWORD_RESET_TIMEOUT = 60 * 60
+
 # Printed in every transactional email as the address to contact for help, so
 # it has to be one somebody actually reads. Configurable because the right
 # answer differs between a laptop, a demo deployment and a real one.
