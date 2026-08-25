@@ -42,6 +42,27 @@ DEMO_STAFF = [
     ("nurse@demo.momcare.solutions", "Demo", "Nurse", "ROLE_NURSE"),
 ]
 
+
+def redirect_to_inbox(address: str, contact: str) -> str:
+    """Rewrite a demo address so its mail arrives in one real inbox.
+
+    ``doctor@demo.momcare.solutions`` with a contact of ``you@gmail.com``
+    becomes ``you+doctor@gmail.com``. Gmail and most providers ignore everything
+    from the ``+`` to the ``@`` when delivering, so three staff with three
+    distinct sign-in identities all reach the same person.
+
+    This exists so invitations, alerts and password resets can be *read* during
+    a walkthrough rather than assumed to have been sent. Nothing else about the
+    accounts changes, and without ``--contact-email`` the addresses are the
+    fictional ones and no real mailbox is involved.
+    """
+    tag = address.split("@", 1)[0]
+    local, _, domain = contact.partition("@")
+    # A contact that is already tagged keeps its own tag rather than gaining a
+    # second one, which most providers would reject.
+    local = local.split("+", 1)[0]
+    return f"{local}+{tag}@{domain}"
+
 # Obviously fictional. The third is deliberately left without a clinician so the
 # "no clinician assigned" warning has something to show.
 DEMO_PATIENTS = [
@@ -55,6 +76,16 @@ class Command(BaseCommand):
     help = "Create or refresh the fictional demonstration hospital."
 
     def add_arguments(self, parser):
+        parser.add_argument(
+            "--contact-email",
+            default="",
+            help=(
+                "Deliver every demo account's mail to this real address, using "
+                "plus-addressing: --contact-email you@gmail.com makes the doctor "
+                "you+doctor@gmail.com. Use it to read invitations and alerts "
+                "during a walkthrough instead of assuming they were sent."
+            ),
+        )
         parser.add_argument(
             "--hours",
             type=int,
@@ -70,8 +101,12 @@ class Command(BaseCommand):
                 "invent a password, because printing one would put it in the deploy log.",
             )
 
+        contact = options["contact_email"].strip()
+        if contact and "@" not in contact:
+            raise CommandError(f"--contact-email is not an address: {contact!r}")
+
         org = self._organization()
-        staff = self._staff(org, password)
+        staff = self._staff(org, password, contact)
         patients = self._patients(org, staff)
         self._refresh_clinical_data(patients, hours=options["hours"])
         self._report(org, staff, patients)
@@ -116,14 +151,21 @@ class Command(BaseCommand):
 
     # -- People ---------------------------------------------------------------
 
-    def _staff(self, org, password: str) -> dict:
-        """Create the three demo accounts, or return the existing ones."""
+    def _staff(self, org, password: str, contact: str = "") -> dict:
+        """Create the three demo accounts, or return the existing ones.
+
+        ``contact`` redirects their mail to one real inbox - see
+        ``redirect_to_inbox``. It changes the sign-in address, so passing it
+        creates a second set of accounts rather than editing the first.
+        """
         from momcare_platform.core.staff.models import Staff  # noqa: PLC0415
         from momcare_platform.core.staff.services import _next_employee_id  # noqa: PLC0415
         from momcare_platform.core.users.models import Role, User  # noqa: PLC0415
 
         people = {}
         for email, first, last, role_setting in DEMO_STAFF:
+            if contact:
+                email = redirect_to_inbox(email, contact)
             role_code = getattr(settings, role_setting)
             user = User.objects.filter(email=email).first()
 

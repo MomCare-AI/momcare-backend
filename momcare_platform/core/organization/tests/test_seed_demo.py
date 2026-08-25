@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from momcare_platform.core.alerts.models import Alert
 from momcare_platform.core.monitoring.models import VitalReading
+from momcare_platform.core.organization.management.commands import seed_demo
 from momcare_platform.core.organization.management.commands.seed_demo import DEMO_ORG_NAME
 from momcare_platform.core.organization.models import Organization
 from momcare_platform.core.patients.models import Patient
@@ -182,3 +183,56 @@ def test_it_uses_the_configured_role_codes(monkeypatch):
 
     doctor = User.objects.get(email="doctor@demo.momcare.solutions")
     assert doctor.role.code == settings.ROLE_PROVIDER
+
+
+# -- Delivering demo mail to a real inbox -------------------------------------
+
+
+class TestContactEmail:
+    """``--contact-email`` exists so a walkthrough can *read* the invitations,
+    alerts and reset links the system sends, rather than assume they went."""
+
+    @pytest.mark.parametrize(
+        ("address", "contact", "expected"),
+        [
+            ("doctor@demo.momcare.solutions", "you@gmail.com", "you+doctor@gmail.com"),
+            ("admin@demo.momcare.solutions", "you@gmail.com", "you+admin@gmail.com"),
+            ("nurse@demo.momcare.solutions", "a.b@outlook.com", "a.b+nurse@outlook.com"),
+        ],
+    )
+    def test_the_tag_names_the_role(self, address, contact, expected):
+        assert seed_demo.redirect_to_inbox(address, contact) == expected
+
+    def test_an_already_tagged_contact_does_not_gain_a_second_tag(self):
+        """Most providers reject two plus signs, and the mail would bounce."""
+        assert (
+            seed_demo.redirect_to_inbox("doctor@demo.momcare.solutions", "you+work@gmail.com")
+            == "you+doctor@gmail.com"
+        )
+
+    @pytest.mark.django_db
+    def test_staff_are_created_at_the_contact_address(self, monkeypatch):
+        monkeypatch.setenv("DJANGO_DEMO_PASSWORD", "Seeded!Pass2026")
+        call_command("seed_demo", "--hours", "1", "--contact-email", "you@gmail.com")
+
+        emails = set(User.objects.values_list("email", flat=True))
+        assert {
+            "you+admin@gmail.com",
+            "you+doctor@gmail.com",
+            "you+nurse@gmail.com",
+        } <= emails
+
+    @pytest.mark.django_db
+    def test_without_the_flag_no_real_mailbox_is_involved(self, monkeypatch):
+        """The default must never quietly point demo accounts at somebody's inbox."""
+        monkeypatch.setenv("DJANGO_DEMO_PASSWORD", "Seeded!Pass2026")
+        call_command("seed_demo", "--hours", "1")
+
+        for email in User.objects.values_list("email", flat=True):
+            assert email.endswith("@demo.momcare.solutions"), email
+
+    @pytest.mark.django_db
+    def test_a_value_that_is_not_an_address_is_refused(self, monkeypatch):
+        monkeypatch.setenv("DJANGO_DEMO_PASSWORD", "Seeded!Pass2026")
+        with pytest.raises(CommandError, match="not an address"):
+            call_command("seed_demo", "--hours", "1", "--contact-email", "zakas2379")
