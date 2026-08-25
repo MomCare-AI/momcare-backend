@@ -2,6 +2,7 @@ from django.conf import settings
 from django.db import models
 from timezone_field import TimeZoneField
 
+from momcare_platform.core.common import regions
 from momcare_platform.core.common.models import AddressMixin, Deactivatable, TimeStampedModel, UUIDPrimaryKeyModel
 
 DATE_FORMAT_CHOICES = [
@@ -145,6 +146,21 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
             send_application_rejected(self.owner, self, note=self.review_note)
 
     # ── Computed counts (no denormalization — always fresh) ───────────────────
+    @property
+    def region(self) -> str | None:
+        """Which population the risk model should judge this hospital's patients as.
+
+        Derived from ``country``, never stored — onboarding asks for a country
+        and nothing else, so there is no second answer to contradict the first.
+        Returns None for a country the model has no training data for, and the
+        caller falls back to the clinical rules rather than guessing.
+        """
+        return regions.region_for_country(self.country)
+
+    @property
+    def region_display(self) -> str:
+        return regions.region_label(self.region)
+
     @property
     def location_count(self) -> int:
         return self.locations.filter(is_active=True).count()

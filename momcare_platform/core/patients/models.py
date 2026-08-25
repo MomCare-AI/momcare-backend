@@ -231,6 +231,16 @@ class Pregnancy(UUIDPrimaryKeyModel, TimeStampedModel):
         super().save(*args, **kwargs)
 
     @property
+    def region(self) -> str | None:
+        """The model region for this pregnancy, via the hospital that enrolled her.
+
+        Reached through the patient's location, the same path every other
+        tenant-owned lookup takes. None means the population is outside what the
+        model was trained on.
+        """
+        return self.patient.organization.region
+
+    @property
     def gestational_age(self):
         """Live from the EDD — never stored, so it can never go stale."""
         return calculate_gestational_age(self.edd)

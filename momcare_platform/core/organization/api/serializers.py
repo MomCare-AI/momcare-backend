@@ -39,6 +39,11 @@ class OrganizationSummarySerializer(serializers.ModelSerializer):
             "state",
             "postal_code",
             "country",
+            # Derived from country, never stored — the model region this
+            # hospital's patients belong to, or null when the model has no
+            # training data for that population.
+            "region",
+            "region_display",
             "owner_name",
             "staff_count",
             "patient_count",

@@ -169,17 +169,41 @@ Read `../docs/PLAN.md` first — current status, decisions not to revisit, known
 | `monitoring` | `Device` `VitalReading` `RiskAssessment` | Readings attach to a **pregnancy**, not a patient — a heart rate of 110 means different things at 12 and 38 weeks |
 | `alerts` | `Alert` `AlertEvent` | The push side. `AlertEvent` is append-only: escalation not written down is escalation that never happened |
 
-### Two pure-function policy modules
+### Three pure-function policy modules
 
-Both are framework-free and database-free, so they test in milliseconds and the
-clinical logic is readable in one place.
+All framework-free and database-free, so they test in milliseconds and the logic
+is readable in one place.
 
 - `core/monitoring/risk_rules.py` — the obstetric thresholds. `ENGINE_VERSION` is
   recorded on every assessment.
 - `core/alerts/escalation.py` — the tier ladder and its deadlines.
+- `core/common/regions.py` — country → model region.
 
-Neither has been reviewed by a practising obstetrician. That is stated in the docs
-as a requirement before real use — do not quietly imply otherwise.
+The first two have not been reviewed by a practising obstetrician. That is stated
+in the docs as a requirement before real use — do not quietly imply otherwise.
+
+### Model region is derived, never asked for
+
+`core/common/regions.py::region_for_country()`. The risk model is trained per
+population (`asia`, `africa`, `americas`), and the region comes from the country
+onboarding already requires — reachable as `Organization.region` and
+`Pregnancy.region`.
+
+**Do not add a region field to any form or model.** A second answer can
+contradict the first — a hospital in Lahore filed under Africa — and the model
+would be handed a population it was not trained on. Same rule as gestational age
+below: one function, derived on read, corrections flow through automatically.
+
+A country the model has no data for returns **`None`**, not a default. The 37
+such countries the onboarding form offers are listed explicitly in
+`_OUT_OF_SCOPE` so that "we decided this is unsupported" is distinguishable from
+"someone forgot"; adding a country to the form's dropdown fails the test suite
+until its region is decided.
+
+The mapping is duplicated in `frontend/src/features/hospital-onboarding/regions.ts`
+so the form can show the region as a country is picked. That copy is
+display-only and never submitted, and a test parses it and fails if one country
+disagrees. **If you edit one, edit both.**
 
 ### Gestational age has exactly one home
 
