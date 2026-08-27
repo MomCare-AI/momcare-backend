@@ -19,6 +19,7 @@ from momcare_platform.core.monitoring.api.views import (
     RiskAssessmentView,
     SimulateReadingsView,
 )
+from momcare_platform.core.organization.api.dashboard import DashboardSummaryView
 from momcare_platform.core.organization.api.views import MyOrganizationView
 from momcare_platform.core.patients.api.views import (
     PatientConsentView,
@@ -165,6 +166,7 @@ core_urlpatterns = [
     # The queue a clinician works from.
     re_path(r"^attention/?$", AttentionQueueView.as_view(), name="attention-queue"),
     # Aggregates for the portal overview.
+    re_path(r"^dashboard/summary/?$", DashboardSummaryView.as_view(), name="dashboard-summary"),
     # Alerts — the push side of the same information.
     re_path(r"^alerts/?$", AlertListView.as_view(), name="alert-list"),
     re_path(
