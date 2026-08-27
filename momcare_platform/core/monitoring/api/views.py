@@ -13,7 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from momcare_platform.core.common.pagination import DefaultPagination
-from momcare_platform.core.common.permissions import IsHospitalStaff
+from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
 from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
 from momcare_platform.core.monitoring.api.serializers import (
     AttentionPatientSerializer,
@@ -208,7 +208,14 @@ class AcknowledgeRiskView(MonitoringView):
     Acknowledgement is what turns a flag into accountability: it names who
     looked and when, so an unreviewed assessment stays visibly unreviewed
     rather than fading from the queue on its own.
+
+    Clinicians only, which this docstring always claimed and the permissions did
+    not enforce. A hospital administrator is not required to have any clinical
+    training, and an assessment marked reviewed by somebody who could not review
+    it is worse than one left unreviewed — the queue would look attended to.
     """
+
+    permission_classes = [IsAuthenticated, IsClinician]
 
     def post(self, request, pregnancy_id, assessment_id):
         _, error = self.hospital_or_error(request)

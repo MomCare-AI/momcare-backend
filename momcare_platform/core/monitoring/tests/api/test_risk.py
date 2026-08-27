@@ -4,6 +4,7 @@ import json
 from datetime import timedelta
 
 import pytest
+from django.conf import settings
 from django.utils import timezone
 
 from momcare_platform.core.monitoring.models import RiskAssessment, VitalReading
@@ -175,8 +176,17 @@ def test_the_queue_carries_the_reasons_and_the_responsible_clinician(
     assert row["has_responsible_clinician"] is False
 
 
-def test_acknowledging_records_who_looked(client, make_hospital, pregnancy_for, auth):
+def test_acknowledging_records_who_looked(
+    client, make_hospital, make_staff, pregnancy_for, auth,
+):
+    """A clinician, because acknowledging is a claim to have reviewed the case.
+
+    A hospital administrator is not required to have clinical training, and an
+    assessment marked reviewed by somebody who could not review it is worse than
+    one left unreviewed - the queue would look attended to.
+    """
     hospital = make_hospital("Ack Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@ackrisk.test")
     pregnancy = pregnancy_for(hospital)
     add_bp(pregnancy, 169, 113)
     assessment = reassess_risk(pregnancy)
@@ -184,12 +194,12 @@ def test_acknowledging_records_who_looked(client, make_hospital, pregnancy_for, 
 
     response = client.post(
         f"/api/pregnancies/{pregnancy.id}/risk/{assessment.id}/acknowledge/",
-        **auth(hospital.admin.email),
+        **auth(doctor.email),
     )
 
     assert response.status_code == 200
     assessment.refresh_from_db()
-    assert assessment.acknowledged_by == hospital.admin
+    assert assessment.acknowledged_by == doctor
     assert assessment.needs_acknowledgement is False
 
 

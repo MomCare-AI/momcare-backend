@@ -19,7 +19,7 @@ from momcare_platform.core.alerts.api.serializers import (
 from momcare_platform.core.alerts.models import Alert
 from momcare_platform.core.alerts.services import acknowledge_alert, resolve_alert
 from momcare_platform.core.common.pagination import DefaultPagination
-from momcare_platform.core.common.permissions import IsHospitalStaff
+from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
 from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
 
 NO_HOSPITAL = {"detail": "This account is not attached to a hospital."}
@@ -103,7 +103,16 @@ class AlertDetailView(AlertScopedView):
 
 
 class AlertAcknowledgeView(AlertScopedView):
-    """Record that a named person has seen this. Stops the escalation clock."""
+    """Record that a named person has seen this. Stops the escalation clock.
+
+    Clinicians only. Stopping the clock is a clinical act: the ladder climbs
+    *towards* the hospital administrator precisely because nobody nearer has
+    answered, so letting the administrator acknowledge would let the ladder be
+    ended by the person it was escalating to, with no clinical judgement made
+    and the record saying otherwise.
+    """
+
+    permission_classes = [IsAuthenticated, IsClinician]
 
     def post(self, request, alert_id):
         _, error = self.hospital_or_error(request)
@@ -124,7 +133,16 @@ class AlertAcknowledgeView(AlertScopedView):
 
 class AlertResolveView(AlertScopedView):
     """Close the episode. Separate from acknowledging on purpose: seeing an
-    alert and finishing with the patient are different claims."""
+    alert and finishing with the patient are different claims.
+
+    Clinicians only, for the same reason and one more. "Recovered" and "handled"
+    are statements about a patient, not about paperwork. And an alert nobody
+    ever answered is evidence about how this hospital is covered — an
+    administrator who could close it would be tidying away the one signal that
+    should prompt them to fix the rota.
+    """
+
+    permission_classes = [IsAuthenticated, IsClinician]
 
     def post(self, request, alert_id):
         _, error = self.hospital_or_error(request)

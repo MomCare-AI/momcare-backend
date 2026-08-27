@@ -63,6 +63,33 @@ class IsPatient(HasRole):
     allowed_roles = frozenset({settings.ROLE_PATIENT})
 
 
+class IsClinician(HasRole):
+    """The roles that may make a clinical judgement about a patient.
+
+    Deliberately excludes ``hospital_admin``. A hospital administrator runs the
+    hospital's presence on the platform — staff, licence, oversight — and is not
+    required to have any clinical training.
+
+    This matters most for alerts. Acknowledging one stops the escalation ladder,
+    and the ladder exists precisely so that an unanswered alert climbs *towards*
+    the administrator. If the administrator can acknowledge, the ladder can be
+    stopped by the person it was climbing to, with nobody having looked at the
+    patient — and the record would say it was answered.
+
+    Resolving is the same argument one step later: "recovered" and "handled" are
+    clinical outcomes, and an alert nobody answered is evidence worth keeping
+    visible rather than something to tidy away.
+    """
+
+    allowed_roles = frozenset(
+        {
+            settings.ROLE_PROVIDER,
+            settings.ROLE_CARE_MANAGER,
+            settings.ROLE_NURSE,
+        },
+    )
+
+
 class IsHospitalStaff(HasRole):
     """Any hospital-side staff role (admin/provider/care_manager/nurse) — excludes patients."""
 

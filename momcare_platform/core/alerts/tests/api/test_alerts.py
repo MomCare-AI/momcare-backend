@@ -358,23 +358,25 @@ def test_resolved_alerts_are_asked_for_explicitly(client, make_hospital, pregnan
 
 
 def test_acknowledging_through_the_api_records_who_looked(
-    client, make_hospital, pregnancy_for, auth,
+    client, make_hospital, make_staff, pregnancy_for, auth,
 ):
     hospital = make_hospital("Ack Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@ack.test")
     pregnancy = pregnancy_for(hospital)
     go_critical(pregnancy)
     alert = Alert.objects.get(pregnancy=pregnancy)
 
-    response = client.post(f"{ALERTS}{alert.id}/acknowledge/", **auth(hospital.admin.email))
+    response = client.post(f"{ALERTS}{alert.id}/acknowledge/", **auth(doctor.email))
 
     assert response.status_code == 200
     alert.refresh_from_db()
     assert alert.status == Alert.STATUS_ACKNOWLEDGED
-    assert alert.acknowledged_by == hospital.admin
+    assert alert.acknowledged_by == doctor
 
 
-def test_resolving_closes_the_episode(client, make_hospital, pregnancy_for, auth):
+def test_resolving_closes_the_episode(client, make_hospital, make_staff, pregnancy_for, auth):
     hospital = make_hospital("Close Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@close.test")
     pregnancy = pregnancy_for(hospital)
     go_critical(pregnancy)
     alert = Alert.objects.get(pregnancy=pregnancy)
@@ -383,25 +385,26 @@ def test_resolving_closes_the_episode(client, make_hospital, pregnancy_for, auth
         f"{ALERTS}{alert.id}/resolve/",
         data=json.dumps({"resolution": "handled"}),
         content_type="application/json",
-        **auth(hospital.admin.email),
+        **auth(doctor.email),
     )
 
     assert response.status_code == 200
     alert.refresh_from_db()
     assert alert.status == Alert.STATUS_RESOLVED
-    assert alert.resolved_by == hospital.admin
+    assert alert.resolved_by == doctor
 
 
 def test_an_already_closed_alert_cannot_be_closed_again(
-    client, make_hospital, pregnancy_for, auth,
+    client, make_hospital, make_staff, pregnancy_for, auth,
 ):
     hospital = make_hospital("Twice Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@twice.test")
     pregnancy = pregnancy_for(hospital)
     go_critical(pregnancy)
     recover(pregnancy)
     alert = Alert.objects.get(pregnancy=pregnancy)
 
-    response = client.post(f"{ALERTS}{alert.id}/resolve/", **auth(hospital.admin.email))
+    response = client.post(f"{ALERTS}{alert.id}/resolve/", **auth(doctor.email))
 
     assert response.status_code == 400
 
@@ -435,15 +438,21 @@ def test_alerts_never_cross_hospitals(client, make_hospital, pregnancy_for, auth
 
 
 def test_another_hospitals_alert_cannot_be_acknowledged(
-    client, make_hospital, pregnancy_for, auth,
+    client, make_hospital, make_staff, pregnancy_for, auth,
 ):
-    """404, never 403 — a 403 would confirm the alert exists somewhere else."""
+    """404, never 403 — a 403 would confirm the alert exists somewhere else.
+
+    Asked as a clinician, because that is now the only role the endpoint
+    admits: an administrator is refused for lacking the role, which answers a
+    different question and would not exercise the tenant boundary at all.
+    """
     alpha = make_hospital("Alpha Ack")
     beta = make_hospital("Beta Ack")
+    outsider = make_staff(alpha.org, settings.ROLE_PROVIDER, email="doctor@alpha.test")
     go_critical(pregnancy_for(beta))
     alert = Alert.objects.first()
 
-    response = client.post(f"{ALERTS}{alert.id}/acknowledge/", **auth(alpha.admin.email))
+    response = client.post(f"{ALERTS}{alert.id}/acknowledge/", **auth(outsider.email))
 
     assert response.status_code == 404
 
