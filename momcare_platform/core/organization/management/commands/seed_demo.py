@@ -31,6 +31,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from momcare_platform.core.common.rls import bypass_rls
+
 # Named so nobody can mistake this for a real hospital. The readings carry a
 # "simulated" source and show a tag in the interface; the people would not
 # otherwise be marked as fictional at all.
@@ -105,11 +107,16 @@ class Command(BaseCommand):
         if contact and "@" not in contact:
             raise CommandError(f"--contact-email is not an address: {contact!r}")
 
-        org = self._organization()
-        staff = self._staff(org, password, contact)
-        patients = self._patients(org, staff)
-        self._refresh_clinical_data(patients, hours=options["hours"])
-        self._report(org, staff, patients)
+        # _organization() must see every hospital to refuse running beside a
+        # real one; the rest creates and reads data with no request and no
+        # per-hospital scope to set. Explicit bypass, not implicit - see
+        # core/common/rls.py.
+        with bypass_rls():
+            org = self._organization()
+            staff = self._staff(org, password, contact)
+            patients = self._patients(org, staff)
+            self._refresh_clinical_data(patients, hours=options["hours"])
+            self._report(org, staff, patients)
 
     # -- Hospital -------------------------------------------------------------
 

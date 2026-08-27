@@ -17,7 +17,9 @@ across every hospital. Every other role belongs to exactly one Organization
 from __future__ import annotations
 
 from django.conf import settings
+from django.db import transaction
 
+from momcare_platform.core.common import rls
 from momcare_platform.core.common.permissions import user_role_code
 
 
@@ -49,13 +51,32 @@ class OrganizationScopedQuerysetMixin:
 
     organization_lookup = "organization"
 
+    def dispatch(self, request, *args, **kwargs):
+        """Every request handled by a scoped view runs in one transaction.
+
+        The database-level scoping in ``rls.py`` uses ``SET LOCAL``, which only
+        applies inside an open transaction and is discarded when it ends. This
+        is what keeps a scoped view's queries all seeing the same, correct
+        organization for the whole request, and stops the setting leaking into
+        whatever request reuses this connection next.
+        """
+        with transaction.atomic():
+            return super().dispatch(request, *args, **kwargs)
+
     def scope_to_organization(self, queryset):
         user = self.request.user
         if sees_all_organizations(user):
+            # Not scoped at the database level either. In practice this path
+            # is not expected to be reached from an ordinary hospital-scoped
+            # view - a platform admin has no organization and works through
+            # Django admin instead (see MyOrganizationView) - so RLS denying
+            # everything here, once a non-bypassing role is in front of it, is
+            # a safe failure rather than a real regression.
             return queryset
         org_id = user_organization_id(user)
         if org_id is None:
             return queryset.none()
+        rls.set_current_organization(org_id)
         return queryset.filter(**{self.organization_lookup: org_id})
 
 

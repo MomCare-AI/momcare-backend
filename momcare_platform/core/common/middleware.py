@@ -221,3 +221,42 @@ class RequestLoggingMiddleware:
         if view_class is not None:
             return f"{view_class.__module__}.{view_class.__qualname__}"
         return f"{match.func.__module__}.{match.func.__qualname__}"
+
+
+class AdminRLSBypassMiddleware:
+    """Lets a signed-in Django admin user see across every hospital.
+
+    Row-level security is scoped by ``OrganizationScopedQuerysetMixin`` at the
+    DRF view layer (``core/common/scoping.py``), which the admin site does not
+    use — its querysets go straight through the ORM. Without this, a platform
+    administrator working in ``/admin/`` would see no rows at all once RLS is
+    enforced by a non-bypassing database role, because no per-request
+    organization was ever set for that path and nothing else grants access.
+
+    Scoped tightly on purpose: only requests under ``settings.ADMIN_URL``, from
+    a user who is already authenticated. It never touches ``/api/``, so a
+    hospital's own requests can never pick up bypass by sharing this
+    middleware.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from django.conf import settings as dj_settings  # noqa: PLC0415
+
+        admin_url = dj_settings.ADMIN_URL
+        admin_prefix = admin_url if admin_url.startswith("/") else f"/{admin_url}"
+
+        if (
+            request.path.startswith(admin_prefix)
+            and getattr(request, "user", None)
+            and request.user.is_authenticated
+        ):
+            from momcare_platform.core.common.rls import bypass_rls  # noqa: PLC0415
+
+            # bypass_rls() opens its own transaction, so nothing else here does.
+            with bypass_rls():
+                return self.get_response(request)
+
+        return self.get_response(request)

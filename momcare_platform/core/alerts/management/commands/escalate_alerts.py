@@ -29,6 +29,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from momcare_platform.core.alerts.services import escalate_due_alerts
+from momcare_platform.core.common.rls import bypass_rls
 
 
 class Command(BaseCommand):
@@ -44,16 +45,20 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         now = timezone.now()
 
-        if options["dry_run"]:
-            self._report(now)
-            return
+        # This command sweeps every hospital's open alerts in one pass, by
+        # design - escalation would not work otherwise. Explicit bypass is the
+        # one sanctioned way past row-level security; see core/common/rls.py.
+        with bypass_rls():
+            if options["dry_run"]:
+                self._report(now)
+                return
 
-        moved = escalate_due_alerts(now=now)
+            moved = escalate_due_alerts(now=now)
 
-        if moved:
-            self.stdout.write(self.style.WARNING(f"Escalated {moved} alert(s)."))
-        else:
-            self.stdout.write("No alert was due to escalate.")
+            if moved:
+                self.stdout.write(self.style.WARNING(f"Escalated {moved} alert(s)."))
+            else:
+                self.stdout.write("No alert was due to escalate.")
 
     def _report(self, now):
         """Show the ladder without touching it - useful when tuning the policy."""

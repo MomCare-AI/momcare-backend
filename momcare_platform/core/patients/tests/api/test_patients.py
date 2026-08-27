@@ -696,13 +696,18 @@ def test_listing_more_patients_does_not_cost_more_queries(
     """Guards the prefetch. Without it each row queries for its pregnancy and
     again for its latest assessment, so a page of twenty costs forty round
     trips — the kind of regression that only shows up once a hospital has real
-    numbers on the ward."""
+    numbers on the ward.
+
+    The ceiling includes one query for row-level security's SET LOCAL, added
+    once per request by core/common/scoping.py - a fixed cost, not one that
+    grows with the page.
+    """
     hospital = make_hospital("Volume Hospital")
     headers = auth(hospital.admin.email)
     for index in range(6):
         post_patient(client, headers, first_name=f"Patient{index}", cnic=f"61101-000000{index}-1")
 
-    with django_assert_max_num_queries(12):
+    with django_assert_max_num_queries(13):
         response = client.get(PATIENTS, **headers)
 
     assert response.status_code == 200
