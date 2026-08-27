@@ -14,7 +14,6 @@ The `Procfile` declares two processes.
 ```
 python manage.py migrate --noinput
 python manage.py createcachetable
-python manage.py collectstatic --noinput
 ```
 
 `createcachetable` matters more than it looks. Production caches to the
@@ -25,8 +24,19 @@ deploy is fine.
 **`web`** — the server itself:
 
 ```
+python manage.py collectstatic --noinput
 gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 60
 ```
+
+`collectstatic` runs here, not in `release`, on purpose. Static files use
+`whitenoise.storage.CompressedManifestStaticFilesStorage`, which needs a
+manifest file on local disk at request time — and on Railway (like Heroku)
+the `release` step and the `web` process do not share a filesystem. Anything
+`release` writes to disk is gone by the time `web` starts; only its database
+changes (migrations, the cache table) persist. Putting `collectstatic` in
+`web`'s own start line guarantees the manifest exists in the exact container
+that serves it. Running it before `gunicorn` starts on every boot costs a few
+seconds and is idempotent, so this is cheap insurance, not a workaround.
 
 Two workers is deliberate. The free and hobby tiers give roughly 0.5–1 GB, and
 each Django worker holds its own copy of the application; more workers on a
