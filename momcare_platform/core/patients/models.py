@@ -382,3 +382,36 @@ class Consent(UUIDPrimaryKeyModel, TimeStampedModel):
     @property
     def is_current_grant(self) -> bool:
         return self.status == self.STATUS_GRANTED
+
+
+class ClinicalNote(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A clinician's written observation on a pregnancy, append-only.
+
+    Replaces ``Pregnancy.notes`` as the real record of "what did a doctor
+    think" — that field is a single overwritable TextField with no author and
+    no date, which contradicts the project's own rule that an observation is
+    never edited and a correction is a new record, same as ``Consent`` and
+    ``AlertEvent``.
+    """
+
+    pregnancy = models.ForeignKey(
+        "patients.Pregnancy",
+        on_delete=models.PROTECT,
+        related_name="clinical_notes",
+    )
+    # PROTECT, not SET_NULL: a note with no author is a note nobody can be
+    # asked about. Staff is soft-deleted, so this never blocks anything in
+    # practice — see the identical reasoning on Pregnancy.assigned_staff.
+    author = models.ForeignKey(
+        "staff.Staff",
+        on_delete=models.PROTECT,
+        related_name="clinical_notes",
+    )
+    body = models.TextField()
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["pregnancy", "-created_at"])]
+
+    def __str__(self) -> str:
+        return f"Note on {self.pregnancy_id} by {self.author}"

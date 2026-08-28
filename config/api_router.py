@@ -27,6 +27,7 @@ from momcare_platform.core.patients.api.views import (
     PatientListCreateView,
     PregnancyDetailView,
     PregnancyListCreateView,
+    PregnancyNotesView,
 )
 from momcare_platform.core.staff.api.views import (
     InviteAcceptView,
@@ -128,6 +129,11 @@ core_urlpatterns = [
         r"^patients/(?P<patient_id>[0-9a-f-]{36})/pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/?$",
         PregnancyDetailView.as_view(),
         name="pregnancy-detail",
+    ),
+    re_path(
+        r"^patients/(?P<patient_id>[0-9a-f-]{36})/pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/notes/?$",
+        PregnancyNotesView.as_view(),
+        name="pregnancy-notes",
     ),
     # Monitoring — readings hang off a pregnancy, never a patient, because a
     # reading only means something in the context of gestational age.

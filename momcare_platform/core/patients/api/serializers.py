@@ -1,6 +1,12 @@
 from rest_framework import serializers
 
-from momcare_platform.core.patients.models import Consent, Patient, Pregnancy, PregnancyRiskFactors
+from momcare_platform.core.patients.models import (
+    ClinicalNote,
+    Consent,
+    Patient,
+    Pregnancy,
+    PregnancyRiskFactors,
+)
 from momcare_platform.core.staff.models import Staff
 
 
@@ -166,6 +172,25 @@ class ConsentSerializer(serializers.ModelSerializer):
             "note",
         ]
         read_only_fields = ["id", "recorded_at", "recorded_by_name", "status_display", "method_display"]
+
+
+class ClinicalNoteSerializer(serializers.ModelSerializer):
+    author_name = serializers.CharField(source="author.user.get_full_name", read_only=True, default="")
+    author_role = serializers.CharField(source="author.user.role_code", read_only=True, default="")
+
+    class Meta:
+        model = ClinicalNote
+        fields = ["id", "body", "author_name", "author_role", "created_at"]
+        read_only_fields = ["id", "author_name", "author_role", "created_at"]
+
+
+class ClinicalNoteCreateSerializer(serializers.Serializer):
+    body = serializers.CharField(trim_whitespace=True)
+
+    def validate_body(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("A note cannot be empty.")
+        return value
 
 
 class PatientListSerializer(serializers.ModelSerializer):

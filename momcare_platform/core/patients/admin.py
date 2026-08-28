@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from momcare_platform.core.patients.models import Consent, Patient, Pregnancy, PregnancyRiskFactors
+from momcare_platform.core.patients.models import (
+    ClinicalNote,
+    Consent,
+    Patient,
+    Pregnancy,
+    PregnancyRiskFactors,
+)
 
 
 class PregnancyInline(admin.TabularInline):
@@ -84,4 +90,19 @@ class ConsentAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         # Append-only: what was agreed, and when, must survive intact.
+        return False
+
+
+@admin.register(ClinicalNote)
+class ClinicalNoteAdmin(admin.ModelAdmin):
+    list_display = ["pregnancy", "author", "created_at"]
+    search_fields = ["pregnancy__patient__mrn", "pregnancy__patient__last_name", "body"]
+    readonly_fields = ["pregnancy", "author", "body", "created_at", "updated_at"]
+
+    def has_add_permission(self, request):
+        # Notes are written through the API, where the acting clinician is captured.
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        # Append-only: a correction is a new note, never an edit to an old one.
         return False

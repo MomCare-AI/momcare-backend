@@ -15,9 +15,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from momcare_platform.core.common.pagination import DefaultPagination
-from momcare_platform.core.common.permissions import IsHospitalStaff
+from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
 from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
 from momcare_platform.core.patients.api.serializers import (
+    ClinicalNoteCreateSerializer,
+    ClinicalNoteSerializer,
     ConsentInputSerializer,
     ConsentSerializer,
     PatientCreateSerializer,
@@ -26,7 +28,7 @@ from momcare_platform.core.patients.api.serializers import (
     PregnancySerializer,
     PregnancyWriteSerializer,
 )
-from momcare_platform.core.patients.models import Consent, Patient, Pregnancy
+from momcare_platform.core.patients.models import ClinicalNote, Consent, Patient, Pregnancy
 from momcare_platform.core.patients.services import EnrolmentError, create_pregnancy, enrol_patient
 
 NO_HOSPITAL = {"detail": "This account is not attached to a hospital."}
@@ -243,6 +245,61 @@ class PregnancyDetailView(PatientScopedView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(PregnancySerializer(serializer.instance).data)
+
+
+class PregnancyNotesView(PatientScopedView):
+    """A pregnancy's clinical notes — append-only, newest first.
+
+    Anyone on the hospital's staff can read them (an admin may need one for a
+    liability review, same reasoning as alert visibility), but only a
+    clinician can write one: this is a clinical judgement, not an admin task,
+    the same split already drawn for acknowledging alerts and risk.
+    """
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated(), IsClinician()]
+        return [IsAuthenticated(), IsHospitalStaff()]
+
+    def get(self, request, patient_id, pregnancy_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+        try:
+            pregnancy = patient.pregnancies.get(pk=pregnancy_id)
+        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+            return Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        notes = pregnancy.clinical_notes.select_related("author__user")
+        return Response(ClinicalNoteSerializer(notes, many=True).data)
+
+    def post(self, request, patient_id, pregnancy_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+        try:
+            pregnancy = patient.pregnancies.get(pk=pregnancy_id)
+        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+            return Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # A clinician always has a Staff record - IsClinician already
+        # confirmed the role, and every clinical role is invited as staff.
+        author = request.user.staff
+
+        serializer = ClinicalNoteCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        note = ClinicalNote.objects.create(
+            pregnancy=pregnancy,
+            author=author,
+            **serializer.validated_data,
+        )
+        return Response(ClinicalNoteSerializer(note).data, status=status.HTTP_201_CREATED)
 
 
 class PatientConsentView(PatientScopedView):
