@@ -262,7 +262,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         # JWT bearer tokens are the primary API auth. Session auth is kept for the
         # Django admin and the browsable API / Swagger docs only.
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "momcare_platform.core.common.jwt_auth.TenantAwareJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],

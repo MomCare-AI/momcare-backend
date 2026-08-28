@@ -17,6 +17,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from momcare_platform.core.common.rls import bypass_rls
+
 DEMO_PASSWORD = "MomCare!Demo2026"
 
 
@@ -55,11 +57,19 @@ class Command(BaseCommand):
 
         password = options["password"]
 
-        if options["reset_alerts"]:
-            self._reset_alerts()
+        # Only ever reachable with DEBUG on (checked above), so this never
+        # runs against production - but it reads and writes across every
+        # hospital by design (that is the whole point of a demo cast list),
+        # which needs the same bypass any other cross-tenant management
+        # command already uses, for whichever database DEBUG happens to be
+        # pointed at (a local box today; a DEBUG-on staging environment with
+        # real RLS enforcement is exactly the situation this exists for).
+        with bypass_rls():
+            if options["reset_alerts"]:
+                self._reset_alerts()
 
-        self._set_passwords(password, include_admins=options["include_admins"])
-        self._report(password, include_admins=options["include_admins"])
+            self._set_passwords(password, include_admins=options["include_admins"])
+            self._report(password, include_admins=options["include_admins"])
 
     # -- Steps ----------------------------------------------------------------
 

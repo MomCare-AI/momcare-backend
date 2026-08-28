@@ -19,7 +19,6 @@ from __future__ import annotations
 from django.conf import settings
 from django.db import transaction
 
-from momcare_platform.core.common import rls
 from momcare_platform.core.common.permissions import user_role_code
 
 
@@ -76,7 +75,12 @@ class OrganizationScopedQuerysetMixin:
         org_id = user_organization_id(user)
         if org_id is None:
             return queryset.none()
-        rls.set_current_organization(org_id)
+        # Not ``rls.set_current_organization(org_id)`` here: for a JWT-
+        # authenticated request (the only real traffic these views see -
+        # platform admins use Django admin, not this mixin), the RLS session
+        # variable is already set, from the token's own ``org_id`` claim, by
+        # ``TenantAwareJWTAuthentication`` before this method ever runs -
+        # setting it twice would only cost a second identical query.
         return queryset.filter(**{self.organization_lookup: org_id})
 
 

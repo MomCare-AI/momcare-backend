@@ -6,6 +6,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from momcare_platform.core.common.rls import bypass_rls
 from momcare_platform.core.staff.models import Staff, StaffInvite
 from momcare_platform.core.users.models import User
 
@@ -46,34 +47,50 @@ def accept_invite(*, token: str, password: str, first_name: str = "", last_name:
     so accepting cannot be used to join a different hospital or claim a
     different role. Locks the invite row for the duration so two concurrent
     submissions of the same link cannot both create a user.
+
+    Everything here runs bypassed: nobody has authenticated at this point -
+    this is a public, token-only endpoint - so there is no request-scoped
+    organization for RLS to key off yet. That covers the invite lookup itself
+    too, not just the writes below it - ``select_related("organization")``
+    is an inner join, and RLS silently dropping the joined organization row
+    would otherwise turn "found the invite" into "invite not valid" for
+    every hospital, not a permissions gap so much as a correctness one.
     """
-    try:
-        invite = StaffInvite.objects.select_for_update().select_related("organization", "role").get(token=token)
-    except StaffInvite.DoesNotExist as exc:
-        raise InviteError("This invitation link is not valid.") from exc
+    with bypass_rls():
+        try:
+            invite = (
+                StaffInvite.objects.select_for_update()
+                .select_related("organization", "role")
+                .get(token=token)
+            )
+        except StaffInvite.DoesNotExist as exc:
+            raise InviteError("This invitation link is not valid.") from exc
 
-    if invite.accepted_at is not None:
-        raise InviteError("This invitation has already been used.")
-    if invite.revoked_at is not None:
-        raise InviteError("This invitation has been revoked.")
-    if invite.is_expired:
-        raise InviteError("This invitation has expired. Ask your hospital admin to send a new one.")
-    if not invite.organization.can_authenticate:
-        raise InviteError("This hospital is not currently active. Contact your hospital admin.")
-    if User.objects.filter(email__iexact=invite.email).exists():
-        raise InviteError("An account already exists for this email. Try signing in instead.")
+        if invite.accepted_at is not None:
+            raise InviteError("This invitation has already been used.")
+        if invite.revoked_at is not None:
+            raise InviteError("This invitation has been revoked.")
+        if invite.is_expired:
+            raise InviteError("This invitation has expired. Ask your hospital admin to send a new one.")
+        if not invite.organization.can_authenticate:
+            raise InviteError("This hospital is not currently active. Contact your hospital admin.")
 
-    user = User.objects.create_user(
-        email=invite.email,
-        password=password,
-        first_name=first_name or invite.first_name,
-        last_name=last_name or invite.last_name,
-        role=invite.role,
-    )
-    user.organization = invite.organization
-    user.save(update_fields=["organization", "updated_at"])
+        # Deliberately platform-wide, not scoped to this invite's hospital:
+        # email is the global sign-in identity.
+        if User.objects.filter(email__iexact=invite.email).exists():
+            raise InviteError("An account already exists for this email. Try signing in instead.")
 
-    Staff.objects.create(user=user, employee_id=_next_employee_id(invite.organization))
+        user = User.objects.create_user(
+            email=invite.email,
+            password=password,
+            first_name=first_name or invite.first_name,
+            last_name=last_name or invite.last_name,
+            role=invite.role,
+        )
+        user.organization = invite.organization
+        user.save(update_fields=["organization", "updated_at"])
+
+        Staff.objects.create(user=user, employee_id=_next_employee_id(invite.organization))
 
     invite.accepted_at = timezone.now()
     invite.accepted_user = user

@@ -1,6 +1,7 @@
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
+from momcare_platform.core.common.rls import bypass_rls
 from momcare_platform.core.staff.models import Staff, StaffInvite
 from momcare_platform.core.staff.services import INVITABLE_ROLE_CODES
 from momcare_platform.core.users.models import Role, User
@@ -74,8 +75,14 @@ class StaffInviteCreateSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         value = value.lower().strip()
-        if User.objects.filter(email__iexact=value).exists():
-            raise serializers.ValidationError("Someone with this email already has an account.")
+        # Deliberately platform-wide, not scoped to the inviting hospital:
+        # email is the global sign-in identity (a real unique constraint on
+        # User.email), so a collision at a *different* hospital is exactly
+        # what this exists to catch before it becomes a raw IntegrityError
+        # at invite-acceptance time instead of a clean validation error now.
+        with bypass_rls():
+            if User.objects.filter(email__iexact=value).exists():
+                raise serializers.ValidationError("Someone with this email already has an account.")
         return value
 
     def validate(self, attrs):

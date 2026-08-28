@@ -698,9 +698,9 @@ def test_listing_more_patients_does_not_cost_more_queries(
     trips — the kind of regression that only shows up once a hospital has real
     numbers on the ward.
 
-    The ceiling includes one query for row-level security's SET LOCAL, added
-    once per request by core/common/scoping.py - a fixed cost, not one that
-    grows with the page.
+    The ceiling includes one query for row-level security's SET LOCAL, set
+    once per request from the JWT's own org claim by TenantAwareJWTAuthentication
+    - a fixed cost, not one that grows with the page.
     """
     hospital = make_hospital("Volume Hospital")
     headers = auth(hospital.admin.email)

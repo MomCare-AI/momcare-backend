@@ -9,9 +9,12 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.settings import api_settings as simplejwt_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from momcare_platform.core.common.jwt_auth import issue_tokens_for
 from momcare_platform.core.common.mail import send_application_received, send_password_reset
+from momcare_platform.core.common.rls import bypass_rls
 from momcare_platform.core.users.api.serializers import (
     PasswordChangeSerializer,
     PasswordResetConfirmSerializer,
@@ -107,9 +110,13 @@ class RegisterView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = serializer.save()
+        # No organization exists yet for this request to belong to — the
+        # uniqueness checks in is_valid() and the insert in save() both need
+        # to see across every hospital, which is what this request is for.
+        with bypass_rls():
+            serializer = RegisterSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            user = serializer.save()
 
         # Best-effort: the application is already saved, so a mail failure must
         # not turn a successful registration into an error.
@@ -145,7 +152,11 @@ class LoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = authenticate(request, username=email, password=password)
+        # Nobody's hospital is known until a credential match says who they
+        # are — this lookup is inherently cross-tenant, the same way finding
+        # anyone by email always is before their identity is established.
+        with bypass_rls():
+            user = authenticate(request, username=email, password=password)
         if user is None:
             return Response(
                 {"detail": "Invalid credentials."},
@@ -162,7 +173,7 @@ class LoginView(APIView):
         if gate is not None:
             return Response(gate, status=status.HTTP_403_FORBIDDEN)
 
-        refresh = RefreshToken.for_user(user)
+        refresh = issue_tokens_for(user)
         response = Response(
             {
                 "access": str(refresh.access_token),
@@ -174,14 +185,21 @@ class LoginView(APIView):
 
 
 class RefreshView(APIView):
-    """Read refresh token from HttpOnly cookie and issue a new access token."""
+    """Read refresh token from HttpOnly cookie and issue a new access token.
+
+    Does not use SimpleJWT's stock ``TokenRefreshSerializer`` — that copies
+    whatever claims the old refresh token already carried onto the new
+    access token, including ``org_id``. That would let a staff member moved
+    to a different hospital keep acting as their old one for the refresh
+    token's whole 7-day life, not just the access token's 1 hour. Re-reading
+    the user's *current* organization here instead means a reassignment
+    self-heals at the very next refresh.
+    """
 
     authentication_classes = []
     permission_classes = [AllowAny]
 
     def post(self, request):
-        from rest_framework_simplejwt.serializers import TokenRefreshSerializer
-
         raw = request.COOKIES.get(REFRESH_COOKIE)
         if not raw:
             return Response(
@@ -189,16 +207,31 @@ class RefreshView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        serializer = TokenRefreshSerializer(data={"refresh": raw})
         try:
-            serializer.is_valid(raise_exception=True)
+            old_refresh = RefreshToken(raw)
         except TokenError as exc:
             raise InvalidToken(exc.args[0]) from exc
 
-        data = serializer.validated_data
-        response = Response({"access": data["access"]})
-        if "refresh" in data:
-            _set_refresh_cookie(response, data["refresh"])
+        user_id = old_refresh[simplejwt_settings.USER_ID_CLAIM]
+        # Same reasoning as login: which hospital this token's owner belongs
+        # to right now is exactly what this lookup exists to find out.
+        with bypass_rls():
+            user = User.objects.filter(pk=user_id, is_active=True).first()
+        if user is None:
+            raise InvalidToken("User no longer exists or is inactive.")
+
+        # SIMPLE_JWT above hardcodes rotation on, with no env override — so
+        # unlike the rest of this file, there is no reusing-the-same-refresh-
+        # token path here. Handling one only speculatively, with no way to
+        # actually exercise it, is exactly the kind of untested branch worth
+        # not carrying.
+        try:
+            old_refresh.blacklist()
+        except AttributeError:
+            pass
+        new_refresh = issue_tokens_for(user)
+        response = Response({"access": str(new_refresh.access_token)})
+        _set_refresh_cookie(response, str(new_refresh))
         return response
 
 
@@ -301,7 +334,10 @@ class PasswordResetRequestView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"]
 
-        user = User.objects.filter(email__iexact=email, is_active=True).first()
+        # Whose account this is — and so which hospital — is the very thing
+        # this lookup exists to discover, same as login.
+        with bypass_rls():
+            user = User.objects.filter(email__iexact=email, is_active=True).first()
         if user is not None:
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = default_token_generator.make_token(user)
@@ -330,12 +366,17 @@ class PasswordResetConfirmView(APIView):
     throttle_scope = "auth_sensitive"
 
     def post(self, request):
-        serializer = PasswordResetConfirmSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        # The serializer's own validate() resolves the user from the emailed
+        # uid before anyone's hospital is knowable, same as login — and the
+        # write below is to that same not-yet-scoped row, so it stays in the
+        # same bypass rather than falling out of context between the two.
+        with bypass_rls():
+            serializer = PasswordResetConfirmSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
 
-        user = serializer.validated_data["user"]
-        user.set_password(serializer.validated_data["new_password"])
-        user.save(update_fields=["password"])
+            user = serializer.validated_data["user"]
+            user.set_password(serializer.validated_data["new_password"])
+            user.save(update_fields=["password"])
 
         # Whoever forced the reset may already hold a session. Changing the
         # password invalidates the token that produced this link, but not the
