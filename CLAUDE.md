@@ -23,10 +23,23 @@ column (directly, or via `Location.organization`), enforced two ways:
 1. **Application-level**: the scoping mixins in `core/common/scoping.py`
    (`OrganizationScopedQuerysetMixin`, `LocationScopedQuerysetMixin`) — compose one of these
    into every viewset over tenant-owned data.
-2. **Database-level**: Postgres Row-Level Security policies, added per-app via a migration
-   once that app's schema is final. **Not yet implemented** — this is a known gap to close
-   before any tenant data goes to production. Do not treat the application-level mixin alone
-   as sufficient; it is the first layer of two, not the only layer.
+2. **Database-level**: Postgres Row-Level Security policies — implemented, covering every
+   tenant-owned table, fail-closed by design (an unset session variable sees zero rows, not
+   every hospital's rows — see the migration's own docstring for why that took a second pass
+   to get right). Verified against a real non-bypassing role, including a subtle bug where
+   SimpleJWT resolved identity *before* RLS's per-request scoping ran, locking every hospital
+   user out the moment enforcement was real (fixed — see git log for
+   `momcare_platform/core/organization/migrations/0006_row_level_security.py` and
+   `core/users/api/auth.py`'s `TenantAwareJWTAuthentication`).
+
+   **This has no effect on the current production database.** The Neon connection uses the
+   same role that owns the tables, and a role with `BYPASSRLS` (true of every role on this
+   project's databases today, including local) ignores every policy unconditionally — a
+   limitation of Postgres itself. Making RLS *actually protect production* needs a second,
+   separate change: a dedicated non-superuser application role holding only the grants it
+   needs, with the connection string switched to it — deliberately not bundled into the
+   policy migration, since a credential/connection change against a live database deserves
+   its own review. **This is the real remaining gap, not "write the policies."**
 
 A missed scoping check on tenant data is a cross-hospital PHI leak, not a bug ticket. Treat
 "did I compose the scoping mixin" as a mandatory review item on every new viewset.
@@ -135,17 +148,21 @@ Do not "restore" the modules layout without a concrete reason.
 
 ### What genuinely does not exist yet
 
-- **Postgres RLS policies.** Still the known gap described under Tenancy above. The
-  application-level scoping mixin is the only enforcement layer.
+- **RLS actually protecting production.** The policies are written and tested — see
+  Tenancy above — but the production database role bypasses RLS unconditionally. A
+  dedicated non-superuser role + connection-string switch is the real remaining gap.
 - **The NGO emergency-response portal.**
 - **Any feature module under `modules/`.**
 - **`.claude/skills/momcare-*`** — folders exist, content does not.
 
 ### Deployment
 
-Not yet live. Read `DEPLOY.md` before touching anything deployment-related — every
-environment variable, and which failures are silent. `../docs/deployment-plan.md`
-carries the audit findings and the current blocker.
+**Live.** Frontend at `https://momcare.solutions` (Vercel, auto-deploys on push to
+`main`), API at `https://api.momcare.solutions`. Confirmed 2026-08-31 via response
+headers and by watching a push actually update the live site. Read `DEPLOY.md` before
+touching anything deployment-related — every environment variable, and which failures
+are silent. `../docs/deployment-plan.md` carries the audit findings; confirm against
+the live site before trusting its "current blocker" as still current.
 
 
 ## Conventions & gotchas

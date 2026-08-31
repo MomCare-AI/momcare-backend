@@ -58,8 +58,73 @@ process will refuse to start without them.
 | `DJANGO_SECRET_KEY` | 50+ random characters. **Never reuse the development one.** |
 | `DJANGO_ALLOWED_HOSTS` | `api.momcare.solutions` — add the platform's own domain too while testing |
 | `DJANGO_ADMIN_URL` | A non-obvious path ending in `/`, e.g. `mc-admin-7f3a/`. Not `admin/`. |
-| `DATABASE_URL` | From Neon. Must include `?sslmode=require`. |
+| `DATABASE_URL` | From Neon, **as the restricted `momcare_app` role** — see "Database roles" below. Must include `?sslmode=require`. |
+| `MIGRATION_DATABASE_URL` | From Neon, as the table-owning role. Used only for `migrate` and `createcachetable` — never by the running app. |
 | `DJANGO_NUM_PROXIES` | `1` behind a single load balancer |
+
+### Database roles — why there are two connection strings
+
+RLS policies (`organization/migrations/0006_row_level_security.py`) only do
+anything against a role that can't bypass them. Every role on this project's
+databases used to be the same table-owning role, which has `BYPASSRLS` and
+ignores every policy unconditionally — a Postgres limitation, not a flaw in
+the policies. Two roles fix this:
+
+- **`MIGRATION_DATABASE_URL`** — the original owner role (`neondb_owner`).
+  Needs to run DDL (`CREATE TABLE`, `ALTER TABLE`), so it stays privileged.
+- **`DATABASE_URL`** — the `momcare_app` role: `LOGIN`, `NOSUPERUSER`,
+  `NOCREATEDB`, `NOCREATEROLE`, `NOBYPASSRLS`, with `SELECT, INSERT,
+  UPDATE, DELETE` on every table, `USAGE, SELECT` on every sequence, and
+  `ALTER DEFAULT PRIVILEGES` set so both grants extend automatically to
+  whatever a future migration adds — no `DROP`/`ALTER`/`TRUNCATE`. This is
+  what `web` (gunicorn) actually connects as, so RLS is finally enforced
+  for real traffic.
+
+**The switch is handled in `config/settings/production.py`, not the
+`Procfile`.** `migrate` and `createcachetable` are detected by command name
+(`sys.argv[1]`) and pointed at `MIGRATION_DATABASE_URL` when it's set;
+every other invocation — `runserver`, and gunicorn loading `wsgi.py`, which
+never goes through `manage.py` at all — uses `DATABASE_URL` as normal. A
+Procfile-level env override (`DATABASE_URL=$MIGRATION_DATABASE_URL python
+manage.py migrate`) was tried first and deliberately abandoned: Railway's
+current builder (Railpack) doesn't document `release` as a first-class
+Procfile phase the way the older Nixpacks builder did, so betting a
+migration step on unverified platform-specific shell/process behavior
+wasn't worth it. The settings-level switch is portable, works identically
+regardless of platform or how the process was invoked, and was verified
+directly — `migrate`/`createcachetable` resolve to the owner role,
+`runserver` and the gunicorn/`wsgi.py` entrypoint resolve to `momcare_app`,
+and with `MIGRATION_DATABASE_URL` unset entirely, `migrate` correctly falls
+back to `DATABASE_URL` rather than erroring — checked by directly
+inspecting `settings.DATABASES` under each `sys.argv`, not by reasoning
+about it on paper.
+
+The role itself already exists in production (created independently of
+this settings change, then verified rather than trusted): correct
+attributes (`NOSUPERUSER`/`NOBYPASSRLS`/etc., confirmed via `pg_roles`),
+grants on all 38 tables (confirmed via `information_schema.role_table_
+grants`), 16 sequence grants (confirmed via `information_schema.usage_
+privileges`), and default privileges covering both tables and sequences
+for future migrations (confirmed via `pg_default_acl`). The pattern was
+also verified end-to-end against a locally-built identical role before any
+of this was trusted: login, an org-scoped list endpoint, and a cross-tenant
+detail read (correctly 404s, matching the "404 never 403" rule elsewhere in
+this doc) all behaved correctly.
+
+**Rollout order matters** — `DATABASE_URL` must not point at `momcare_app`
+until `MIGRATION_DATABASE_URL` exists, or the next migration has nothing to
+fall back to and fails outright:
+
+1. Confirm `MIGRATION_DATABASE_URL` is set in Railway (copy of the
+   pre-switch `DATABASE_URL`, the owner role) — must happen before step 2.
+2. Change `DATABASE_URL` to the `momcare_app` connection string.
+3. Deploy. Watch the release logs — migrations should still succeed (they
+   now resolve to `MIGRATION_DATABASE_URL` via the settings-level switch).
+4. Immediately verify with the same walkthrough as this doc's own
+   "Verifying a deploy properly" section below, plus specifically: sign in,
+   confirm you see your own hospital's data, and confirm you do *not* get a
+   500 (fails-closed RLS would show as everything returning empty or
+   erroring, not as a leak).
 
 ### Email — invitations do not work without these
 

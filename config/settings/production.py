@@ -1,5 +1,6 @@
 # ruff: noqa: E501
 import logging
+import sys
 
 from .base import *  # noqa: F403
 from .base import DATABASES, env
@@ -12,6 +13,22 @@ ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=["momcare.example"])
 
 # DATABASES
 # ------------------------------------------------------------------------------
+# DATABASE_URL connects as the restricted `momcare_app` role (see DEPLOY.md,
+# "Database roles") so RLS actually applies to real request traffic. The two
+# commands that need to run DDL - migrate and createcachetable - can't work
+# under that role, so they're detected here by name and pointed at
+# MIGRATION_DATABASE_URL (the table-owning role) instead.
+#
+# Deliberately not a Procfile-level env override: this project's release
+# phase depends on whatever process-type handling Railway's current builder
+# gives a Procfile, which isn't something to bet a migration step on without
+# testing it directly against this exact setup. Command-name detection here
+# works the same regardless of platform or how the process was invoked.
+if len(sys.argv) > 1 and sys.argv[1] in {"migrate", "createcachetable"}:
+    migration_url = env("MIGRATION_DATABASE_URL", default=None)
+    if migration_url:
+        DATABASES["default"] = env.db_url_config(migration_url)
+
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=60)
 
 # CACHES
