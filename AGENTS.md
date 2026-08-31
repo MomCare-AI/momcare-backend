@@ -109,7 +109,7 @@ it until it has tests and something calls it.
 
 ```bash
 uv run ruff check .                    # must be clean on files you touched
-uv run pytest momcare_platform/core -q # 274 tests, ~25s on a local database
+uv run pytest momcare_platform/core -q # 309 tests, ~20s on a local database
 ```
 
 `DATABASE_URL` in `.env` must point at **local** Postgres. If it points at Neon,
@@ -130,9 +130,11 @@ escalation runs as a second Railway service on a five-minute cron. Seven
 capabilities are complete and tested: hospital registration with a review gate,
 six roles, staff invitations, patients and pregnancy, vitals and devices, risk
 assessment, and alerts with a three-tier escalation ladder. Passwords can now be
-changed and reset. **274 backend tests, 23 frontend.**
+changed and reset. Postgres Row-Level Security is written, tested, **and (1 Sep)
+actually active in production** — `DATABASE_URL` connects as a restricted,
+non-bypassing role; see `CLAUDE.md`'s Tenancy section. **309 backend tests, 30
+frontend.**
 
-What remains is listed in order in `../docs/PLAN.md`. The short version:
-front-end pages for the password flows, clinical notes, PostgreSQL row-level
-security as the second isolation layer, an obstetrician's review of the clinical
-thresholds, and the written report. The NGO portal is cut.
+What remains is listed in order in `../docs/PLAN.md`. The short version: an
+obstetrician's review of the clinical thresholds, and the written report. The
+NGO portal is cut.

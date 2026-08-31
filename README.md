@@ -11,67 +11,43 @@ to this service over `/api/`.
 
 ## Current status
 
-The foundation plus the **access-control layer** — hospital onboarding and staff
-management work end to end. There are no maternal-health features yet.
+**Live in production**, not just foundation. The section below described a freshly
+scaffolded foundation with no clinical features — that was accurate in mid-August and is
+now wrong in every particular. See `CLAUDE.md`'s "Status of this codebase" section for the
+authoritative, actively-maintained version of this; the summary here is kept short
+deliberately so there's only one place this can go stale from now on.
 
-**Access model.** Tenant membership is granted from *inside* a tenant, never claimed from
-outside it:
-
-- **Hospitals** apply at `/api/auth/register/`. Registration issues **no token**:
-  `Organization.status` starts `pending` and `LoginView` refuses sign-in until a platform
-  admin approves it. No public API verifies Pakistani facility licences — PMDC registers
-  practitioners, while facilities are licensed provincially (PHC, SHCC, KP HCC, Balochistan
-  HCC, IHRA) — so approval is a human check with recorded evidence: issuing authority,
-  licence document, reviewer, timestamp, and a note of what was verified. The applicant is
-  emailed on submission and again on the decision.
-- **Clinical staff** are invited by their hospital admin and set their own password via a
-  single-use link. Organization and role are read from the invite row on acceptance, never
-  from the request, so nobody can join another hospital or claim a higher role.
-- **Patients** are enrolled clinically — not yet implemented.
-
-**Testing.** 23 API-level integration tests cover authentication, authorization and tenant
-isolation, validated by fault injection: removing the tenant filter fails the isolation
-test, and disabling the login gate fails four others.
+Seven capabilities are complete and tested end to end: hospital registration with a review
+gate, six roles, staff invitations, patients and pregnancy tracking, vitals and device
+ingestion, a rules-based risk engine, and alerts with a three-tier escalation ladder.
+**309 backend tests, 30 frontend.** Security-critical protections (tenant scoping, RLS,
+login gating) were validated by fault injection — each one deliberately removed and the
+corresponding test confirmed to fail.
 
 ```bash
 uv run pytest momcare_platform/core -q
 ```
 
-**Implemented and verified working:**
+**Deployed and live:** `https://momcare.solutions` (frontend, Vercel) /
+`https://api.momcare.solutions` (this backend, Railway), Postgres on Neon, transactional
+email via Resend. See `DEPLOY.md` for every environment variable and which failures are
+silent.
 
-- Hospital registration, review gate, and admin review actions (approve / reject / suspend);
-  tenants are never hard-deleted.
-- Staff invitations with expiry, revocation, and replay protection.
-- `/api/organization/me/` and the staff endpoints, scoped via `OrganizationScopedQuerysetMixin`.
-- Best-effort transactional email (`core/common/mail.py`) — a mail outage never fails a
-  registration or rolls back an approval.
+**Tenant isolation is now two real layers, not one.** Application-level scoping
+(`core/common/scoping.py`) plus Postgres Row-Level Security — RLS was written and tested
+earlier, and as of 1 Sep 2026 is actually enforced in production (`DATABASE_URL` connects
+as a restricted, non-bypassing role). See `CLAUDE.md`'s Tenancy section for the full detail.
 
-- Full project structure — settings split (`local`/`test`/`production`), Celery + Redis,
-  JWT auth config, CORS/CSRF for a cookie-based refresh token.
-- Six foundational apps: `users` (custom `User` + `Role`), `organization` (the hospital
-  record + audit log + per-hospital module activation), `locations`, `staff`, `patients`
-  (bare entity — no medical fields yet), and `common` (shared infrastructure: permissions,
-  tenant scoping, audit middleware, health check, JSON logging, pagination).
-- Real database migrations, generated and applied against a live PostgreSQL database.
-- Superuser bootstrap (`createsuperuser`) — automatically creates a platform-level admin,
-  not scoped to any single hospital.
-- Six seeded roles: `platform_admin`, `hospital_admin`, `provider`, `nurse`,
-  `care_manager`, `patient`.
-- Quality gates: `ruff`, `mypy`, `import-linter` (enforcing the `modules → core` dependency
-  direction), pre-commit hooks, a CI workflow that runs lint + type-check + tests on every PR.
+**What genuinely still doesn't exist:**
 
-**Not implemented yet** (deliberately stopped here — foundation only, application logic is a
-separate future step, see `docs/design/`):
-
-- Any application/business logic — `services.py`, `signals.py`, and `tests/factories.py` are
-  stubs across every app (e.g. no staff auto-creation, no patient onboarding logic yet).
-- API endpoints beyond auth, organization and staff — `locations` and `patients` are still
-  stubs, and `patients` has no medical fields.
-- Postgres Row-Level Security policies (tenant isolation currently relies on the
-  application-level scoping mixin alone — RLS is the planned second layer, not yet written).
-- Any actual maternal-health feature (pregnancy tracking, vitals, care plans) — no feature
-  module exists under `momcare_platform/modules/` yet. That's a separate, future design pass.
-- Hosting/deployment — no cloud provider chosen yet; `deploy/` is an empty placeholder.
+- The NGO emergency-response portal.
+- Any feature module under `momcare_platform/modules/` — the clinical work lives under
+  `core/` instead, a deliberate divergence from the original modular-monolith design (see
+  `CLAUDE.md`).
+- Clinical validation of the risk-scoring thresholds by a practising obstetrician — stated
+  plainly as a requirement before real clinical use, not implied otherwise.
+- The AI model path (`RiskAssessment.source == "model"`) — the seam exists, nothing
+  populates it yet.
 
 ## Architecture at a glance
 
@@ -80,12 +56,15 @@ separate future step, see `docs/design/`):
   enforced by `core/common/scoping.py`.
 - **Two-tier roles**: `platform_admin` operates across every hospital; every other role
   belongs to exactly one hospital.
-- **Modular monolith**: `core/` holds foundational apps everything depends on; `modules/`
-  will hold pluggable feature programs, each self-registering without `core` ever importing
-  them (kept in one deployable unit, no microservices overhead).
+- **Modular monolith, with one deliberate divergence from the original plan**: `core/`
+  holds every app, foundational and clinical alike. `modules/` — meant to hold pluggable,
+  self-registering feature programs — is still empty; with one product and one team, that
+  indirection was judged to buy nothing. See `CLAUDE.md`'s "Status of this codebase" for the
+  reasoning. Do not "restore" the `modules/` layout without a concrete reason.
 
-Full reasoning behind every decision above is in
-[`docs/design/2026-08-13-foundation-architecture-design.md`](docs/design/2026-08-13-foundation-architecture-design.md).
+Full reasoning behind the original design is in
+[`docs/design/2026-08-13-foundation-architecture-design.md`](docs/design/2026-08-13-foundation-architecture-design.md)
+(historical — read alongside `CLAUDE.md` for what actually happened since).
 Day-to-day conventions (which base model class to use, how permissions are structured, etc.)
 are in [`CLAUDE.md`](CLAUDE.md).
 
