@@ -20,7 +20,7 @@ deliberately so there's only one place this can go stale from now on.
 Seven capabilities are complete and tested end to end: hospital registration with a review
 gate, six roles, staff invitations, patients and pregnancy tracking, vitals and device
 ingestion, a rules-based risk engine, and alerts with a three-tier escalation ladder.
-**309 backend tests, 30 frontend.** Security-critical protections (tenant scoping, RLS,
+**330 backend tests, 30 frontend.** Security-critical protections (tenant scoping, RLS,
 login gating) were validated by fault injection — each one deliberately removed and the
 corresponding test confirmed to fail.
 

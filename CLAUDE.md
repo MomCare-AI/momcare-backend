@@ -182,7 +182,7 @@ Read `../docs/PLAN.md` first — current status, decisions not to revisit, known
 
 | App | Models | The thing to know |
 |---|---|---|
-| `patients` | `Patient` `Pregnancy` `PregnancyRiskFactors` `Consent` | `Patient.user` is **optional** (`SET_NULL`) — a rural patient may have no email and must still have a record |
+| `patients` | `Patient` `Pregnancy` `PregnancyRiskFactors` `Consent` `ClinicalNote` `CareTeamMembership` | `Patient.user` is **optional** (`SET_NULL`) — a rural patient may have no email and must still have a record. `CareTeamMembership` is additive to `Pregnancy.assigned_staff` (the lead clinician) — supporting nurses/co-providers/care managers, never a replacement for it. |
 | `monitoring` | `Device` `VitalReading` `RiskAssessment` | Readings attach to a **pregnancy**, not a patient — a heart rate of 110 means different things at 12 and 38 weeks |
 | `alerts` | `Alert` `AlertEvent` | The push side. `AlertEvent` is append-only: escalation not written down is escalation that never happened |
 
@@ -232,12 +232,13 @@ pregnant someone is.
 ### Scoping paths
 
 ```
-Patient    → location__organization          (never user__organization)
-Pregnancy  → patient__location__organization
-Reading    → pregnancy__patient__location__organization
-Alert      → pregnancy__patient__location__organization
-Staff      → user__organization
-Device     → organization
+Patient       → location__organization          (never user__organization)
+Pregnancy     → patient__location__organization
+Reading       → pregnancy__patient__location__organization
+Alert         → pregnancy__patient__location__organization
+CareTeamMembership → pregnancy__patient__location__organization
+Staff         → user__organization
+Device        → organization
 ```
 
 Scope **before** lookup, so another tenant's row resolves to nothing. Cross-tenant
