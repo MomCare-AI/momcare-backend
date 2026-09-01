@@ -266,6 +266,132 @@ class Pregnancy(UUIDPrimaryKeyModel, TimeStampedModel):
         return self.assigned_staff is not None and self.assigned_staff.is_active
 
 
+class CareTeamMembership(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A supporting member of a pregnancy's care team.
+
+    Additive to ``Pregnancy.assigned_staff``, never a replacement for it —
+    ``assigned_staff`` stays the one accountable lead clinician that alert
+    escalation routes to. This model answers a different question: who else
+    is genuinely working this case (nurses on rotation, a co-managing
+    provider, a coordinating care manager), where "one person" doesn't fit
+    the way it does for the lead.
+
+    A row is never mutated to change who holds it — ending one and starting
+    another is how a handoff is recorded, the same convention already used by
+    ``Consent`` and ``AlertEvent`` in this codebase. ``started_at``/
+    ``ended_at`` are therefore the history; there is no separate event log,
+    because "who was responsible on a given day" is answerable directly from
+    those two columns without one.
+
+    PROTECT on both foreign keys for the same reason ``Pregnancy.
+    assigned_staff`` and ``ClinicalNote.author`` use it: Staff is
+    soft-deleted, so this never blocks anything in practice, and it
+    guarantees the historical relationship survives.
+    """
+
+    ROLE_NURSE = "nurse"
+    ROLE_PROVIDER = "provider"
+    ROLE_CARE_MANAGER = "care_manager"
+    ROLE_CHOICES = [
+        (ROLE_NURSE, "Nurse"),
+        (ROLE_PROVIDER, "Provider"),
+        (ROLE_CARE_MANAGER, "Care manager"),
+    ]
+
+    pregnancy = models.ForeignKey(
+        "patients.Pregnancy",
+        on_delete=models.PROTECT,
+        related_name="care_team_memberships",
+    )
+    staff = models.ForeignKey(
+        "staff.Staff",
+        on_delete=models.PROTECT,
+        related_name="care_team_memberships",
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, db_index=True)
+
+    started_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    # Denormalized alongside ended_at rather than derived from it, so the
+    # query every "my patients" view needs (pregnancy, role, is_active) can
+    # hit a plain index instead of an ended_at IS NULL scan on every row.
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Who made this assignment.",
+    )
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [
+            # "Who's on this pregnancy's care team, in this role, right now" —
+            # the query every patient-detail Care Team panel needs.
+            models.Index(fields=["pregnancy", "role", "is_active"]),
+            # "What's assigned to me, in this role, right now" — the query
+            # every nurse/care_manager "my patients" view needs.
+            models.Index(fields=["staff", "role", "is_active"]),
+        ]
+
+    def __str__(self) -> str:
+        state = "active" if self.is_active else "ended"
+        return f"{self.staff} — {self.get_role_display()} on {self.pregnancy_id} ({state})"
+
+    def _rejects_new_assignment(self) -> bool:
+        # Only true on creation - an existing row (e.g. one being ended) must
+        # never be blocked from saving just because the staff member it
+        # already, historically, points at has since been deactivated. What
+        # this actually prevents: assigning someone who has *already left* to
+        # a *new* case, which the query-time is_active check in every "who's
+        # on this team" lookup would otherwise silently and confusingly
+        # accept, then immediately exclude from every result.
+        #
+        # self._state.adding, not "self.pk is None" - every model here uses a
+        # client-generated UUID default, so the pk is already populated the
+        # moment the object is constructed in Python, well before save() ever
+        # runs. self.pk is None would never be true for this model at all,
+        # guard included, and the check would silently never fire.
+        return bool(self._state.adding and self.staff_id and not self.staff.is_active)
+
+    def clean(self):
+        # Runs during full_clean() - i.e. the moment a ModelForm (Django
+        # admin's add page, and any future DRF serializer that validates via
+        # the model rather than around it) checks validity, before it ever
+        # attempts to save. This is what turns the rule into a normal red
+        # form error instead of an unhandled exception reaching the caller.
+        from django.core.exceptions import ValidationError  # noqa: PLC0415
+
+        if self._rejects_new_assignment():
+            raise ValidationError(
+                {"staff": "This staff member is deactivated and cannot be assigned to a new care team."},
+            )
+
+    def save(self, *args, **kwargs):
+        # Kept as a second, independent enforcement point - not every caller
+        # goes through a ModelForm (a direct .objects.create(), or a future
+        # service function, would skip clean() entirely and reach here
+        # first). Same rule, same message, just reached a different way.
+        if self._rejects_new_assignment():
+            from django.core.exceptions import ValidationError  # noqa: PLC0415
+
+            raise ValidationError(
+                {"staff": "This staff member is deactivated and cannot be assigned to a new care team."},
+            )
+        super().save(*args, **kwargs)
+
+    def end(self, *, by=None) -> None:
+        """Close this membership without deleting it — history must survive."""
+        from django.utils import timezone  # noqa: PLC0415
+
+        self.is_active = False
+        self.ended_at = timezone.now()
+        self.save(update_fields=["is_active", "ended_at", "updated_at"])
+
+
 class PregnancyRiskFactors(UUIDPrimaryKeyModel, TimeStampedModel):
     """Standard obstetric history for one pregnancy.
 

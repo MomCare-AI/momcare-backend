@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from momcare_platform.core.patients.models import (
+    CareTeamMembership,
     ClinicalNote,
     Consent,
     Patient,
@@ -106,3 +107,25 @@ class ClinicalNoteAdmin(admin.ModelAdmin):
     def has_delete_permission(self, request, obj=None):
         # Append-only: a correction is a new note, never an edit to an old one.
         return False
+
+
+@admin.register(CareTeamMembership)
+class CareTeamMembershipAdmin(admin.ModelAdmin):
+    """Manual test surface ahead of the real API (Phase 2 of the dashboard
+    master plan). Not the intended long-term assignment workflow — a
+    hospital_admin/care_manager will do this from the portal once it exists.
+    """
+
+    list_display = ["pregnancy", "staff", "role", "is_active", "started_at", "ended_at"]
+    list_filter = ["role", "is_active"]
+    search_fields = ["pregnancy__patient__mrn", "pregnancy__patient__last_name", "staff__employee_id"]
+    readonly_fields = ["started_at", "created_at", "updated_at"]
+
+    def has_delete_permission(self, request, obj=None):
+        # History must survive — end a membership instead of deleting it.
+        return False
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
