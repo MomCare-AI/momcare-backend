@@ -126,6 +126,27 @@ fall back to and fails outright:
    500 (fails-closed RLS would show as everything returning empty or
    erroring, not as a leak).
 
+**Incident, 2 Sep 2026 — resolved.** `MIGRATION_DATABASE_URL` disappeared
+from Railway after step 1 had already been done and verified the day
+before. Every deploy from the care-team migration
+(`patients.0005_careteammembership`) onward failed at the pre-deploy step
+with `psycopg.errors.InsufficientPrivilege: permission denied for schema
+public` on `CREATE TABLE` — the exact signature of `migrate` silently
+falling back to the restricted `momcare_app` role because the variable it
+needed wasn't there. Several deploys failed silently over hours before
+this was caught; nothing paged anyone, because Railway doesn't alert on a
+failed deploy the way it would an app crash. Fixed by re-adding the
+variable from Neon's `neondb_owner` connection string (Neon dashboard →
+Connect → role `neondb_owner` → copy the pooled connection string).
+Confirmed resolved: the redeploy shows **Active / Deployment successful**
+in Railway with all three pending migrations applied, and the health
+check plus a real behavioral check both passed afterward. Root cause of
+the disappearance itself was not established — worth returning to if it
+happens again. **Check this variable's presence as part of any future
+deploy troubleshooting before assuming the code is at fault** — a failing
+migration with a permission error almost always means this, not a bug in
+the migration itself.
+
 ### Email — invitations do not work without these
 
 | Variable | Value |

@@ -109,7 +109,7 @@ it until it has tests and something calls it.
 
 ```bash
 uv run ruff check .                    # must be clean on files you touched
-uv run pytest momcare_platform/core -q # 330 tests, ~20s on a local database
+uv run pytest momcare_platform/core -q # 335 tests, ~20s on a local database
 ```
 
 `DATABASE_URL` in `.env` must point at **local** Postgres. If it points at Neon,
@@ -134,8 +134,11 @@ changed and reset. Postgres Row-Level Security is written, tested, **and (1 Sep)
 actually active in production** — `DATABASE_URL` connects as a restricted,
 non-bypassing role; see `CLAUDE.md`'s Tenancy section. Care-team assignment
 (`CareTeamMembership`, additive to `Pregnancy.assigned_staff`) and its API
-are built and tested; the dashboard screens that use them are not yet
-built. **330 backend tests, 30 frontend.**
+are built and tested; the Patients and Alerts pages are now role-scoped by
+it too (Provider and Nurse workspaces of the dashboard master plan) —
+Care Manager's workspace is the remaining piece, its write side blocked on
+an open decision, see `../docs/PLAN.md` §3 item 13. **335 backend tests,
+30 frontend.**
 
 What remains is listed in order in `../docs/PLAN.md`. The short version: an
 obstetrician's review of the clinical thresholds, and the written report. The
