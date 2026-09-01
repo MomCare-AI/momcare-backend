@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from momcare_platform.core.patients.models import (
+    CareTeamMembership,
     ClinicalNote,
     Consent,
     Patient,
@@ -191,6 +192,45 @@ class ClinicalNoteCreateSerializer(serializers.Serializer):
         if not value.strip():
             raise serializers.ValidationError("A note cannot be empty.")
         return value
+
+
+class CareTeamMembershipSerializer(serializers.ModelSerializer):
+    """Read shape for a care-team row — additive to Pregnancy.assigned_staff,
+    never a replacement for it (that field has its own serializer already,
+    on Pregnancy itself, and is untouched by this one)."""
+
+    staff_name = serializers.CharField(source="staff.user.get_full_name", read_only=True, default="")
+    role_display = serializers.CharField(source="get_role_display", read_only=True)
+
+    class Meta:
+        model = CareTeamMembership
+        fields = [
+            "id",
+            "staff",
+            "staff_name",
+            "role",
+            "role_display",
+            "is_active",
+            "started_at",
+            "ended_at",
+        ]
+        read_only_fields = ["id", "staff_name", "role_display", "is_active", "started_at", "ended_at"]
+
+
+class CareTeamMembershipCreateSerializer(serializers.Serializer):
+    """Who to add, and in what capacity. The pregnancy comes from the URL,
+    not the body — same reasoning as every other nested write here: an
+    identifier a caller could tamper with to reach another hospital's data
+    just shouldn't be accepted from the client at all.
+
+    ``staff`` reuses ``OrganizationStaffField`` (defined above, for
+    ``assigned_staff``) rather than a plain PrimaryKeyRelatedField, for the
+    identical reason: without it, an admin could name a clinician from a
+    different hospital entirely.
+    """
+
+    staff = OrganizationStaffField()
+    role = serializers.ChoiceField(choices=CareTeamMembership.ROLE_CHOICES)
 
 
 class PatientListSerializer(serializers.ModelSerializer):

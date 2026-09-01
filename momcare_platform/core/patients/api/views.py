@@ -15,9 +15,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from momcare_platform.core.common.pagination import DefaultPagination
-from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
+from momcare_platform.core.common.permissions import IsClinician, IsHospitalAdmin, IsHospitalStaff
 from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
 from momcare_platform.core.patients.api.serializers import (
+    CareTeamMembershipCreateSerializer,
+    CareTeamMembershipSerializer,
     ClinicalNoteCreateSerializer,
     ClinicalNoteSerializer,
     ConsentInputSerializer,
@@ -28,7 +30,7 @@ from momcare_platform.core.patients.api.serializers import (
     PregnancySerializer,
     PregnancyWriteSerializer,
 )
-from momcare_platform.core.patients.models import ClinicalNote, Consent, Patient, Pregnancy
+from momcare_platform.core.patients.models import CareTeamMembership, ClinicalNote, Consent, Patient, Pregnancy
 from momcare_platform.core.patients.services import EnrolmentError, create_pregnancy, enrol_patient
 
 NO_HOSPITAL = {"detail": "This account is not attached to a hospital."}
@@ -94,6 +96,46 @@ def _active_pregnancy_prefetch() -> Prefetch:
 class PatientListCreateView(PatientScopedView):
     """List and search this hospital's patients, or enrol a new one."""
 
+    def _scope_to_assigned(self, queryset, request):
+        """``?assigned_to=me`` — a clinician's honest "my patients", not the
+        whole hospital wearing that label.
+
+        Providers get both paths deliberately, not assigned_staff alone: a
+        supporting/co-provider on a pregnancy is a real CareTeamMembership
+        row, never the lead field, and would otherwise be invisible in their
+        own "my patients" view despite genuinely being on the case. Nurses
+        and care managers only ever exist as membership rows - there is no
+        equivalent lead field for either.
+        """
+        if request.query_params.get("assigned_to") != "me":
+            return queryset
+
+        staff = getattr(request.user, "staff", None)
+        if staff is None:
+            return queryset.none()
+
+        role = request.user.role_code
+        if role == "provider":
+            return queryset.filter(
+                Q(pregnancies__assigned_staff=staff)
+                | Q(
+                    pregnancies__care_team_memberships__staff=staff,
+                    pregnancies__care_team_memberships__role="provider",
+                    pregnancies__care_team_memberships__is_active=True,
+                ),
+            ).distinct()
+        if role in ("nurse", "care_manager"):
+            return queryset.filter(
+                pregnancies__care_team_memberships__staff=staff,
+                pregnancies__care_team_memberships__role=role,
+                pregnancies__care_team_memberships__is_active=True,
+            ).distinct()
+        # hospital_admin and anyone else: "my patients" isn't a concept that
+        # applies to them - an empty, honest result rather than silently
+        # ignoring the param and returning everyone under a label that
+        # would be wrong for this role specifically.
+        return queryset.none()
+
     def get(self, request):
         _, error = self.hospital_or_error(request)
         if error:
@@ -102,6 +144,7 @@ class PatientListCreateView(PatientScopedView):
         queryset = self.patients().select_related("location").prefetch_related(
             _active_pregnancy_prefetch(),
         )
+        queryset = self._scope_to_assigned(queryset, request)
 
         search = request.query_params.get("search", "").strip()
         if search:
@@ -325,3 +368,97 @@ class PatientConsentView(PatientScopedView):
             **serializer.validated_data,
         )
         return Response(ConsentSerializer(consent).data, status=status.HTTP_201_CREATED)
+
+
+class CareTeamMembershipListCreateView(PatientScopedView):
+    """A pregnancy's care team — supporting members alongside its one lead
+    clinician (``Pregnancy.assigned_staff``, untouched, read and written
+    through the pregnancy endpoints exactly as before).
+
+    Write access is ``IsHospitalAdmin`` only for now. The dashboard master
+    plan's own recommendation was hospital_admin **and** care_manager for
+    their own coordinated cases — deliberately not implemented here, because
+    "how does a case become a care_manager's own to coordinate" is still an
+    open product decision (see the plan's open-decisions list), not
+    something to guess at in the permission check.
+    """
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated(), IsHospitalAdmin()]
+        return [IsAuthenticated(), IsHospitalStaff()]
+
+    def _get_pregnancy(self, patient, pregnancy_id):
+        try:
+            return patient.pregnancies.get(pk=pregnancy_id), None
+        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+            return None, Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    def get(self, request, patient_id, pregnancy_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+        pregnancy, gone = self._get_pregnancy(patient, pregnancy_id)
+        if gone:
+            return gone
+
+        memberships = pregnancy.care_team_memberships.select_related("staff__user").order_by("-started_at")
+        return Response(CareTeamMembershipSerializer(memberships, many=True).data)
+
+    def post(self, request, patient_id, pregnancy_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+        pregnancy, gone = self._get_pregnancy(patient, pregnancy_id)
+        if gone:
+            return gone
+
+        serializer = CareTeamMembershipCreateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            membership = CareTeamMembership.objects.create(
+                pregnancy=pregnancy,
+                created_by=request.user,
+                **serializer.validated_data,
+            )
+        except DjangoValidationError as exc:
+            # The model's own clean()/save() guard (an already-deactivated
+            # staff member can't be newly assigned) - surfaced the same way
+            # DRF surfaces any other field error, not as a 500.
+            return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(CareTeamMembershipSerializer(membership).data, status=status.HTTP_201_CREATED)
+
+
+class CareTeamMembershipEndView(PatientScopedView):
+    """End a membership — never delete it. Same authority boundary as
+    creating one; see CareTeamMembershipListCreateView's docstring."""
+
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def post(self, request, patient_id, pregnancy_id, membership_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+
+        try:
+            membership = CareTeamMembership.objects.get(
+                pk=membership_id,
+                pregnancy__patient=patient,
+                pregnancy_id=pregnancy_id,
+            )
+        except (CareTeamMembership.DoesNotExist, DjangoValidationError, ValueError):
+            return Response({"detail": "Care team membership not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        membership.end(by=request.user)
+        return Response(CareTeamMembershipSerializer(membership).data)

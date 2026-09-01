@@ -325,6 +325,14 @@ class CareTeamMembership(UUIDPrimaryKeyModel, TimeStampedModel):
         related_name="+",
         help_text="Who made this assignment.",
     )
+    ended_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Who ended this assignment.",
+    )
 
     class Meta:
         ordering = ["-started_at"]
@@ -389,7 +397,8 @@ class CareTeamMembership(UUIDPrimaryKeyModel, TimeStampedModel):
 
         self.is_active = False
         self.ended_at = timezone.now()
-        self.save(update_fields=["is_active", "ended_at", "updated_at"])
+        self.ended_by = by
+        self.save(update_fields=["is_active", "ended_at", "ended_by", "updated_at"])
 
 
 class PregnancyRiskFactors(UUIDPrimaryKeyModel, TimeStampedModel):

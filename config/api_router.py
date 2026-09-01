@@ -22,6 +22,8 @@ from momcare_platform.core.monitoring.api.views import (
 from momcare_platform.core.organization.api.dashboard import DashboardSummaryView
 from momcare_platform.core.organization.api.views import MyOrganizationView
 from momcare_platform.core.patients.api.views import (
+    CareTeamMembershipEndView,
+    CareTeamMembershipListCreateView,
     PatientConsentView,
     PatientDetailView,
     PatientListCreateView,
@@ -134,6 +136,20 @@ core_urlpatterns = [
         r"^patients/(?P<patient_id>[0-9a-f-]{36})/pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/notes/?$",
         PregnancyNotesView.as_view(),
         name="pregnancy-notes",
+    ),
+    # Care team — supporting members alongside Pregnancy.assigned_staff (the
+    # lead clinician, read/written through the pregnancy endpoints above,
+    # untouched by any of this).
+    re_path(
+        r"^patients/(?P<patient_id>[0-9a-f-]{36})/pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/care-team/?$",
+        CareTeamMembershipListCreateView.as_view(),
+        name="care-team-list",
+    ),
+    re_path(
+        r"^patients/(?P<patient_id>[0-9a-f-]{36})/pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})"
+        r"/care-team/(?P<membership_id>[0-9a-f-]{36})/end/?$",
+        CareTeamMembershipEndView.as_view(),
+        name="care-team-end",
     ),
     # Monitoring — readings hang off a pregnancy, never a patient, because a
     # reading only means something in the context of gestational age.

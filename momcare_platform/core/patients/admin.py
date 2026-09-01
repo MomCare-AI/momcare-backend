@@ -119,7 +119,7 @@ class CareTeamMembershipAdmin(admin.ModelAdmin):
     list_display = ["pregnancy", "staff", "role", "is_active", "started_at", "ended_at"]
     list_filter = ["role", "is_active"]
     search_fields = ["pregnancy__patient__mrn", "pregnancy__patient__last_name", "staff__employee_id"]
-    readonly_fields = ["started_at", "created_at", "updated_at"]
+    readonly_fields = ["started_at", "created_by", "ended_by", "created_at", "updated_at"]
 
     def has_delete_permission(self, request, obj=None):
         # History must survive — end a membership instead of deleting it.
