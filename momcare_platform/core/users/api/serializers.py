@@ -93,6 +93,11 @@ class RegisterSerializer(serializers.Serializer):
 class UserMeSerializer(serializers.ModelSerializer):
     role_code = serializers.CharField(read_only=True)
     organization_name = serializers.CharField(source="organization.name", read_only=True)
+    # None for a platform_admin or a patient - neither has a Staff row. The
+    # frontend needs this to know whether "me" matches a given care-team
+    # row's staff id, e.g. to decide whether to show that pregnancy's write
+    # controls without a second round-trip.
+    staff_id = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -106,10 +111,15 @@ class UserMeSerializer(serializers.ModelSerializer):
             "role_code",
             "organization_id",
             "organization_name",
+            "staff_id",
             "is_email_verified",
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_staff_id(self, obj):
+        staff = getattr(obj, "staff", None)
+        return str(staff.id) if staff else None
 
 
 class PasswordChangeSerializer(serializers.Serializer):

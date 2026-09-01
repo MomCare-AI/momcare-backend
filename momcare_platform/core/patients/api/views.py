@@ -6,6 +6,7 @@ tenant membership is taken from the authenticated user, so there is no
 identifier a caller could tamper with to reach another hospital's patients.
 """
 
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import OuterRef, Prefetch, Q, Subquery, Value
 from django.db.models.functions import Concat
@@ -15,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from momcare_platform.core.common.pagination import DefaultPagination
-from momcare_platform.core.common.permissions import IsClinician, IsHospitalAdmin, IsHospitalStaff
+from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
 from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
 from momcare_platform.core.patients.api.serializers import (
     CareTeamMembershipCreateSerializer,
@@ -370,23 +371,44 @@ class PatientConsentView(PatientScopedView):
         return Response(ConsentSerializer(consent).data, status=status.HTTP_201_CREATED)
 
 
+def _can_manage_care_team(user, pregnancy) -> bool:
+    """hospital_admin always can, org/location-wide. A care_manager can only
+    when they hold an active ``care_manager`` membership on *this specific*
+    pregnancy — never org-wide, and never inherited from any other case.
+
+    Deliberately permissive on one point, decided explicitly rather than
+    guessed at: a qualifying care_manager can add *another* care_manager to
+    the same pregnancy, who then gets the same pregnancy-scoped authority.
+    That is delegation within a case, not organization-wide escalation — the
+    new member still can't touch any pregnancy they aren't themselves an
+    active member of, which is exactly what this function checks on every
+    call, not just at the moment they were added.
+    """
+    if user.role_code == settings.ROLE_HOSPITAL_ADMIN:
+        return True
+    if user.role_code != settings.ROLE_CARE_MANAGER:
+        return False
+    staff = getattr(user, "staff", None)
+    if staff is None:
+        return False
+    return CareTeamMembership.objects.filter(
+        pregnancy=pregnancy,
+        staff=staff,
+        role=CareTeamMembership.ROLE_CARE_MANAGER,
+        is_active=True,
+    ).exists()
+
+
 class CareTeamMembershipListCreateView(PatientScopedView):
     """A pregnancy's care team — supporting members alongside its one lead
     clinician (``Pregnancy.assigned_staff``, untouched, read and written
     through the pregnancy endpoints exactly as before).
 
-    Write access is ``IsHospitalAdmin`` only for now. The dashboard master
-    plan's own recommendation was hospital_admin **and** care_manager for
-    their own coordinated cases — deliberately not implemented here, because
-    "how does a case become a care_manager's own to coordinate" is still an
-    open product decision (see the plan's open-decisions list), not
-    something to guess at in the permission check.
+    Write access: hospital_admin, or a care_manager with an active
+    membership on this specific pregnancy — see ``_can_manage_care_team``.
+    Provider and nurse are read-only here, same as everyone else who isn't
+    hospital staff at all is refused entirely by ``IsHospitalStaff``.
     """
-
-    def get_permissions(self):
-        if self.request.method == "POST":
-            return [IsAuthenticated(), IsHospitalAdmin()]
-        return [IsAuthenticated(), IsHospitalStaff()]
 
     def _get_pregnancy(self, patient, pregnancy_id):
         try:
@@ -419,6 +441,12 @@ class CareTeamMembershipListCreateView(PatientScopedView):
         if gone:
             return gone
 
+        if not _can_manage_care_team(request.user, pregnancy):
+            return Response(
+                {"detail": "You do not have permission to manage this pregnancy's care team."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         serializer = CareTeamMembershipCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
 
@@ -439,9 +467,16 @@ class CareTeamMembershipListCreateView(PatientScopedView):
 
 class CareTeamMembershipEndView(PatientScopedView):
     """End a membership — never delete it. Same authority boundary as
-    creating one; see CareTeamMembershipListCreateView's docstring."""
+    creating one; see ``_can_manage_care_team`` and
+    CareTeamMembershipListCreateView's docstring.
 
-    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+    Includes the case where the membership being ended is the acting
+    care_manager's own: ending it is allowed (self-removal), and takes
+    effect immediately — the very next write request against this
+    pregnancy re-checks ``_can_manage_care_team`` from scratch and finds
+    nothing, since authorization is never cached, only ever read fresh
+    from the row this same request just changed.
+    """
 
     def post(self, request, patient_id, pregnancy_id, membership_id):
         _, error = self.hospital_or_error(request)
@@ -450,6 +485,17 @@ class CareTeamMembershipEndView(PatientScopedView):
         patient, missing = self.get_patient_or_404(patient_id)
         if missing:
             return missing
+
+        try:
+            pregnancy = patient.pregnancies.get(pk=pregnancy_id)
+        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+            return Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _can_manage_care_team(request.user, pregnancy):
+            return Response(
+                {"detail": "You do not have permission to manage this pregnancy's care team."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         try:
             membership = CareTeamMembership.objects.get(
