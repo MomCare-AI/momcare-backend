@@ -6,6 +6,7 @@ and then refused.
 """
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -65,13 +66,48 @@ class AlertListView(AlertScopedView):
     explicitly rather than crowding the list somebody is working from.
     """
 
+    def _scope_to_assigned(self, queryset, request):
+        """``?assigned_to=me`` — same semantics as the patient list's own
+        version (core/patients/api/views.py), reused here rather than
+        duplicated logic diverging over time. Alert visibility follows
+        assignment, not location — see the master plan's own §16 reasoning:
+        a nurse legitimately needs to see an alert for a patient outside
+        their usual ward if they're on that patient's care team.
+        """
+        if request.query_params.get("assigned_to") != "me":
+            return queryset
+
+        staff = getattr(request.user, "staff", None)
+        if staff is None:
+            return queryset.none()
+
+        role = request.user.role_code
+        if role == "provider":
+            return queryset.filter(
+                Q(pregnancy__assigned_staff=staff)
+                | Q(
+                    pregnancy__care_team_memberships__staff=staff,
+                    pregnancy__care_team_memberships__role="provider",
+                    pregnancy__care_team_memberships__is_active=True,
+                ),
+            ).distinct()
+        if role in ("nurse", "care_manager"):
+            return queryset.filter(
+                pregnancy__care_team_memberships__staff=staff,
+                pregnancy__care_team_memberships__role=role,
+                pregnancy__care_team_memberships__is_active=True,
+            ).distinct()
+        # hospital_admin and anyone else: same honest-empty-result choice as
+        # the patient list — "my alerts" isn't a concept that applies to them.
+        return queryset.none()
+
     def get(self, request):
         _, error = self.hospital_or_error(request)
         if error:
             return error
 
         requested = request.query_params.get("status", "live")
-        queryset = self.alerts()
+        queryset = self._scope_to_assigned(self.alerts(), request)
         if requested == "live":
             queryset = queryset.filter(status__in=Alert.LIVE_STATUSES)
         elif requested in dict(Alert.STATUS_CHOICES):

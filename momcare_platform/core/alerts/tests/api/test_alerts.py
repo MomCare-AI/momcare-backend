@@ -18,7 +18,7 @@ from momcare_platform.core.alerts.models import Alert, AlertEvent
 from momcare_platform.core.alerts.services import escalate_due_alerts
 from momcare_platform.core.monitoring.models import VitalReading
 from momcare_platform.core.monitoring.services import reassess_risk
-from momcare_platform.core.patients.models import Consent
+from momcare_platform.core.patients.models import CareTeamMembership, Consent
 from momcare_platform.core.patients.services import enrol_patient
 
 pytestmark = pytest.mark.django_db
@@ -422,6 +422,105 @@ def test_the_detail_view_carries_the_whole_history(client, make_hospital, pregna
     kinds = [event["kind"] for event in body["events"]]
     assert AlertEvent.KIND_RAISED in kinds
     assert AlertEvent.KIND_NOTIFIED in kinds
+
+
+# -- ?assigned_to=me ------------------------------------------------------------
+
+
+def test_a_providers_assigned_to_me_includes_lead_and_co_provider_cases(
+    client, make_hospital, make_staff, pregnancy_for, auth,
+):
+    """Same corrected query as the patient list — a supporting provider on a
+    pregnancy is a real CareTeamMembership row, never invisible in their own
+    "my alerts" view despite genuinely being on the case."""
+    hospital = make_hospital("Provider Alerts Hospital")
+    lead = make_staff(hospital.org, settings.ROLE_PROVIDER, "lead@provideralerts.test")
+    co_provider = make_staff(hospital.org, settings.ROLE_PROVIDER, "co@provideralerts.test")
+    bystander = make_staff(hospital.org, settings.ROLE_PROVIDER, "bystander@provideralerts.test")
+
+    lead_case = pregnancy_for(hospital, first_name="Lead", clinician=lead)
+    go_critical(lead_case)
+
+    co_case = pregnancy_for(hospital, first_name="Co")
+    CareTeamMembership.objects.create(pregnancy=co_case, staff=co_provider.staff, role="provider")
+    go_critical(co_case)
+
+    body = client.get(f"{ALERTS}?assigned_to=me", **auth(lead.email)).json()
+    assert body["count"] == 1
+    assert body["results"][0]["patient_name"] == "Lead Bibi"
+
+    body = client.get(f"{ALERTS}?assigned_to=me", **auth(co_provider.email)).json()
+    assert body["count"] == 1
+    assert body["results"][0]["patient_name"] == "Co Bibi"
+
+    body = client.get(f"{ALERTS}?assigned_to=me", **auth(bystander.email)).json()
+    assert body["count"] == 0
+
+
+def test_a_nurses_assigned_to_me_is_membership_only(
+    client, make_hospital, make_staff, pregnancy_for, auth,
+):
+    hospital = make_hospital("Nurse Alerts Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@nursealerts.test")
+    pregnancy = pregnancy_for(hospital)
+    CareTeamMembership.objects.create(pregnancy=pregnancy, staff=nurse.staff, role="nurse")
+    go_critical(pregnancy)
+
+    body = client.get(f"{ALERTS}?assigned_to=me", **auth(nurse.email)).json()
+
+    assert body["count"] == 1
+
+
+def test_an_ended_membership_no_longer_surfaces_the_alert(
+    client, make_hospital, make_staff, pregnancy_for, auth,
+):
+    hospital = make_hospital("Ended Alerts Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@endedalerts.test")
+    pregnancy = pregnancy_for(hospital)
+    membership = CareTeamMembership.objects.create(
+        pregnancy=pregnancy, staff=nurse.staff, role="nurse",
+    )
+    go_critical(pregnancy)
+    membership.end()
+
+    body = client.get(f"{ALERTS}?assigned_to=me", **auth(nurse.email)).json()
+
+    assert body["count"] == 0
+
+
+def test_hospital_admin_gets_an_honest_empty_list_for_assigned_to_me(
+    client, make_hospital, pregnancy_for, auth,
+):
+    """"My alerts" isn't a concept that applies to an admin — an honest empty
+    result, not the param silently ignored and everyone's alerts returned
+    under a label that would be wrong for this role."""
+    hospital = make_hospital("Admin Alerts Hospital")
+    go_critical(pregnancy_for(hospital))
+
+    body = client.get(f"{ALERTS}?assigned_to=me", **auth(hospital.admin.email)).json()
+
+    assert body["count"] == 0
+
+
+def test_assigned_to_me_removed_would_leak_everyones_alerts(
+    client, make_hospital, make_staff, pregnancy_for, auth,
+):
+    """Fault injection, matching this project's own testing discipline: prove
+    the filter is actually doing something by checking what an *unfiltered*
+    request to the same hospital would return, rather than trusting the
+    assigned_to=me result in isolation."""
+    hospital = make_hospital("Fault Alerts Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@faultalerts.test")
+    mine = pregnancy_for(hospital, first_name="Mine")
+    CareTeamMembership.objects.create(pregnancy=mine, staff=nurse.staff, role="nurse")
+    go_critical(mine)
+    go_critical(pregnancy_for(hospital, first_name="NotMine"))
+
+    unfiltered = client.get(ALERTS, **auth(nurse.email)).json()
+    filtered = client.get(f"{ALERTS}?assigned_to=me", **auth(nurse.email)).json()
+
+    assert unfiltered["count"] == 2
+    assert filtered["count"] == 1
 
 
 # -- Tenant isolation ----------------------------------------------------------
