@@ -129,7 +129,7 @@ The platform is built and running. Seven capabilities are complete, tested and p
 | 6 | Risk assessment — rules engine, attention queue |
 | 7 | Alerts and escalation — three-tier ladder, email, append-only audit trail |
 
-**335 backend tests, 30 frontend.** Security-critical tests validated by fault
+**347 backend tests, 30 frontend.** Security-critical tests validated by fault
 injection: each protection was deliberately removed and the corresponding test
 confirmed to fail.
 
