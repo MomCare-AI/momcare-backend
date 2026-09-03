@@ -3,6 +3,7 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,6 +17,7 @@ from momcare_platform.core.staff.api.serializers import (
     StaffInviteCreateSerializer,
     StaffInviteSerializer,
     StaffMemberSerializer,
+    StaffProfileUpdateSerializer,
 )
 from momcare_platform.core.staff.models import Staff, StaffInvite
 from momcare_platform.core.staff.services import InviteError, accept_invite
@@ -67,7 +69,59 @@ class StaffListView(HospitalPortalView):
             .select_related("user", "user__role")
             .order_by("user__first_name", "user__last_name")
         )
-        return Response(StaffMemberSerializer(staff, many=True).data)
+        return Response(StaffMemberSerializer(staff, many=True, context={"request": request}).data)
+
+
+class StaffProfileView(HospitalPortalView):
+    """One staff member's credentialing profile.
+
+    Writable by the staff member themselves, or by their hospital_admin —
+    never by a different clinician editing a colleague's qualifications.
+    Deliberately excludes ``employee_id``, role and tenant membership: those
+    are granted by the hospital, never self-edited, same split the frontend
+    Settings page already documents for the User side of this.
+    """
+
+    organization_lookup = "user__organization"
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _get_staff_or_404(self, staff_id):
+        try:
+            return self.scope_to_organization(Staff.objects.all()).select_related(
+                "user", "user__role",
+            ).get(pk=staff_id), None
+        except Staff.DoesNotExist:
+            return None, Response({"detail": "Staff member not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    def get(self, request, staff_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        member, missing = self._get_staff_or_404(staff_id)
+        if missing:
+            return missing
+        return Response(StaffMemberSerializer(member, context={"request": request}).data)
+
+    def patch(self, request, staff_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        member, missing = self._get_staff_or_404(staff_id)
+        if missing:
+            return missing
+
+        is_self = member.user_id == request.user.id
+        is_admin = request.user.role_code == settings.ROLE_HOSPITAL_ADMIN
+        if not (is_self or is_admin):
+            return Response(
+                {"detail": "You can only edit your own profile, or your staff's."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = StaffProfileUpdateSerializer(member, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(StaffMemberSerializer(member, context={"request": request}).data)
 
 
 class StaffInviteListCreateView(HospitalPortalView):

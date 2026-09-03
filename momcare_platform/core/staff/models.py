@@ -41,6 +41,27 @@ class Staff(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
         related_name="+",
     )
 
+    # Credentialing — self-reported, not verified against any registry. The
+    # directory shows what the person entered, the same honesty rule as the
+    # organization's own license fields: not claimed to be more than it is.
+    photo = models.FileField(upload_to="staff/%Y/%m/", blank=True, null=True)
+    qualifications = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="e.g. MBBS, FCPS (Gynae & Obs)",
+    )
+    specialty = models.CharField(max_length=150, blank=True)
+    registration_number = models.CharField(max_length=100, blank=True)
+    registration_authority = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="e.g. PMDC, Pakistan Nursing Council",
+    )
+    # Experience is derived from this on every read, never stored as a raw
+    # number of years - the same reasoning as gestational age elsewhere in
+    # this codebase: a stored "12 years" is wrong the following year.
+    practicing_since = models.DateField(null=True, blank=True)
+
     class Meta:
         ordering = ["employee_id"]
 
@@ -58,6 +79,16 @@ class Staff(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
         if self.max_patients is None:
             return True
         return self.current_patient_count < self.max_patients
+
+    @property
+    def years_of_experience(self) -> int | None:
+        if self.practicing_since is None:
+            return None
+        today = timezone.now().date()
+        years = today.year - self.practicing_since.year
+        if (today.month, today.day) < (self.practicing_since.month, self.practicing_since.day):
+            years -= 1
+        return max(years, 0)
 
 
 class StaffInvite(UUIDPrimaryKeyModel, TimeStampedModel):

@@ -15,6 +15,7 @@ class StaffMemberSerializer(serializers.ModelSerializer):
     role_code = serializers.CharField(source="user.role_code", read_only=True)
     role_name = serializers.CharField(source="user.role.name", read_only=True, default="")
     is_user_active = serializers.BooleanField(source="user.is_active", read_only=True)
+    years_of_experience = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Staff
@@ -27,9 +28,35 @@ class StaffMemberSerializer(serializers.ModelSerializer):
             "role_name",
             "is_user_active",
             "is_active",
+            "photo",
+            "qualifications",
+            "specialty",
+            "registration_number",
+            "registration_authority",
+            "practicing_since",
+            "years_of_experience",
             "created_at",
         ]
         read_only_fields = fields
+
+
+class StaffProfileUpdateSerializer(serializers.ModelSerializer):
+    """The credentialing fields a person keeps current about themselves —
+    self-reported, not verified against any registry, same honesty rule as
+    everywhere else self-reported data appears in this codebase. Writable by
+    the staff member themselves or by their hospital_admin; never touches
+    employee_id, role, or anything tenant-membership-related."""
+
+    class Meta:
+        model = Staff
+        fields = [
+            "photo",
+            "qualifications",
+            "specialty",
+            "registration_number",
+            "registration_authority",
+            "practicing_since",
+        ]
 
 
 class StaffInviteSerializer(serializers.ModelSerializer):

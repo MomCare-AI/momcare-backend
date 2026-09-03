@@ -48,6 +48,26 @@ class OrganizationSummarySerializer(serializers.ModelSerializer):
             "staff_count",
             "patient_count",
             "location_count",
+            "building_photo",
             "created_at",
         ]
         read_only_fields = fields
+
+
+class OrganizationPhotoUpdateSerializer(serializers.ModelSerializer):
+    """Just the building photo — every other field on the hospital's own
+    record stays read-only for the reasons in HospitalPage's own docstring
+    on the frontend: they're either the evidence approval rested on, or they
+    drive which population's risk thresholds apply.
+
+    ``allow_null`` explicitly, so sending ``{"building_photo": null}``
+    clears it - DRF's FileField doesn't treat that as removal by default,
+    only as "field not provided" (a no-op), which would leave no way to
+    remove a photo once one exists.
+    """
+
+    building_photo = serializers.FileField(required=False, allow_null=True)
+
+    class Meta:
+        model = Organization
+        fields = ["building_photo"]

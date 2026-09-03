@@ -89,6 +89,12 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
         blank=True,
     )
     logo = models.URLField(max_length=500, blank=True)
+    building_photo = models.FileField(
+        upload_to="organizations/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="A photo of the hospital or office building, shown on its profile.",
+    )
     timezone = TimeZoneField(default="UTC")
     phone = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True)

@@ -37,6 +37,7 @@ from momcare_platform.core.staff.api.views import (
     StaffInviteListCreateView,
     StaffInviteRevokeView,
     StaffListView,
+    StaffProfileView,
 )
 from momcare_platform.core.users.api.auth import (
     LoginView,
@@ -103,6 +104,11 @@ auth_urlpatterns = [
 core_urlpatterns = [
     re_path(r"^organization/me/?$", MyOrganizationView.as_view(), name="organization-me"),
     re_path(r"^staff/?$", StaffListView.as_view(), name="staff-list"),
+    re_path(
+        r"^staff/(?P<staff_id>[0-9a-f-]{36})/?$",
+        StaffProfileView.as_view(),
+        name="staff-detail",
+    ),
     re_path(r"^staff/invites/?$", StaffInviteListCreateView.as_view(), name="staff-invite-list"),
     re_path(
         r"^staff/invites/(?P<invite_id>[0-9a-f-]{36})/revoke/?$",
