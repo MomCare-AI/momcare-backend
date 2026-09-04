@@ -399,3 +399,27 @@ class PatientCreateSerializer(serializers.Serializer):
         pregnancy = data.get("pregnancy")
         risk_factors = pregnancy.pop("risk_factors", None) if pregnancy else None
         return patient_data, pregnancy, risk_factors, data["consent"]
+
+
+class WorklistReasonSerializer(serializers.Serializer):
+    """One administrative/care-continuity gap — never a bare code, always a
+    sentence a clinician can act on without opening the record first."""
+
+    code = serializers.CharField()
+    detail = serializers.CharField()
+    days = serializers.IntegerField(allow_null=True)
+
+
+class WorklistPatientSerializer(serializers.Serializer):
+    """One row of the worklist — see docs/worklist-feature-scope.md.
+
+    Deliberately separate from AttentionPatientSerializer: this list answers
+    "does this case have a gap unrelated to today's vitals," not "is this
+    patient clinically at-risk right now." Never merged into one shape.
+    """
+
+    patient_id = serializers.UUIDField()
+    pregnancy_id = serializers.UUIDField()
+    full_name = serializers.CharField()
+    gestational_age = serializers.CharField()
+    reasons = WorklistReasonSerializer(many=True)

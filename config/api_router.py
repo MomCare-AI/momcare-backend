@@ -27,6 +27,7 @@ from momcare_platform.core.patients.api.views import (
     PatientConsentView,
     PatientDetailView,
     PatientListCreateView,
+    PatientWorklistView,
     PregnancyDetailView,
     PregnancyListCreateView,
     PregnancyNotesView,
@@ -118,6 +119,7 @@ core_urlpatterns = [
     # Patients — mounted under /api/patients/ so AuditLogMiddleware's PHI
     # prefix already covers every mutation here.
     re_path(r"^patients/?$", PatientListCreateView.as_view(), name="patient-list"),
+    re_path(r"^patients/worklist/?$", PatientWorklistView.as_view(), name="patient-worklist"),
     re_path(
         r"^patients/(?P<patient_id>[0-9a-f-]{36})/?$",
         PatientDetailView.as_view(),

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 
 from momcare_platform.core.common.permissions import user_role_code
 
@@ -111,6 +112,60 @@ def user_location_ids(user):
     if not (user and user.is_authenticated):
         return []
     return list(user.locations.values_list("id", flat=True))
+
+
+def scope_to_assigned_staff(queryset, request, *, path_prefix: str = ""):
+    """``?assigned_to=me`` — a clinician's honest "my patients"/"my alerts"/
+    "my worklist", not the whole hospital wearing that label.
+
+    Shared by ``PatientListCreateView``, ``AlertListView`` and the worklist
+    view rather than reimplemented per view — it drifted from a single
+    original (see ``patients/api/views.py``'s own docstring crediting it)
+    into three near-identical copies before being pulled out here.
+
+    ``path_prefix`` is the ORM path from ``queryset``'s model to
+    ``Pregnancy``: empty when the queryset already *is* Pregnancy (the
+    worklist), ``"pregnancy__"`` for a model with a direct FK to it
+    (``Alert``), or ``"pregnancies__"`` for Patient's reverse FK.
+
+    Providers get both paths deliberately, not ``assigned_staff`` alone: a
+    supporting/co-provider on a pregnancy is a real ``CareTeamMembership``
+    row, never the lead field, and would otherwise be invisible in their own
+    "my X" view despite genuinely being on the case. Nurses and care
+    managers only ever exist as membership rows - there is no equivalent
+    lead field for either.
+    """
+    if request.query_params.get("assigned_to") != "me":
+        return queryset
+
+    staff = getattr(request.user, "staff", None)
+    if staff is None:
+        return queryset.none()
+
+    role = request.user.role_code
+    if role == "provider":
+        return queryset.filter(
+            Q(**{f"{path_prefix}assigned_staff": staff})
+            | Q(
+                **{
+                    f"{path_prefix}care_team_memberships__staff": staff,
+                    f"{path_prefix}care_team_memberships__role": "provider",
+                    f"{path_prefix}care_team_memberships__is_active": True,
+                },
+            ),
+        ).distinct()
+    if role in ("nurse", "care_manager"):
+        return queryset.filter(
+            **{
+                f"{path_prefix}care_team_memberships__staff": staff,
+                f"{path_prefix}care_team_memberships__role": role,
+                f"{path_prefix}care_team_memberships__is_active": True,
+            },
+        ).distinct()
+    # hospital_admin and anyone else: "my X" isn't a concept that applies to
+    # them - an empty, honest result rather than silently ignoring the param
+    # and returning everyone under a label that would be wrong for this role.
+    return queryset.none()
 
 
 class LocationScopedQuerysetMixin(OrganizationScopedQuerysetMixin):

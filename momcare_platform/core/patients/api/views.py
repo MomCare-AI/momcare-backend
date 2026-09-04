@@ -6,10 +6,13 @@ tenant membership is taken from the authenticated user, so there is no
 identifier a caller could tamper with to reach another hospital's patients.
 """
 
+from datetime import timedelta
+
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import OuterRef, Prefetch, Q, Subquery, Value
 from django.db.models.functions import Concat
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -17,7 +20,10 @@ from rest_framework.views import APIView
 
 from momcare_platform.core.common.pagination import DefaultPagination
 from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
-from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
+from momcare_platform.core.common.scoping import (
+    OrganizationScopedQuerysetMixin,
+    scope_to_assigned_staff,
+)
 from momcare_platform.core.patients.api.serializers import (
     CareTeamMembershipCreateSerializer,
     CareTeamMembershipSerializer,
@@ -30,6 +36,7 @@ from momcare_platform.core.patients.api.serializers import (
     PatientListSerializer,
     PregnancySerializer,
     PregnancyWriteSerializer,
+    WorklistPatientSerializer,
 )
 from momcare_platform.core.patients.models import CareTeamMembership, ClinicalNote, Consent, Patient, Pregnancy
 from momcare_platform.core.patients.services import EnrolmentError, create_pregnancy, enrol_patient
@@ -98,44 +105,11 @@ class PatientListCreateView(PatientScopedView):
     """List and search this hospital's patients, or enrol a new one."""
 
     def _scope_to_assigned(self, queryset, request):
-        """``?assigned_to=me`` — a clinician's honest "my patients", not the
-        whole hospital wearing that label.
-
-        Providers get both paths deliberately, not assigned_staff alone: a
-        supporting/co-provider on a pregnancy is a real CareTeamMembership
-        row, never the lead field, and would otherwise be invisible in their
-        own "my patients" view despite genuinely being on the case. Nurses
-        and care managers only ever exist as membership rows - there is no
-        equivalent lead field for either.
+        """``?assigned_to=me`` on a Patient queryset — see
+        ``scope_to_assigned_staff``'s own docstring (core/common/scoping.py)
+        for the shared semantics this delegates to.
         """
-        if request.query_params.get("assigned_to") != "me":
-            return queryset
-
-        staff = getattr(request.user, "staff", None)
-        if staff is None:
-            return queryset.none()
-
-        role = request.user.role_code
-        if role == "provider":
-            return queryset.filter(
-                Q(pregnancies__assigned_staff=staff)
-                | Q(
-                    pregnancies__care_team_memberships__staff=staff,
-                    pregnancies__care_team_memberships__role="provider",
-                    pregnancies__care_team_memberships__is_active=True,
-                ),
-            ).distinct()
-        if role in ("nurse", "care_manager"):
-            return queryset.filter(
-                pregnancies__care_team_memberships__staff=staff,
-                pregnancies__care_team_memberships__role=role,
-                pregnancies__care_team_memberships__is_active=True,
-            ).distinct()
-        # hospital_admin and anyone else: "my patients" isn't a concept that
-        # applies to them - an empty, honest result rather than silently
-        # ignoring the param and returning everyone under a label that
-        # would be wrong for this role specifically.
-        return queryset.none()
+        return scope_to_assigned_staff(queryset, request, path_prefix="pregnancies__")
 
     def get(self, request):
         _, error = self.hospital_or_error(request)
@@ -190,6 +164,144 @@ class PatientListCreateView(PatientScopedView):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(PatientDetailSerializer(patient).data, status=status.HTTP_201_CREATED)
+
+
+class PatientWorklistView(PatientScopedView):
+    """Administrative and care-continuity gaps — a different question from
+    the Attention Queue's clinical severity.
+
+    The Attention Queue (core/monitoring/api/views.py) answers "whose vitals
+    just crossed a threshold." This answers "does this case have a gap that
+    has nothing to do with today's vitals being bad" - no reading in a
+    while, no note logged, no risk history ever answered, nobody
+    accountable. Deliberately a separate endpoint and never merged with the
+    Attention Queue, the same way "not assessed" stays visually distinct
+    from "stable" everywhere else in this portal - see
+    docs/worklist-feature-scope.md for the full reasoning.
+
+    The two day thresholds below are administrative defaults, not clinically
+    validated - the same honesty risk_rules.py already applies to its own
+    thresholds. Worth revisiting alongside the obstetrician review
+    (PLAN.md §3 item 3), not asserted as correct here.
+    """
+
+    organization_lookup = "patient__location__organization"
+
+    NO_READING_AFTER = timedelta(days=7)
+    NO_NOTE_AFTER = timedelta(days=30)
+
+    def get(self, request):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+
+        # Function-local: monitoring already imports patients, so a
+        # module-level import the other way would close the cycle (same
+        # reasoning as _active_pregnancy_prefetch above).
+        from momcare_platform.core.monitoring.models import VitalReading
+
+        pregnancies = self.scope_to_organization(
+            Pregnancy.objects.filter(status=Pregnancy.STATUS_ACTIVE),
+        ).select_related("patient", "assigned_staff__user", "risk_factors")
+        pregnancies = scope_to_assigned_staff(pregnancies, request, path_prefix="")
+
+        latest_reading = VitalReading.objects.filter(pregnancy=OuterRef("pk")).order_by("-recorded_at")
+        latest_note = ClinicalNote.objects.filter(pregnancy=OuterRef("pk")).order_by("-created_at")
+        pregnancies = pregnancies.annotate(
+            latest_reading_at=Subquery(latest_reading.values("recorded_at")[:1]),
+            latest_note_at=Subquery(latest_note.values("created_at")[:1]),
+        )
+
+        now = timezone.now()
+        rows = []
+        for pregnancy in pregnancies:
+            reasons = self._reasons_for(pregnancy, now)
+            if not reasons:
+                continue
+            rows.append(
+                {
+                    "patient_id": pregnancy.patient_id,
+                    "pregnancy_id": pregnancy.id,
+                    "full_name": pregnancy.patient.full_name,
+                    "gestational_age": pregnancy.gestational_age_display,
+                    "reasons": reasons,
+                },
+            )
+
+        # Most gaps first - a case missing three things is more worth
+        # opening than one missing a single, possibly-explainable thing.
+        rows.sort(key=lambda r: -len(r["reasons"]))
+
+        return Response(
+            {
+                "count": len(rows),
+                "results": WorklistPatientSerializer(rows, many=True).data,
+            },
+        )
+
+    def _reasons_for(self, pregnancy, now) -> list[dict]:
+        reasons = []
+
+        reading_gap = self._days_since(pregnancy.latest_reading_at, now)
+        if reading_gap is None or reading_gap >= self.NO_READING_AFTER.days:
+            reasons.append(
+                {
+                    "code": "no_recent_reading",
+                    "detail": (
+                        f"No reading in {reading_gap} days."
+                        if reading_gap is not None
+                        else "No reading has ever been recorded."
+                    ),
+                    "days": reading_gap,
+                },
+            )
+
+        note_gap = self._days_since(pregnancy.latest_note_at, now)
+        if note_gap is None or note_gap >= self.NO_NOTE_AFTER.days:
+            reasons.append(
+                {
+                    "code": "no_recent_note",
+                    "detail": (
+                        f"No clinical note in {note_gap} days."
+                        if note_gap is not None
+                        else "No clinical note has ever been logged."
+                    ),
+                    "days": note_gap,
+                },
+            )
+
+        risk_factors = getattr(pregnancy, "risk_factors", None)
+        if risk_factors is None:
+            reasons.append(
+                {
+                    "code": "no_risk_history",
+                    "detail": "No obstetric risk history has been recorded.",
+                    "days": None,
+                },
+            )
+        elif len(risk_factors.unanswered_factors) == len(risk_factors.FACTOR_FIELDS):
+            reasons.append(
+                {
+                    "code": "no_risk_history",
+                    "detail": "No obstetric risk history has ever been answered.",
+                    "days": None,
+                },
+            )
+
+        if not pregnancy.has_responsible_clinician:
+            reasons.append(
+                {
+                    "code": "no_lead_clinician",
+                    "detail": "No lead clinician assigned.",
+                    "days": None,
+                },
+            )
+
+        return reasons
+
+    @staticmethod
+    def _days_since(at, now) -> int | None:
+        return (now - at).days if at is not None else None
 
 
 class PatientDetailView(PatientScopedView):
