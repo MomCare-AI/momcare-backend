@@ -6,6 +6,7 @@ from django.db import models
 from django.utils import timezone
 
 from momcare_platform.core.common.models import Deactivatable, TimeStampedModel, UUIDPrimaryKeyModel
+from momcare_platform.core.common.storage import DatabaseStorage
 
 INVITE_TTL_DAYS = 14
 
@@ -44,7 +45,7 @@ class Staff(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
     # Credentialing — self-reported, not verified against any registry. The
     # directory shows what the person entered, the same honesty rule as the
     # organization's own license fields: not claimed to be more than it is.
-    photo = models.FileField(upload_to="staff/%Y/%m/", blank=True, null=True)
+    photo = models.FileField(upload_to="staff/%Y/%m/", storage=DatabaseStorage(), blank=True, null=True)
     qualifications = models.CharField(
         max_length=255,
         blank=True,

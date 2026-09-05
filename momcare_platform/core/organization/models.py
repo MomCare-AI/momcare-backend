@@ -4,12 +4,43 @@ from timezone_field import TimeZoneField
 
 from momcare_platform.core.common import regions
 from momcare_platform.core.common.models import AddressMixin, Deactivatable, TimeStampedModel, UUIDPrimaryKeyModel
+from momcare_platform.core.common.storage import DatabaseStorage
 
 DATE_FORMAT_CHOICES = [
     ("DD-MM-YYYY", "DD-MM-YYYY"),
     ("MM-DD-YYYY", "MM-DD-YYYY"),
     ("YYYY-MM-DD", "YYYY-MM-DD"),
 ]
+
+
+class FileBlob(UUIDPrimaryKeyModel, TimeStampedModel):
+    """Durable storage for every uploaded file project-wide, so an upload
+    survives a Railway redeploy — see ``docs/PLAN.md`` item 1.
+
+    Deliberately its own table, never a column on ``Organization`` or
+    ``Staff`` directly: those tables are read on every authenticated
+    request (tenant scoping, ``/auth/me/``), and a multi-megabyte blob
+    inlined there would add real I/O weight to queries that never touch
+    it. This table is looked up only by ``name``, when a file is actually
+    opened, downloaded, or re-saved — see ``DatabaseStorage``
+    (``core/common/storage.py``), the only thing that ever queries it.
+
+    Lives here rather than in ``core.common``: that package holds no
+    models of its own (shared base classes, permissions, scoping — see its
+    own package docstring), and this is a genuine table needing a genuine
+    migration. ``Organization`` already carries two of the three fields
+    that use it (``license_document``, ``building_photo``); ``Staff.photo``
+    reaches across to this same table the same way ``Organization``
+    already reaches into ``staff.models`` for a property, below.
+    """
+
+    name = models.CharField(max_length=255, unique=True, db_index=True)
+    content_type = models.CharField(max_length=100, blank=True)
+    size = models.PositiveIntegerField()
+    data = models.BinaryField()
+
+    def __str__(self) -> str:
+        return self.name
 
 # Facilities in Pakistan are licensed provincially, not federally (PMDC registers
 # individual practitioners, not establishments). Recording the issuing body tells
@@ -77,6 +108,7 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
     )
     license_document = models.FileField(
         upload_to="licenses/%Y/%m/",
+        storage=DatabaseStorage(),
         blank=True,
         null=True,
         help_text="Scan of the licence certificate, for the reviewer to inspect.",
@@ -91,6 +123,7 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
     logo = models.URLField(max_length=500, blank=True)
     building_photo = models.FileField(
         upload_to="organizations/%Y/%m/",
+        storage=DatabaseStorage(),
         blank=True,
         null=True,
         help_text="A photo of the hospital or office building, shown on its profile.",
