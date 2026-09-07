@@ -1,6 +1,6 @@
 """When an unanswered alert should climb, and to whom.
 
-A pure module, like ``monitoring.risk_rules``: no database, no framework, no
+A pure module, like ``momcare_model.predict``: no database, no framework, no
 side effects. The policy is the part most likely to be argued over by a
 clinician reviewing this system, so it is kept in one readable place rather
 than scattered through the service layer.
@@ -41,22 +41,26 @@ class Policy:
     to_admin: int
 
 
-# Intervals scale with severity. A critical alert nobody answers within five
-# minutes is the exact scenario this whole platform exists to catch, so it
-# climbs fast; a moderate one has hours of clinical slack and climbing quickly
-# would only train people to ignore the channel.
+# Intervals scale with severity, on the model's own 3-level scale
+# (Low/Medium/High) — there is no separate "critical" tier. An emergency
+# rules-engine finding (severe hypertension, etc.) is still reported as
+# High; it earns the faster of the two timings that used to be split
+# between "high" and "critical", on the principle that when two things
+# have to merge into one, the safer failure mode wins: a High alert
+# nobody answers within five minutes is the exact scenario this platform
+# exists to catch, so it climbs fast. Medium has hours of clinical slack,
+# and climbing quickly there would only train people to ignore the channel.
 #
 # These intervals are a starting point drawn from how obstetric escalation is
 # usually described. Like the risk thresholds, they need an obstetrician's
 # review before this system is used in care.
 POLICIES: dict[str, Policy] = {
-    "critical": Policy(to_ward=5, to_admin=15),
-    "high": Policy(to_ward=15, to_admin=45),
-    "moderate": Policy(to_ward=60, to_admin=180),
+    "high": Policy(to_ward=5, to_admin=15),
+    "medium": Policy(to_ward=60, to_admin=180),
 }
 
-# Stable never raises an alert, so it has no policy and no ladder.
-DEFAULT_POLICY = POLICIES["moderate"]
+# Low never raises an alert, so it has no policy and no ladder.
+DEFAULT_POLICY = POLICIES["medium"]
 
 
 def policy_for(level: str) -> Policy:

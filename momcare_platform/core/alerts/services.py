@@ -17,14 +17,14 @@ from django.utils import timezone
 
 from momcare_platform.core.alerts import escalation
 from momcare_platform.core.alerts.models import Alert, AlertEvent
-from momcare_platform.core.common.mail import send_alert_notification
+from momcare_platform.core.common.mail import send_alert_notification, send_low_confidence_notification
 
 logger = logging.getLogger(__name__)
 
-# Anything above stable is worth somebody's time.
-ACTIONABLE_LEVELS = ("moderate", "high", "critical")
+# Anything above low is worth somebody's time.
+ACTIONABLE_LEVELS = ("medium", "high")
 
-_SEVERITY = {"stable": 0, "moderate": 1, "high": 2, "critical": 3}
+_SEVERITY = {"low": 0, "medium": 1, "high": 2}
 
 
 def _worse(new_level: str, old_level: str) -> bool:
@@ -113,6 +113,24 @@ def notify(alert: Alert, tier: int) -> int:
     return len(recipients)
 
 
+def notify_low_confidence(assessment) -> bool:
+    """Tell the assigned clinician a prediction fell below the confidence
+    threshold — never the patient. A flag means "worth a second look," not
+    an emergency, so this bypasses the Alert/escalation ladder entirely:
+    there is no episode to acknowledge or climb, just one notice to the one
+    person already responsible for this pregnancy.
+
+    Best-effort, like every other send in this system: a mail outage must
+    not roll back the assessment. Silent (returns False) when there is no
+    active assigned clinician to tell — the flag on the assessment row is
+    itself the permanent record, so nothing is lost, only not delivered yet.
+    """
+    staff = assessment.pregnancy.assigned_staff
+    if not (staff and staff.is_active and staff.user and staff.user.is_active):
+        return False
+    return send_low_confidence_notification(assessment, staff.user)
+
+
 # -- Raising and closing ------------------------------------------------------
 
 
@@ -127,26 +145,29 @@ def sync_alert_for(assessment) -> Alert | None:
 
     - The patient became actionable and has no live alert -> raise one.
     - The patient worsened while an alert is live -> sharpen it and re-notify,
-      resetting acknowledgement, because a clinician who accepted "moderate"
-      has not accepted "critical".
-    - The patient returned to stable -> resolve the live alert as recovered.
+      resetting acknowledgement, because a clinician who accepted "medium"
+      has not accepted "high".
+    - The patient returned to low risk -> resolve the live alert as recovered.
     """
     pregnancy = assessment.pregnancy
     live = Alert.objects.filter(pregnancy=pregnancy, status__in=Alert.LIVE_STATUSES).first()
 
-    if assessment.level not in ACTIONABLE_LEVELS:
+    # final_risk_level, not risk_level: escalation rules can raise the level
+    # actually acted on above the model's raw answer, and an alert must follow
+    # what is acted on.
+    if assessment.final_risk_level not in ACTIONABLE_LEVELS:
         if live:
             _close(
                 live,
                 resolution=Alert.RESOLUTION_RECOVERED,
-                detail=f"Readings returned to {assessment.level}.",
+                detail=f"Readings returned to {assessment.final_risk_level}.",
             )
         return None
 
     if live is None:
         return _raise(pregnancy, assessment)
 
-    if _worse(assessment.level, live.level):
+    if _worse(assessment.final_risk_level, live.level):
         return _worsen(live, assessment)
 
     # Same or improved but still actionable: the alert already covers it. A new
@@ -160,14 +181,14 @@ def _raise(pregnancy, assessment) -> Alert:
     alert = Alert.objects.create(
         pregnancy=pregnancy,
         assessment=assessment,
-        level=assessment.level,
+        level=assessment.final_risk_level,
         tier=escalation.TIER_CLINICIAN,
     )
     AlertEvent.objects.create(
         alert=alert,
         kind=AlertEvent.KIND_RAISED,
         tier=alert.tier,
-        detail=assessment.reasons[0] if assessment.reasons else assessment.level,
+        detail=alert.reasons[0] if alert.reasons else assessment.final_risk_level,
     )
     _notify_or_climb(alert)
     return alert
@@ -175,7 +196,7 @@ def _raise(pregnancy, assessment) -> Alert:
 
 def _worsen(alert: Alert, assessment) -> Alert:
     previous = alert.level
-    alert.level = assessment.level
+    alert.level = assessment.final_risk_level
     alert.assessment = assessment
     # A worse patient is a new question. An acknowledgement of the milder state
     # must not silence the escalation clock for the severe one.
@@ -192,12 +213,12 @@ def _worsen(alert: Alert, assessment) -> Alert:
             "updated_at",
         ],
     )
-    reason = assessment.reasons[0] if assessment.reasons else ""
+    reason = alert.reasons[0] if alert.reasons else ""
     AlertEvent.objects.create(
         alert=alert,
         kind=AlertEvent.KIND_WORSENED,
         tier=alert.tier,
-        detail=f"{previous} -> {assessment.level}. {reason}".strip(),
+        detail=f"{previous} -> {assessment.final_risk_level}. {reason}".strip(),
     )
     _notify_or_climb(alert)
     return alert

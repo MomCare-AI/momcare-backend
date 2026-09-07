@@ -23,7 +23,8 @@ from momcare_platform.core.organization.models import AuditLog
 from momcare_platform.core.patients.models import Pregnancy
 
 # Ordered worst-first, which is also the order the interface renders them in.
-RISK_LEVELS = ["critical", "high", "moderate", "stable"]
+# Matches the model's own 3-value scale (Low/Medium/High) — no 4th "critical".
+RISK_LEVELS = ["high", "medium", "low"]
 
 ACTIVITY_LIMIT = 12
 
@@ -38,10 +39,12 @@ def _risk_distribution(organization) -> dict:
     """
     from momcare_platform.core.monitoring.models import RiskAssessment  # noqa: PLC0415
 
+    # final_risk_level, not risk_level: the ward count must reflect the level
+    # actually being acted on, not the model's pre-escalation answer.
     latest_level = (
         RiskAssessment.objects.filter(pregnancy=OuterRef("pk"))
         .order_by("-assessed_at")
-        .values("level")[:1]
+        .values("final_risk_level")[:1]
     )
 
     rows = (
@@ -55,7 +58,7 @@ def _risk_distribution(organization) -> dict:
 
     counts = {level: 0 for level in RISK_LEVELS}
     # Null means no assessment has ever been written for this pregnancy. Kept
-    # separate on purpose: reporting it as stable would be the dashboard
+    # separate on purpose: reporting it as low risk would be the dashboard
     # inventing reassurance nobody measured.
     counts["not_assessed"] = 0
 
@@ -64,7 +67,7 @@ def _risk_distribution(organization) -> dict:
         counts[key] += 1
 
     counts["total"] = sum(counts[k] for k in [*RISK_LEVELS, "not_assessed"])
-    counts["needing_attention"] = sum(counts[k] for k in ["critical", "high", "moderate"])
+    counts["needing_attention"] = sum(counts[k] for k in ["high", "medium"])
     return counts
 
 

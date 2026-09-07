@@ -17,7 +17,6 @@ from momcare_platform.core.monitoring.services import (
     MonitoringError,
     assign_device,
     latest_readings,
-    simulate_readings,
 )
 from momcare_platform.core.patients.models import Consent, Pregnancy
 from momcare_platform.core.patients.services import enrol_patient
@@ -242,7 +241,13 @@ def test_unassigning_keeps_the_readings_already_collected(
     pregnancy = pregnancy_for(hospital)
     device = device_for(hospital)
     assign_device(device=device, pregnancy=pregnancy)
-    simulate_readings(pregnancy=pregnancy, hours=2, device=device)
+    VitalReading.objects.create(
+        pregnancy=pregnancy,
+        recorded_at=timezone.now(),
+        source=VitalReading.SOURCE_DEVICE,
+        device=device,
+        heart_rate=80,
+    )
     before = pregnancy.readings.count()
 
     response = client.delete(
@@ -254,67 +259,6 @@ def test_unassigning_keeps_the_readings_already_collected(
     assert pregnancy.readings.count() == before
 
 
-# ── Simulation ───────────────────────────────────────────────────────────────
-
-
-def test_simulated_readings_are_labelled_as_simulated(make_hospital, pregnancy_for):
-    """The whole point: generated data must never be mistaken for measured data."""
-    hospital = make_hospital("Simulated Hospital")
-    pregnancy = pregnancy_for(hospital)
-
-    simulate_readings(pregnancy=pregnancy, hours=6)
-
-    assert pregnancy.readings.exists()
-    assert pregnancy.readings.exclude(source=VitalReading.SOURCE_SIMULATED).count() == 0
-
-
-def test_simulation_covers_every_reading_type(make_hospital, pregnancy_for):
-    hospital = make_hospital("Coverage Hospital")
-    pregnancy = pregnancy_for(hospital)
-
-    simulate_readings(pregnancy=pregnancy, hours=24)
-
-    types = set(pregnancy.readings.values_list("reading_type", flat=True))
-    assert types == {
-        VitalReading.TYPE_BLOOD_PRESSURE,
-        VitalReading.TYPE_HEART_RATE,
-        VitalReading.TYPE_TEMPERATURE,
-    }
-
-
-def test_elevated_simulation_produces_hypertensive_readings(make_hospital, pregnancy_for):
-    """Needed to demonstrate risk detection without waiting for a patient to
-    genuinely deteriorate."""
-    hospital = make_hospital("Elevated Hospital")
-    pregnancy = pregnancy_for(hospital)
-
-    simulate_readings(pregnancy=pregnancy, hours=24, elevated=True)
-
-    highest = (
-        pregnancy.readings.filter(reading_type=VitalReading.TYPE_BLOOD_PRESSURE)
-        .order_by("-value")
-        .first()
-    )
-    assert highest.value >= 140, "elevated simulation should cross the hypertension threshold"
-
-
-def test_simulation_is_refused_outside_development(client, make_hospital, pregnancy_for, auth, settings):
-    """Simulated observations must not be creatable where real ones live."""
-    settings.DEBUG = False
-    hospital = make_hospital("Prod Sim Hospital")
-    pregnancy = pregnancy_for(hospital)
-
-    response = client.post(
-        f"/api/pregnancies/{pregnancy.id}/readings/simulate/",
-        data=json.dumps({"hours": 6}),
-        content_type="application/json",
-        **auth(hospital.admin.email),
-    )
-
-    assert response.status_code == 403
-    assert pregnancy.readings.count() == 0
-
-
 # ── Tenant isolation ─────────────────────────────────────────────────────────
 
 
@@ -324,7 +268,12 @@ def test_readings_are_not_visible_across_hospitals(
     alpha = make_hospital("Alpha Readings")
     beta = make_hospital("Beta Readings")
     beta_pregnancy = pregnancy_for(beta)
-    simulate_readings(pregnancy=beta_pregnancy, hours=4)
+    VitalReading.objects.create(
+        pregnancy=beta_pregnancy,
+        recorded_at=timezone.now(),
+        source=VitalReading.SOURCE_MANUAL,
+        heart_rate=80,
+    )
 
     response = client.get(readings_url(beta_pregnancy.id), **auth(alpha.admin.email))
 

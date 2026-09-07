@@ -31,6 +31,10 @@ dependencies = [
   "django-timezone-field>=7.1",
   "uvicorn>=0.49.0",
   "whitenoise>=6.12.0",
+  "xgboost>=3.4.1",
+  "scikit-learn>=1.9.0",
+  "joblib>=1.6.0",
+  "numpy>=2.5.2",
 ]
 
 [dependency-groups]
@@ -48,6 +52,10 @@ dev = [
   "pytest",
   "pytest-django>=4.12.0",
   "ruff>=0.15.10",
+]
+ml-train = [
+    "imbalanced-learn>=0.14.2",
+    "pandas>=3.0.5",
 ]
 
 [tool.ruff]
@@ -100,7 +108,8 @@ run.omit = [ "*/migrations/*", "*/tests/*" ]
 run.plugins = [ "django_coverage_plugin" ]
 
 [tool.importlinter]
-root_packages = [ "momcare_platform", "config" ]
+root_packages = [ "momcare_platform", "config", "momcare_model" ]
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "core must not import modules"
@@ -113,6 +122,12 @@ name = "project wiring must not hard-import modules"
 type = "forbidden"
 source_modules = [ "config.api_router" ]
 forbidden_modules = [ "momcare_platform.modules" ]
+
+[[tool.importlinter.contracts]]
+name = "momcare_model stays framework-free"
+type = "forbidden"
+source_modules = [ "momcare_model" ]
+forbidden_modules = [ "momcare_platform", "django" ]
 
 # NOTE: an "independence" contract listing individual feature-module packages
 # (like Neuro_RPM's "programs are independent" contract) gets added here once

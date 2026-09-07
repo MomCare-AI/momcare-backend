@@ -38,6 +38,12 @@ htmlcov/
 .idea/
 *.swp
 
+# Claude Code local tooling state — not application code
+.claude/
+
+# ML model data — per-patient vitals, never committed
+momcare_model/data/*.csv
+
 # uv
 uv.lock.bak
 

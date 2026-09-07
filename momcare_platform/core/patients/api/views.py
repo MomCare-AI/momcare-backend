@@ -93,7 +93,9 @@ def _active_pregnancy_prefetch() -> Prefetch:
     active = (
         Pregnancy.objects.filter(status=Pregnancy.STATUS_ACTIVE)
         .annotate(
-            latest_risk_level=Subquery(latest.values("level")[:1]),
+            # final_risk_level: the level actually acted on, not the model's
+            # pre-escalation answer.
+            latest_risk_level=Subquery(latest.values("final_risk_level")[:1]),
             latest_risk_at=Subquery(latest.values("assessed_at")[:1]),
         )
         .order_by("-created_at")
@@ -176,11 +178,11 @@ class PatientWorklistView(PatientScopedView):
     while, no note logged, no risk history ever answered, nobody
     accountable. Deliberately a separate endpoint and never merged with the
     Attention Queue, the same way "not assessed" stays visually distinct
-    from "stable" everywhere else in this portal - see
+    from "low risk" everywhere else in this portal - see
     docs/worklist-feature-scope.md for the full reasoning.
 
     The two day thresholds below are administrative defaults, not clinically
-    validated - the same honesty risk_rules.py already applies to its own
+    validated - the same honesty momcare_model applies to its own risk
     thresholds. Worth revisiting alongside the obstetrician review
     (PLAN.md §3 item 3), not asserted as correct here.
     """

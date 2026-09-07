@@ -94,48 +94,43 @@ class Device(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
 
 
 class VitalReading(UUIDPrimaryKeyModel):
-    """One measurement, at one moment, for one pregnancy.
+    """One reading event, at one moment, for one pregnancy — wide format.
 
-    Long format — a row per measurement type rather than a wide row per event —
-    because the sources report at different rhythms: a band streams heart rate
-    continuously while blood pressure comes from a cuff once or twice a day. A
-    wide row would be mostly empty and would imply readings were taken together
-    when they were not.
+    One row per check-in, not one row per measurement type: the band reports
+    blood pressure, heart rate, temperature, stress, and activity together at
+    the same moment, so splitting them across separate rows would only imply
+    an asynchrony that does not exist here.
 
-    Blood pressure is the exception and keeps both numbers on one row:
-    140/90 is a single clinical fact, and splitting it would let a rule see a
-    systolic value with no diastolic to pair it with.
+    ``hemoglobin`` and ``blood_glucose`` are the exception — they do not come
+    from the band. Hemoglobin arrives from a lab report roughly monthly and is
+    carried forward unchanged across many rows until the next test; blood
+    glucose may arrive on its own, faster schedule. Both are simply null on a
+    row where nothing new is known, same as any field can be.
+
+    Every vital is nullable for the same reason: a row records whatever was
+    actually known at that moment, never a guessed or carried-over value
+    presented as fresh — the categorisation and scoring layers already treat
+    a missing vital as "unknown", not as normal, and this must stay true here.
+
+    Temperature is stored in Fahrenheit throughout, matching the trained model
+    and every clinical category threshold — never Celsius.
 
     Deliberately not TimeStamped or Deactivatable. A reading is an observation
     of something that happened at ``recorded_at``; there is no meaningful
     "updated" and it is never deleted. Corrections are new readings.
+
+    ``source`` is never inferred from ``device`` being set — a band can be
+    assigned to a pregnancy while a nurse still types a separate manual
+    measurement in by hand, so the two questions ("is a band assigned" and
+    "did these particular numbers come from it") are independent. The caller
+    declares it explicitly on every write.
     """
 
-    TYPE_BLOOD_PRESSURE = "blood_pressure"
-    TYPE_HEART_RATE = "heart_rate"
-    TYPE_TEMPERATURE = "temperature"
-    TYPE_CHOICES = [
-        (TYPE_BLOOD_PRESSURE, "Blood pressure"),
-        (TYPE_HEART_RATE, "Heart rate"),
-        (TYPE_TEMPERATURE, "Temperature"),
-    ]
-
-    UNITS = {
-        TYPE_BLOOD_PRESSURE: "mmHg",
-        TYPE_HEART_RATE: "bpm",
-        TYPE_TEMPERATURE: "°C",
-    }
-
-    # Where the number came from. Recorded on every row so that simulated data
-    # can never be mistaken for a real measurement — in a monitoring system
-    # that would be the most dangerous kind of quiet mistake.
     SOURCE_DEVICE = "device"
     SOURCE_MANUAL = "manual"
-    SOURCE_SIMULATED = "simulated"
     SOURCE_CHOICES = [
-        (SOURCE_DEVICE, "Wearable device"),
-        (SOURCE_MANUAL, "Entered by staff"),
-        (SOURCE_SIMULATED, "Simulated"),
+        (SOURCE_DEVICE, "Device"),
+        (SOURCE_MANUAL, "Manual entry"),
     ]
 
     pregnancy = models.ForeignKey(
@@ -143,15 +138,21 @@ class VitalReading(UUIDPrimaryKeyModel):
         on_delete=models.PROTECT,
         related_name="readings",
     )
-    reading_type = models.CharField(max_length=20, choices=TYPE_CHOICES, db_index=True)
 
-    # Systolic for blood pressure; the single value for everything else.
-    value = models.DecimalField(max_digits=6, decimal_places=2)
-    # Diastolic — only populated for blood pressure.
-    value_secondary = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # The 9 vitals the risk model trains and predicts on. All nullable —
+    # a reading event does not have to carry every vital every time.
+    age = models.PositiveSmallIntegerField(null=True, blank=True)
+    systolic_bp = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    diastolic_bp = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    heart_rate = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    body_temp_f = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    hemoglobin = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    blood_glucose = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    stress_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    phys_activity_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
 
+    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, db_index=True)
     recorded_at = models.DateTimeField(_("recorded at"), db_index=True)
-    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_DEVICE, db_index=True)
     device = models.ForeignKey(
         "monitoring.Device",
         on_delete=models.SET_NULL,
@@ -165,45 +166,19 @@ class VitalReading(UUIDPrimaryKeyModel):
         null=True,
         blank=True,
         related_name="recorded_readings",
-        help_text="The staff member who entered this, for manual readings.",
+        help_text="The staff member whose session submitted this reading.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-recorded_at"]
         indexes = [
-            # Every clinical query is "this pregnancy, this measurement, most
-            # recent first". At a reading every few minutes this table grows
-            # fast, and adding the index later means rebuilding it under load.
-            models.Index(fields=["pregnancy", "reading_type", "-recorded_at"]),
+            # Every clinical query is "this pregnancy, most recent first".
             models.Index(fields=["pregnancy", "-recorded_at"]),
-        ]
-        constraints = [
-            models.CheckConstraint(
-                condition=models.Q(value__gt=0),
-                name="reading_value_positive",
-            ),
         ]
 
     def __str__(self) -> str:
-        return f"{self.get_reading_type_display()} {self.display_value} at {self.recorded_at:%Y-%m-%d %H:%M}"
-
-    @property
-    def unit(self) -> str:
-        return self.UNITS.get(self.reading_type, "")
-
-    @property
-    def display_value(self) -> str:
-        """How a clinician would write it: 140/90 mmHg, 88 bpm, 37.2 °C."""
-        if self.reading_type == self.TYPE_BLOOD_PRESSURE and self.value_secondary is not None:
-            return f"{self.value:.0f}/{self.value_secondary:.0f} {self.unit}"
-        if self.reading_type == self.TYPE_HEART_RATE:
-            return f"{self.value:.0f} {self.unit}"
-        return f"{self.value:.1f} {self.unit}"
-
-    @property
-    def is_simulated(self) -> bool:
-        return self.source == self.SOURCE_SIMULATED
+        return f"Reading for {self.pregnancy_id} at {self.recorded_at:%Y-%m-%d %H:%M}"
 
 
 class RiskAssessment(UUIDPrimaryKeyModel):
@@ -214,32 +189,36 @@ class RiskAssessment(UUIDPrimaryKeyModel):
     14:32" is the fact alerts and audits need, and a row per reading would be
     millions of near-identical records.
 
-    ``source`` is the seam a trained model plugs into. The rules engine writes
-    rows with source=RULES today; a model writes the same shape with
-    source=MODEL, and the portal reads both without caring which produced them
-    — it only labels them honestly.
+    ``risk_level`` is exactly the model's 3-class scale — Low/Medium/High —
+    and nothing else, including the emergency rules engine: a rule-detected
+    emergency escalates urgency (see ``flagged_for_review`` and the alert-tier
+    timing it drives), it never invents a 4th risk level the model cannot
+    itself produce.
 
-    ``findings`` is not decoration. A level with no explanation is something a
-    clinician can neither act on nor overrule, and unexplained automated
-    judgements are exactly what makes clinical software untrustworthy.
+    ``confirmed_risk_level`` is a doctor's correction, kept separate from
+    ``risk_level`` rather than overwriting it — the original automated
+    judgement is never erased, even when it turns out to be wrong.
+    ``review_status`` names the three states of that process: unreviewed
+    (default, and the common permanent case for most assessments), confirmed
+    (a doctor agreed), or corrected (a doctor did not).
     """
 
-    LEVEL_STABLE = "stable"
-    LEVEL_MODERATE = "moderate"
+    LEVEL_LOW = "low"
+    LEVEL_MEDIUM = "medium"
     LEVEL_HIGH = "high"
-    LEVEL_CRITICAL = "critical"
     LEVEL_CHOICES = [
-        (LEVEL_STABLE, "Stable"),
-        (LEVEL_MODERATE, "Moderate"),
+        (LEVEL_LOW, "Low"),
+        (LEVEL_MEDIUM, "Medium"),
         (LEVEL_HIGH, "High"),
-        (LEVEL_CRITICAL, "Critical"),
     ]
 
-    SOURCE_RULES = "rules"
-    SOURCE_MODEL = "model"
-    SOURCE_CHOICES = [
-        (SOURCE_RULES, "Clinical rules"),
-        (SOURCE_MODEL, "AI model"),
+    REVIEW_UNREVIEWED = "unreviewed"
+    REVIEW_CONFIRMED = "confirmed"
+    REVIEW_CORRECTED = "corrected"
+    REVIEW_STATUS_CHOICES = [
+        (REVIEW_UNREVIEWED, "Unreviewed"),
+        (REVIEW_CONFIRMED, "Confirmed"),
+        (REVIEW_CORRECTED, "Corrected"),
     ]
 
     pregnancy = models.ForeignKey(
@@ -247,54 +226,87 @@ class RiskAssessment(UUIDPrimaryKeyModel):
         on_delete=models.PROTECT,
         related_name="risk_assessments",
     )
-    level = models.CharField(max_length=20, choices=LEVEL_CHOICES, db_index=True)
-    findings = models.JSONField(
-        default=list,
-        help_text="Why this level was reached, each tied to the reading that caused it.",
+    # The exact reading this judgement was computed from — lets a single
+    # query return the assessment and the vitals behind it together, instead
+    # of digging a reading_id out of `findings` and querying again. Nullable
+    # only because a stale-readings finding can fire with no reading at all.
+    reading = models.ForeignKey(
+        "monitoring.VitalReading",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="risk_assessments",
     )
+    risk_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, db_index=True)
+    # What is actually acted on. Equal to risk_level until an escalation rule
+    # overrides it (e.g. a low-confidence or region-specific rule bumping a
+    # Medium up) — those rules read the trained model's confidence, so until
+    # that model lands this always equals risk_level. Kept separate from
+    # risk_level so the model's raw answer is never silently overwritten.
+    final_risk_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, db_index=True)
 
-    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_RULES, db_index=True)
-    engine_version = models.CharField(
-        max_length=40,
-        help_text="Which rules or model version produced this, so a judgement can be traced back.",
-    )
-    # Only a model produces these; the rules engine leaves them null rather
-    # than inventing a number that would imply a confidence it does not have.
-    score = models.DecimalField(max_digits=4, decimal_places=3, null=True, blank=True)
+    # The clinical label for each raw vital on the linked reading — "Stage 2",
+    # "Mild Anemia" — computed alongside risk_level, not a verdict on their
+    # own. Blank, never guessed, when the corresponding vital is null.
+    bp_category = models.CharField(max_length=32, blank=True)
+    heart_rate_category = models.CharField(max_length=32, blank=True)
+    temperature_category = models.CharField(max_length=32, blank=True)
+    glucose_category = models.CharField(max_length=32, blank=True)
+    hemoglobin_category = models.CharField(max_length=32, blank=True)
+
+    # Only the risk engine produces this table today; confidence being null is
+    # itself the signal that the row came from rules rather than a trained
+    # model, so no separate "source" column is needed to tell them apart.
     confidence = models.DecimalField(max_digits=4, decimal_places=3, null=True, blank=True)
 
     assessed_at = models.DateTimeField(auto_now_add=True, db_index=True)
-    # What the previous level was, so a transition reads on its own.
-    previous_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, blank=True)
+    # What the previous risk_level was, so a transition reads on its own.
+    previous_risk_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, blank=True)
 
-    acknowledged_at = models.DateTimeField(null=True, blank=True)
-    acknowledged_by = models.ForeignKey(
+    # Set whenever this assessment was flagged for review — either the
+    # confidence-threshold check, or the Africa+Medium rule (once wired in).
+    # Separate from verified_at/by below: this records whether the flag was
+    # raised at all, not whether it was later reviewed. Generic on purpose —
+    # whoever ends up notified (doctor, nurse, care manager) depends on the
+    # alert-escalation tier, not on this field.
+    flagged_for_review = models.BooleanField(default=False)
+
+    # The doctor's real, confirmed answer — never overwrites risk_level.
+    confirmed_risk_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, blank=True)
+    # Set only together with confirmed_risk_level, by the same action — there
+    # is no "seen but not confirmed" state. review_status is derived from
+    # comparing confirmed_risk_level to final_risk_level at that moment.
+    review_status = models.CharField(
+        max_length=20,
+        choices=REVIEW_STATUS_CHOICES,
+        default=REVIEW_UNREVIEWED,
+        db_index=True,
+    )
+
+    verified_at = models.DateTimeField(null=True, blank=True)
+    verified_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="acknowledged_assessments",
+        related_name="verified_assessments",
     )
 
     class Meta:
         ordering = ["-assessed_at"]
         indexes = [
             models.Index(fields=["pregnancy", "-assessed_at"]),
-            models.Index(fields=["level", "-assessed_at"]),
+            models.Index(fields=["risk_level", "-assessed_at"]),
         ]
 
     def __str__(self) -> str:
-        return f"{self.pregnancy.patient.full_name} — {self.get_level_display()} ({self.source})"
+        return f"{self.pregnancy.patient.full_name} — {self.get_risk_level_display()}"
 
     @property
     def is_actionable(self) -> bool:
-        return self.level != self.LEVEL_STABLE
+        return self.final_risk_level != self.LEVEL_LOW
 
     @property
-    def needs_acknowledgement(self) -> bool:
-        """An unacknowledged non-stable assessment is one nobody has looked at."""
-        return self.is_actionable and self.acknowledged_at is None
-
-    @property
-    def reasons(self) -> list[str]:
-        return [f.get("detail", "") for f in self.findings]
+    def needs_review(self) -> bool:
+        """An unreviewed non-low assessment is one no doctor has confirmed or corrected."""
+        return self.is_actionable and self.review_status == self.REVIEW_UNREVIEWED

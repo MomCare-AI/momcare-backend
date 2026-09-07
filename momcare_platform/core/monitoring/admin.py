@@ -17,8 +17,18 @@ class DeviceAdmin(admin.ModelAdmin):
 
 @admin.register(RiskAssessment)
 class RiskAssessmentAdmin(admin.ModelAdmin):
-    list_display = ["assessed_at", "patient", "level", "previous_level", "source", "acknowledged_by"]
-    list_filter = ["level", "source", "assessed_at"]
+    list_display = [
+        "assessed_at",
+        "patient",
+        "risk_level",
+        "final_risk_level",
+        "previous_risk_level",
+        "confirmed_risk_level",
+        "review_status",
+        "flagged_for_review",
+        "verified_by",
+    ]
+    list_filter = ["risk_level", "final_risk_level", "review_status", "flagged_for_review", "assessed_at"]
     search_fields = ["pregnancy__patient__mrn", "pregnancy__patient__last_name"]
     readonly_fields = [f.name for f in RiskAssessment._meta.fields]
     date_hierarchy = "assessed_at"
@@ -37,8 +47,18 @@ class RiskAssessmentAdmin(admin.ModelAdmin):
 
 @admin.register(VitalReading)
 class VitalReadingAdmin(admin.ModelAdmin):
-    list_display = ["recorded_at", "patient", "reading_type", "display_value", "source"]
-    list_filter = ["reading_type", "source", "recorded_at"]
+    list_display = [
+        "recorded_at",
+        "patient",
+        "source",
+        "systolic_bp",
+        "diastolic_bp",
+        "heart_rate",
+        "body_temp_f",
+        "hemoglobin",
+        "blood_glucose",
+    ]
+    list_filter = ["source", "recorded_at"]
     search_fields = ["pregnancy__patient__mrn", "pregnancy__patient__last_name"]
     readonly_fields = [f.name for f in VitalReading._meta.fields]
     date_hierarchy = "recorded_at"
@@ -48,9 +68,9 @@ class VitalReadingAdmin(admin.ModelAdmin):
         return obj.pregnancy.patient.full_name
 
     def has_add_permission(self, request):
-        # Readings arrive through the API, which records their source and
-        # device. Hand-adding one here would produce an observation with no
-        # provenance.
+        # Readings arrive through the API, which records who submitted them
+        # and which device. Hand-adding one here would produce an observation
+        # with no provenance.
         return False
 
     def has_change_permission(self, request, obj=None):

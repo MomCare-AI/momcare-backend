@@ -1,0 +1,36 @@
+{
+  "version": "v1",
+  "trained_at": "2026-09-06T12:48:31.453046+00:00",
+  "git_commit": "b9850debf9cbb02a0c0acf1bd0c8c7374124a3e2",
+  "feature_cols": [
+    "age",
+    "systolic_bp",
+    "diastolic_bp",
+    "body_temp_f",
+    "heart_rate",
+    "hemoglobin",
+    "blood_glucose",
+    "stress_score",
+    "phys_activity_score"
+  ],
+  "random_state": 42,
+  "validation_accuracy": 0.8964,
+  "test_accuracy": 0.884,
+  "test_confusion_matrix": [
+    [
+      439,
+      17,
+      12
+    ],
+    [
+      7,
+      45,
+      2
+    ],
+    [
+      81,
+      3,
+      446
+    ]
+  ]
+}

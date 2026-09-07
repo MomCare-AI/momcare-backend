@@ -159,6 +159,31 @@ def send_alert_notification(alert, user, tier: int) -> bool:
     )
 
 
+def send_low_confidence_notification(assessment, user) -> bool:
+    """Tell the assigned clinician a prediction fell below the confidence
+    threshold and is worth a second look — never sent to the patient.
+
+    Deliberately calmer than send_alert_notification: a flagged result is
+    not an emergency by itself, just a number the model is unsure of.
+    """
+    patient = assessment.pregnancy.patient
+    return _send(
+        subject=f"MomCare: review requested — {patient.full_name}",
+        body=(
+            f"{patient.full_name}'s latest assessment fell below the confidence "
+            "threshold and is worth a second look before you rely on it.\n\n"
+            f"Result:     {assessment.final_risk_level.upper()}\n"
+            f"Confidence: {float(assessment.confidence):.0%}\n"
+            f"Gestation:  {assessment.pregnancy.gestational_age_display or 'unknown'}\n"
+            f"MRN:        {patient.mrn or 'not assigned'}\n\n"
+            "Open MomCare to review the readings behind this result.\n\n"
+            "This is decision support from monitored vitals, not a diagnosis.\n\n"
+            "- MomCare"
+        ),
+        to=user.email,
+    )
+
+
 def send_password_reset(user, reset_url: str) -> bool:
     """The link that lets somebody back into their own account.
 
