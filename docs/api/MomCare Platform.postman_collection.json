@@ -1,0 +1,345 @@
+{
+  "info": {
+    "_postman_id": "670df6e3-ed24-4883-8d15-19acfb51f114",
+    "name": "MomCare Platform",
+    "description": "MomCare backend API: Auth (JWT), Organization (hospital settings, confidence threshold), Monitoring (readings, risk assessments, devices).\n\nSetup:\n1. Set `base_url` (default http://localhost:8000).\n2. Call Auth -> Login -- it auto-saves `access_token` (collection variable) used by every protected request below.\n3. The refresh token is an HttpOnly cookie set by Login; Refresh/Logout read it automatically (Postman keeps cookies per domain).\n4. Set `pregnancy_id` to a real pregnancy UUID (from the patients API) before running the Monitoring folder.\n\nConventions:\n- Every endpoint works WITH or WITHOUT a trailing slash.\n- All endpoints below require `Authorization: Bearer {{access_token}}` except Login.\n- IDs are UUID strings throughout -- never integers.\n- `source` on a reading is required on every POST: `\"device\"` or `\"manual\"`. It is never inferred -- a band can be assigned to a pregnancy while a nurse still enters a separate manual measurement by hand, so the two are independent facts the caller must declare.\n- Roles: platform_admin, hospital_admin, provider, nurse, care_manager, patient. Access is hospital-scoped via `request.user.organization`; a request against another hospital's pregnancy resolves to 404, never 403 (a 403 would confirm the record exists elsewhere).\n- Pagination envelope on list endpoints: `{count, page, page_size, total_pages, next, previous, results}`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const data = pm.response.json();",
+                  "  if (data.access) { pm.collectionVariables.set('access_token', data.access); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"yourpassword\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/login/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "login", ""]
+            },
+            "description": "Email + password -> JWT access token. Returns `{ access }`; the refresh token is set as an HttpOnly cookie, not returned in the body. The test script auto-saves `access_token` for every other request in this collection.\n\nA hospital whose review status is not `approved`, or whose account is suspended, is refused sign-in here even with correct credentials."
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const data = pm.response.json();",
+                  "  if (data.access) { pm.collectionVariables.set('access_token', data.access); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/auth/refresh/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "refresh", ""]
+            },
+            "description": "Reads the HttpOnly refresh cookie set by Login and issues a new access token. Re-reads the user's current role/hospital fresh each time, so a staff member moved to a different hospital does not keep acting as the old one until the refresh token itself expires."
+          },
+          "response": []
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/auth/logout/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "logout", ""]
+            },
+            "description": "Blacklists the current refresh token and clears the cookie."
+          },
+          "response": []
+        },
+        {
+          "name": "Me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/auth/me/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "me", ""]
+            },
+            "description": "The signed-in user's own identity and role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Organization",
+      "item": [
+        {
+          "name": "Get My Organization",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/organization/me/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "organization", "me", ""]
+            },
+            "description": "The signed-in user's own hospital. Includes both `confidence_threshold` (this hospital's own override, or null if it has never set one) and `effective_confidence_threshold` (the number actually used for scoring -- this hospital's override if set, otherwise the platform default). Also includes `region`, derived from `country` and never independently settable."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Confidence Threshold",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confidence_threshold\": 0.80\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/organization/me/confidence-threshold/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "organization", "me", "confidence-threshold", ""]
+            },
+            "description": "hospital_admin only. Sets this hospital's own model-confidence threshold (0.000-1.000) -- an assessment scoring below it is flagged for a doctor's review, regardless of risk level. Persisted to the database on the Organization row (`confidence_threshold`); it is a real column, not computed.\n\nSend `{\"confidence_threshold\": null}` to clear this hospital's override and revert to following the platform default (`MOMCARE_DEFAULT_CONFIDENCE_THRESHOLD`, 70%) live -- including any future change to that default."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Monitoring — Readings & Risk",
+      "item": [
+        {
+          "name": "Record a Reading — Device",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"device\",\n  \"systolic_bp\": 118,\n  \"diastolic_bp\": 76,\n  \"heart_rate\": 82,\n  \"body_temp_f\": 98.2,\n  \"blood_glucose\": 92,\n  \"stress_score\": 3,\n  \"phys_activity_score\": 6\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pregnancies", "{{pregnancy_id}}", "readings", ""]
+            },
+            "description": "Records one reading event and scores it immediately in the same request: momcare_model.predict() runs against the pregnancy's latest reading right after this save, so the response already reflects whether risk changed.\n\nEvery vital is optional -- at least one must be present, or there is nothing to record. `age` is separate from the 9 vitals used for scoring identity purposes. `hemoglobin` usually will not be present here: it comes from a monthly lab report, not a band.\n\n`source` is required: `\"device\"` if these numbers came from the wearable's own transmission, `\"manual\"` if a staff member typed them in by hand -- even if a band happens to be assigned to this pregnancy at the same time, since the two facts are independent.\n\nResponse adds `risk_changed` (bool) and `risk_level` (the new `final_risk_level`, or null if the risk level did not transition) on top of the saved reading."
+          },
+          "response": []
+        },
+        {
+          "name": "Record a Reading — Manual",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"manual\",\n  \"systolic_bp\": 168,\n  \"diastolic_bp\": 112,\n  \"heart_rate\": 130,\n  \"body_temp_f\": 103.0,\n  \"hemoglobin\": 6.0,\n  \"blood_glucose\": 250,\n  \"stress_score\": 9,\n  \"phys_activity_score\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pregnancies", "{{pregnancy_id}}", "readings", ""]
+            },
+            "description": "Same endpoint as the device example, with `source: \"manual\"` -- a nurse with a cuff and a thermometer entering numbers by hand. These particular vitals are deliberately dangerous (Hypertensive Crisis / Tachycardia / Severe Anemia / Diabetes) to demonstrate a High-risk transition and the alert it raises."
+          },
+          "response": []
+        },
+        {
+          "name": "List Readings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?since=",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pregnancies", "{{pregnancy_id}}", "readings", ""],
+              "query": [
+                { "key": "since", "value": "", "description": "Optional ISO datetime -- only readings recorded at or after this moment." }
+              ]
+            },
+            "description": "Paginated, newest first."
+          },
+          "response": []
+        },
+        {
+          "name": "Latest Reading",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/latest/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pregnancies", "{{pregnancy_id}}", "readings", "latest", ""]
+            },
+            "description": "The single most recent reading event, or `{\"reading\": null, \"total_count\": 0}` when there isn't one yet -- deliberately never a fabricated normal-looking value."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Risk Assessments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/risk/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pregnancies", "{{pregnancy_id}}", "risk", ""]
+            },
+            "description": "`{ current, history }` -- a record of level *transitions*, not one row per reading. Each assessment carries: `risk_level` (the trained model's raw answer) and `final_risk_level` (what is actually acted on -- these differ only when the Africa+Medium->High rule fires); the 5 clinical categories (bp_category, heart_rate_category, temperature_category, glucose_category, hemoglobin_category); `confidence` (the model's own certainty, 0-1); `flagged_for_review` (true when confidence fell below this hospital's effective_confidence_threshold); the doctor-review fields (`review_status`, `confirmed_risk_level`, `verified_by_name`, `verified_at`); and the exact `reading` this judgement was computed from, nested inline.\n\nNote: the threshold value itself is not included here by design -- fetch it separately from Organization > Get My Organization if you need to show confidence and the threshold side by side."
+          },
+          "response": []
+        },
+        {
+          "name": "Rescore On Demand",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/risk/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pregnancies", "{{pregnancy_id}}", "risk", ""]
+            },
+            "description": "Re-runs scoring against the latest reading without waiting for a new one -- useful after correcting a reading. Returns the new assessment (201) if the level changed, or `{\"detail\": \"No change in risk level.\", \"current\": ...}` (200) if it did not."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify Risk Assessment",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confirmed_risk_level\": \"high\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/risk/{{assessment_id}}/verify/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pregnancies", "{{pregnancy_id}}", "risk", "{{assessment_id}}", "verify", ""]
+            },
+            "description": "Clinicians only (provider, nurse, care_manager) -- a hospital_admin cannot review a clinical assessment. `confirmed_risk_level` is required and must be one of low/medium/high. `review_status` is derived, not chosen: `confirmed` when it matches `final_risk_level`, `corrected` when it does not. The original `risk_level`/`final_risk_level` are never overwritten by a correction."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Devices",
+      "item": [
+        {
+          "name": "List Devices",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/devices/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "devices", ""]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register a Device",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"serial_number\": \"BAND-0001\",\n  \"acquisition\": \"loaned\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/devices/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "devices", ""]
+            },
+            "description": "Adds one unit to this hospital's stock, unassigned. `acquisition` is one of sold / loaned / subsidised."
+          },
+          "response": []
+        },
+        {
+          "name": "Assign Device to Pregnancy",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"acquisition\": \"loaned\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/device/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pregnancies", "{{pregnancy_id}}", "device", ""]
+            },
+            "description": "Puts a band on a wrist. A pregnancy may wear at most one device at a time; a device may be worn by at most one pregnancy."
+          },
+          "response": []
+        },
+        {
+          "name": "Unassign Device",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/device/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pregnancies", "{{pregnancy_id}}", "device", ""]
+            },
+            "description": "Takes the band back. Readings already collected are never touched -- they are observations of things that already happened."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{access_token}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000" },
+    { "key": "access_token", "value": "" },
+    { "key": "pregnancy_id", "value": "" },
+    { "key": "assessment_id", "value": "" },
+    { "key": "device_id", "value": "" }
+  ]
+}
