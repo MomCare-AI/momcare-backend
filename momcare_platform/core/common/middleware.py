@@ -248,11 +248,7 @@ class AdminRLSBypassMiddleware:
         admin_url = dj_settings.ADMIN_URL
         admin_prefix = admin_url if admin_url.startswith("/") else f"/{admin_url}"
 
-        if (
-            request.path.startswith(admin_prefix)
-            and getattr(request, "user", None)
-            and request.user.is_authenticated
-        ):
+        if request.path.startswith(admin_prefix) and getattr(request, "user", None) and request.user.is_authenticated:
             from momcare_platform.core.common.rls import bypass_rls  # noqa: PLC0415
 
             # bypass_rls() opens its own transaction, so nothing else here does.

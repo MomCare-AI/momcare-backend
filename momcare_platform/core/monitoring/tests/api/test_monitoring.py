@@ -130,7 +130,10 @@ def test_a_single_valued_reading_rejects_a_second_number(client, make_hospital, 
 
 
 def test_readings_are_refused_on_a_pregnancy_that_has_ended(
-    client, make_hospital, pregnancy_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
 ):
     """A delivered pregnancy is closed history; new observations do not belong."""
     hospital = make_hospital("Ended Hospital")
@@ -157,12 +160,16 @@ def test_latest_returns_the_most_recent_of_each_type(make_hospital, pregnancy_fo
     now = timezone.now()
 
     VitalReading.objects.create(
-        pregnancy=pregnancy, reading_type=VitalReading.TYPE_HEART_RATE,
-        value=80, recorded_at=now - timedelta(hours=2),
+        pregnancy=pregnancy,
+        reading_type=VitalReading.TYPE_HEART_RATE,
+        value=80,
+        recorded_at=now - timedelta(hours=2),
     )
     newest = VitalReading.objects.create(
-        pregnancy=pregnancy, reading_type=VitalReading.TYPE_HEART_RATE,
-        value=95, recorded_at=now,
+        pregnancy=pregnancy,
+        reading_type=VitalReading.TYPE_HEART_RATE,
+        value=95,
+        recorded_at=now,
     )
 
     latest = latest_readings(pregnancy)
@@ -175,8 +182,10 @@ def test_a_type_with_no_readings_is_absent_not_normal(make_hospital, pregnancy_f
     hospital = make_hospital("Absent Hospital")
     pregnancy = pregnancy_for(hospital)
     VitalReading.objects.create(
-        pregnancy=pregnancy, reading_type=VitalReading.TYPE_HEART_RATE,
-        value=88, recorded_at=timezone.now(),
+        pregnancy=pregnancy,
+        reading_type=VitalReading.TYPE_HEART_RATE,
+        value=88,
+        recorded_at=timezone.now(),
     )
 
     latest = latest_readings(pregnancy)
@@ -234,7 +243,11 @@ def test_a_device_from_another_hospital_is_refused(make_hospital, pregnancy_for,
 
 
 def test_unassigning_keeps_the_readings_already_collected(
-    client, make_hospital, pregnancy_for, device_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    device_for,
+    auth,
 ):
     """Readings are observations of things that happened; returning the band
     does not unmake them."""
@@ -290,11 +303,7 @@ def test_elevated_simulation_produces_hypertensive_readings(make_hospital, pregn
 
     simulate_readings(pregnancy=pregnancy, hours=24, elevated=True)
 
-    highest = (
-        pregnancy.readings.filter(reading_type=VitalReading.TYPE_BLOOD_PRESSURE)
-        .order_by("-value")
-        .first()
-    )
+    highest = pregnancy.readings.filter(reading_type=VitalReading.TYPE_BLOOD_PRESSURE).order_by("-value").first()
     assert highest.value >= 140, "elevated simulation should cross the hypertension threshold"
 
 
@@ -319,7 +328,10 @@ def test_simulation_is_refused_outside_development(client, make_hospital, pregna
 
 
 def test_readings_are_not_visible_across_hospitals(
-    client, make_hospital, pregnancy_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
 ):
     alpha = make_hospital("Alpha Readings")
     beta = make_hospital("Beta Readings")
@@ -333,7 +345,10 @@ def test_readings_are_not_visible_across_hospitals(
 
 
 def test_a_reading_cannot_be_filed_against_another_hospitals_patient(
-    client, make_hospital, pregnancy_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
 ):
     alpha = make_hospital("Alpha Filing")
     beta = make_hospital("Beta Filing")

@@ -182,7 +182,9 @@ def test_returning_to_stable_closes_the_alert(make_hospital, pregnancy_for):
 
 
 def test_an_unanswered_alert_climbs_when_its_deadline_passes(
-    make_hospital, pregnancy_for, make_staff,
+    make_hospital,
+    pregnancy_for,
+    make_staff,
 ):
     hospital = make_hospital("Climb Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doc@climb.test")
@@ -231,7 +233,9 @@ def test_the_sweep_is_idempotent(make_hospital, pregnancy_for, make_staff):
 
 
 def test_a_late_sweep_jumps_straight_to_the_right_tier(
-    make_hospital, pregnancy_for, make_staff,
+    make_hospital,
+    pregnancy_for,
+    make_staff,
 ):
     """A scheduler outage must not silently under-escalate."""
     hospital = make_hospital("Late Hospital")
@@ -265,7 +269,9 @@ def test_an_unassigned_pregnancy_escalates_immediately(make_hospital, pregnancy_
 
 
 def test_a_departed_clinician_is_not_a_valid_recipient(
-    make_hospital, pregnancy_for, make_staff,
+    make_hospital,
+    pregnancy_for,
+    make_staff,
 ):
     """Staff are soft-deleted, so a departure leaves the pregnancy still
     *looking* assigned. Treating that as delivery would route a critical alert
@@ -296,7 +302,9 @@ def test_the_assigned_clinician_is_emailed(make_hospital, pregnancy_for, make_st
 
 
 def test_an_undeliverable_address_does_not_lose_the_alert(
-    make_hospital, pregnancy_for, make_staff,
+    make_hospital,
+    pregnancy_for,
+    make_staff,
 ):
     """Email is the second attempt at reaching someone; the in-portal alert is
     the first. An address that cannot be sent to must never mean no alert
@@ -316,7 +324,10 @@ def test_an_undeliverable_address_does_not_lose_the_alert(
 
 
 def test_the_list_shows_live_alerts_with_the_patient_inline(
-    client, make_hospital, pregnancy_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
 ):
     hospital = make_hospital("List Hospital")
     pregnancy = pregnancy_for(hospital, first_name="Zainab")
@@ -358,7 +369,11 @@ def test_resolved_alerts_are_asked_for_explicitly(client, make_hospital, pregnan
 
 
 def test_acknowledging_through_the_api_records_who_looked(
-    client, make_hospital, make_staff, pregnancy_for, auth,
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
 ):
     hospital = make_hospital("Ack Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@ack.test")
@@ -395,7 +410,11 @@ def test_resolving_closes_the_episode(client, make_hospital, make_staff, pregnan
 
 
 def test_an_already_closed_alert_cannot_be_closed_again(
-    client, make_hospital, make_staff, pregnancy_for, auth,
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
 ):
     hospital = make_hospital("Twice Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@twice.test")
@@ -428,7 +447,11 @@ def test_the_detail_view_carries_the_whole_history(client, make_hospital, pregna
 
 
 def test_a_providers_assigned_to_me_includes_lead_and_co_provider_cases(
-    client, make_hospital, make_staff, pregnancy_for, auth,
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
 ):
     """Same corrected query as the patient list — a supporting provider on a
     pregnancy is a real CareTeamMembership row, never invisible in their own
@@ -458,7 +481,11 @@ def test_a_providers_assigned_to_me_includes_lead_and_co_provider_cases(
 
 
 def test_a_nurses_assigned_to_me_is_membership_only(
-    client, make_hospital, make_staff, pregnancy_for, auth,
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
 ):
     hospital = make_hospital("Nurse Alerts Hospital")
     nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@nursealerts.test")
@@ -472,13 +499,19 @@ def test_a_nurses_assigned_to_me_is_membership_only(
 
 
 def test_an_ended_membership_no_longer_surfaces_the_alert(
-    client, make_hospital, make_staff, pregnancy_for, auth,
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
 ):
     hospital = make_hospital("Ended Alerts Hospital")
     nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@endedalerts.test")
     pregnancy = pregnancy_for(hospital)
     membership = CareTeamMembership.objects.create(
-        pregnancy=pregnancy, staff=nurse.staff, role="nurse",
+        pregnancy=pregnancy,
+        staff=nurse.staff,
+        role="nurse",
     )
     go_critical(pregnancy)
     membership.end()
@@ -489,9 +522,12 @@ def test_an_ended_membership_no_longer_surfaces_the_alert(
 
 
 def test_hospital_admin_gets_an_honest_empty_list_for_assigned_to_me(
-    client, make_hospital, pregnancy_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
 ):
-    """"My alerts" isn't a concept that applies to an admin — an honest empty
+    """ "My alerts" isn't a concept that applies to an admin — an honest empty
     result, not the param silently ignored and everyone's alerts returned
     under a label that would be wrong for this role."""
     hospital = make_hospital("Admin Alerts Hospital")
@@ -503,7 +539,11 @@ def test_hospital_admin_gets_an_honest_empty_list_for_assigned_to_me(
 
 
 def test_assigned_to_me_removed_would_leak_everyones_alerts(
-    client, make_hospital, make_staff, pregnancy_for, auth,
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
 ):
     """Fault injection, matching this project's own testing discipline: prove
     the filter is actually doing something by checking what an *unfiltered*
@@ -537,7 +577,11 @@ def test_alerts_never_cross_hospitals(client, make_hospital, pregnancy_for, auth
 
 
 def test_another_hospitals_alert_cannot_be_acknowledged(
-    client, make_hospital, make_staff, pregnancy_for, auth,
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
 ):
     """404, never 403 — a 403 would confirm the alert exists somewhere else.
 

@@ -128,9 +128,9 @@ def simulate_readings(
     readings: list[VitalReading] = []
 
     schedule = [
-        (VitalReading.TYPE_HEART_RATE, 30),        # every half hour
-        (VitalReading.TYPE_TEMPERATURE, 120),      # every two hours
-        (VitalReading.TYPE_BLOOD_PRESSURE, 720),   # twice a day, from a cuff
+        (VitalReading.TYPE_HEART_RATE, 30),  # every half hour
+        (VitalReading.TYPE_TEMPERATURE, 120),  # every two hours
+        (VitalReading.TYPE_BLOOD_PRESSURE, 720),  # twice a day, from a cuff
     ]
 
     for reading_type, interval_minutes in schedule:

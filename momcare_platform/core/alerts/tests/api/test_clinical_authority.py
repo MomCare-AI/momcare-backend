@@ -90,7 +90,7 @@ def test_a_hospital_admin_cannot_acknowledge(client, make_hospital, auth, live_a
 
 
 def test_a_hospital_admin_cannot_resolve(client, make_hospital, auth, live_alert):
-    """"Recovered" and "handled" are statements about a patient.
+    """ "Recovered" and "handled" are statements about a patient.
 
     An alert nobody answered is also evidence about how this hospital is
     covered. An administrator able to close it would be tidying away the one
@@ -127,9 +127,7 @@ def test_a_hospital_admin_can_still_read_every_alert(client, make_hospital, auth
 
 
 @pytest.mark.parametrize("role_code", CLINICAL_ROLES)
-def test_every_clinical_role_can_acknowledge(
-    client, make_hospital, make_staff, auth, live_alert, role_code
-):
+def test_every_clinical_role_can_acknowledge(client, make_hospital, make_staff, auth, live_alert, role_code):
     hospital = make_hospital(f"Ack {role_code} Hospital")
     member = make_staff(hospital.org, role_code, email=f"{role_code}@ack.test")
     alert = live_alert(hospital)
@@ -143,9 +141,7 @@ def test_every_clinical_role_can_acknowledge(
 
 
 @pytest.mark.parametrize("role_code", CLINICAL_ROLES)
-def test_every_clinical_role_can_resolve(
-    client, make_hospital, make_staff, auth, live_alert, role_code
-):
+def test_every_clinical_role_can_resolve(client, make_hospital, make_staff, auth, live_alert, role_code):
     hospital = make_hospital(f"Res {role_code} Hospital")
     member = make_staff(hospital.org, role_code, email=f"{role_code}@res.test")
     alert = live_alert(hospital)
@@ -160,9 +156,7 @@ def test_every_clinical_role_can_resolve(
 # -- The tenant boundary still holds ------------------------------------------
 
 
-def test_a_clinician_cannot_reach_another_hospital_alert(
-    client, make_hospital, make_staff, auth, live_alert
-):
+def test_a_clinician_cannot_reach_another_hospital_alert(client, make_hospital, make_staff, auth, live_alert):
     """Being a clinician is authority over your own patients, not everyone's.
 
     404 rather than 403: a 403 would confirm the alert exists somewhere else.

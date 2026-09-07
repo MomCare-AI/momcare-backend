@@ -677,7 +677,9 @@ def test_the_list_carries_the_current_risk_level(client, make_hospital, auth):
 
 
 def test_a_patient_never_assessed_reports_no_level_rather_than_stable(
-    client, make_hospital, auth,
+    client,
+    make_hospital,
+    auth,
 ):
     """Absent is not the same as safe. Reporting "stable" for someone nobody has
     measured would be the system inventing reassurance it has no basis for."""
@@ -691,7 +693,10 @@ def test_a_patient_never_assessed_reports_no_level_rather_than_stable(
 
 
 def test_listing_more_patients_does_not_cost_more_queries(
-    client, make_hospital, auth, django_assert_max_num_queries,
+    client,
+    make_hospital,
+    auth,
+    django_assert_max_num_queries,
 ):
     """Guards the prefetch. Without it each row queries for its pregnancy and
     again for its latest assessment, so a page of twenty costs forty round

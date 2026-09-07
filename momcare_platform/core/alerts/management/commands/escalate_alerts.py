@@ -76,9 +76,7 @@ class Command(BaseCommand):
             target = escalation.due_tier(alert.level, alert.raised_at, now)
             waited = int((now - alert.raised_at).total_seconds() // 60)
             verdict = (
-                f"would escalate to {escalation.tier_label(target).lower()}"
-                if target > alert.tier
-                else "no change"
+                f"would escalate to {escalation.tier_label(target).lower()}" if target > alert.tier else "no change"
             )
             self.stdout.write(
                 f"{alert.pregnancy.patient.full_name:20} {alert.level:9} "

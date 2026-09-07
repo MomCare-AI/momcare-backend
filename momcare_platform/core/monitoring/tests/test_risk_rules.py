@@ -5,7 +5,7 @@ someone. They are worth testing precisely — an off-by-one at 140 is the
 difference between catching gestational hypertension and missing it.
 """
 
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -21,7 +21,7 @@ from momcare_platform.core.monitoring.risk_rules import (
     highest,
 )
 
-NOW = datetime(2026, 8, 22, 12, 0, tzinfo=dt_timezone.utc)
+NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 
 
 def reading(reading_type, value, secondary=None, *, minutes_ago=5):
@@ -46,11 +46,11 @@ def bp(systolic, diastolic, **kwargs):
     ("systolic", "diastolic", "expected"),
     [
         (118, 75, LEVEL_STABLE),
-        (139, 89, LEVEL_STABLE),     # just under both thresholds
-        (140, 85, LEVEL_MODERATE),   # systolic alone crosses
-        (130, 90, LEVEL_MODERATE),   # diastolic alone crosses
+        (139, 89, LEVEL_STABLE),  # just under both thresholds
+        (140, 85, LEVEL_MODERATE),  # systolic alone crosses
+        (130, 90, LEVEL_MODERATE),  # diastolic alone crosses
         (159, 109, LEVEL_MODERATE),
-        (160, 95, LEVEL_CRITICAL),   # severe systolic
+        (160, 95, LEVEL_CRITICAL),  # severe systolic
         (150, 110, LEVEL_CRITICAL),  # severe diastolic alone
         (175, 115, LEVEL_CRITICAL),
     ],

@@ -207,10 +207,7 @@ def assess(latest_by_type: dict, *, now, has_any_readings: bool = True) -> Asses
                 Finding(
                     code="stale_readings",
                     level=LEVEL_MODERATE,
-                    detail=(
-                        f"No readings for {hours} hours — this patient is not "
-                        "currently being monitored."
-                    ),
+                    detail=(f"No readings for {hours} hours — this patient is not currently being monitored."),
                 ),
             )
 

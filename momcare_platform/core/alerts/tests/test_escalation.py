@@ -5,7 +5,7 @@ before somebody more senior is told. Worth testing exactly: an off-by-one at
 the boundary is the difference between escalating on time and not at all.
 """
 
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -20,7 +20,7 @@ from momcare_platform.core.alerts.escalation import (
     tier_label,
 )
 
-RAISED = datetime(2026, 8, 22, 12, 0, tzinfo=dt_timezone.utc)
+RAISED = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 
 
 def at(minutes: int) -> datetime:

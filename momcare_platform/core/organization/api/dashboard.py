@@ -38,11 +38,7 @@ def _risk_distribution(organization) -> dict:
     """
     from momcare_platform.core.monitoring.models import RiskAssessment  # noqa: PLC0415
 
-    latest_level = (
-        RiskAssessment.objects.filter(pregnancy=OuterRef("pk"))
-        .order_by("-assessed_at")
-        .values("level")[:1]
-    )
+    latest_level = RiskAssessment.objects.filter(pregnancy=OuterRef("pk")).order_by("-assessed_at").values("level")[:1]
 
     rows = (
         Pregnancy.objects.filter(

@@ -127,7 +127,10 @@ def test_recording_a_reading_scores_it_immediately(client, make_hospital, pregna
 
 
 def test_the_queue_lists_only_patients_needing_attention(
-    client, make_hospital, pregnancy_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
 ):
     hospital = make_hospital("Queue Hospital")
     stable = pregnancy_for(hospital, first_name="Stable")
@@ -159,7 +162,10 @@ def test_the_queue_puts_the_most_severe_first(client, make_hospital, pregnancy_f
 
 
 def test_the_queue_carries_the_reasons_and_the_responsible_clinician(
-    client, make_hospital, pregnancy_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
 ):
     """The list is scanned, not read — it must say why without opening the record."""
     hospital = make_hospital("Reasons Hospital")
@@ -177,7 +183,11 @@ def test_the_queue_carries_the_reasons_and_the_responsible_clinician(
 
 
 def test_acknowledging_records_who_looked(
-    client, make_hospital, make_staff, pregnancy_for, auth,
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
 ):
     """A clinician, because acknowledging is a claim to have reviewed the case.
 
@@ -204,7 +214,10 @@ def test_acknowledging_records_who_looked(
 
 
 def test_an_unacknowledged_case_sorts_above_an_acknowledged_one_of_equal_severity(
-    client, make_hospital, pregnancy_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
 ):
     hospital = make_hospital("Ack Order Hospital")
     seen = pregnancy_for(hospital, first_name="Seen")
@@ -239,7 +252,10 @@ def test_the_queue_never_crosses_hospitals(client, make_hospital, pregnancy_for,
 
 
 def test_risk_history_is_not_readable_across_hospitals(
-    client, make_hospital, pregnancy_for, auth,
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
 ):
     alpha = make_hospital("Alpha History")
     beta = make_hospital("Beta History")

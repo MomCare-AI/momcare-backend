@@ -80,8 +80,7 @@ def test_one_patient_is_left_without_a_clinician():
     seed(hours=6)
 
     unassigned = [
-        p for p in Patient.objects.all()
-        if p.current_pregnancy and p.current_pregnancy.assigned_staff is None
+        p for p in Patient.objects.all() if p.current_pregnancy and p.current_pregnancy.assigned_staff is None
     ]
     assert unassigned, "every patient has a clinician, so that warning cannot be demonstrated"
 

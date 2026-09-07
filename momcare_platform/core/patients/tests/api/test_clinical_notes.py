@@ -62,7 +62,12 @@ def test_a_provider_can_write_a_note(client, make_hospital, make_staff, auth, pr
 
 @pytest.mark.parametrize("role", [settings.ROLE_NURSE, settings.ROLE_CARE_MANAGER])
 def test_nurses_and_care_managers_can_also_write_notes(
-    client, make_hospital, make_staff, auth, pregnancy_for, role,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
+    role,
 ):
     hospital = make_hospital("Multi Clinician Hospital")
     clinician = make_staff(hospital.org, role, f"{role}@multiclinician.test")
@@ -78,7 +83,11 @@ def test_nurses_and_care_managers_can_also_write_notes(
 
 
 def test_a_hospital_admin_cannot_write_a_note_but_can_read_them(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """Same split as acknowledging an alert: an admin runs the hospital, not
     the patient's care — writing a clinical note is not their call."""
@@ -134,7 +143,11 @@ def test_an_empty_note_is_rejected(client, make_hospital, make_staff, auth, preg
 
 
 def test_another_hospitals_notes_are_not_reachable(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """A pregnancy at another hospital resolves to 404, never 403 — the same
     rule as every other cross-tenant boundary in this app."""

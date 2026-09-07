@@ -71,7 +71,7 @@ class PatientScopedView(OrganizationScopedQuerysetMixin, APIView):
         # a server fault, so it reads as "not found" like any other miss.
         try:
             return self.patients().select_related("location", "user").get(pk=patient_id), None
-        except (Patient.DoesNotExist, DjangoValidationError, ValueError):
+        except Patient.DoesNotExist, DjangoValidationError, ValueError:
             return None, Response({"detail": "Patient not found."}, status=status.HTTP_404_NOT_FOUND)
 
 
@@ -116,8 +116,12 @@ class PatientListCreateView(PatientScopedView):
         if error:
             return error
 
-        queryset = self.patients().select_related("location").prefetch_related(
-            _active_pregnancy_prefetch(),
+        queryset = (
+            self.patients()
+            .select_related("location")
+            .prefetch_related(
+                _active_pregnancy_prefetch(),
+            )
         )
         queryset = self._scope_to_assigned(queryset, request)
 
@@ -368,7 +372,7 @@ class PregnancyDetailView(PatientScopedView):
     def _get(self, patient, pregnancy_id):
         try:
             return patient.pregnancies.select_related("risk_factors").get(pk=pregnancy_id), None
-        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
             return None, Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
 
     def get(self, request, patient_id, pregnancy_id):
@@ -426,7 +430,7 @@ class PregnancyNotesView(PatientScopedView):
             return missing
         try:
             pregnancy = patient.pregnancies.get(pk=pregnancy_id)
-        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
             return Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
 
         notes = pregnancy.clinical_notes.select_related("author__user")
@@ -441,7 +445,7 @@ class PregnancyNotesView(PatientScopedView):
             return missing
         try:
             pregnancy = patient.pregnancies.get(pk=pregnancy_id)
-        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
             return Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # A clinician always has a Staff record - IsClinician already
@@ -525,7 +529,7 @@ class CareTeamMembershipListCreateView(PatientScopedView):
     def _get_pregnancy(self, patient, pregnancy_id):
         try:
             return patient.pregnancies.get(pk=pregnancy_id), None
-        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
             return None, Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
 
     def get(self, request, patient_id, pregnancy_id):
@@ -600,7 +604,7 @@ class CareTeamMembershipEndView(PatientScopedView):
 
         try:
             pregnancy = patient.pregnancies.get(pk=pregnancy_id)
-        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
             return Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
 
         if not _can_manage_care_team(request.user, pregnancy):
@@ -615,7 +619,7 @@ class CareTeamMembershipEndView(PatientScopedView):
                 pregnancy__patient=patient,
                 pregnancy_id=pregnancy_id,
             )
-        except (CareTeamMembership.DoesNotExist, DjangoValidationError, ValueError):
+        except CareTeamMembership.DoesNotExist, DjangoValidationError, ValueError:
             return Response({"detail": "Care team membership not found."}, status=status.HTTP_404_NOT_FOUND)
 
         membership.end(by=request.user)

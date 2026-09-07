@@ -42,6 +42,7 @@ class FileBlob(UUIDPrimaryKeyModel, TimeStampedModel):
     def __str__(self) -> str:
         return self.name
 
+
 # Facilities in Pakistan are licensed provincially, not federally (PMDC registers
 # individual practitioners, not establishments). Recording the issuing body tells
 # the reviewer which public register to search for a given licence number.

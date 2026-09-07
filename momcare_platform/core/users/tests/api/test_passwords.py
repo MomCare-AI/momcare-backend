@@ -136,9 +136,7 @@ def test_changing_a_password_ends_the_sessions_that_used_the_old_one(client, mak
     client.cookies[settings.REFRESH_COOKIE_NAME] = stolen_value
     refreshed = client.post("/api/auth/refresh/")
 
-    assert refreshed.status_code in (400, 401, 403), (
-        "the refresh token issued before the change still works"
-    )
+    assert refreshed.status_code in (400, 401, 403), "the refresh token issued before the change still works"
     assert b"blacklist" in refreshed.content.lower(), refreshed.content
 
 

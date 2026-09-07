@@ -97,8 +97,7 @@ def test_every_country_the_form_offers_is_a_decision_somebody_made():
 
     undecided = offered - set(regions._BY_COUNTRY) - regions._OUT_OF_SCOPE
     assert not undecided, (
-        "these countries can be selected during onboarding but have no region "
-        f"decision: {sorted(undecided)}"
+        f"these countries can be selected during onboarding but have no region decision: {sorted(undecided)}"
     )
 
 
