@@ -27,6 +27,7 @@ import os
 import random
 from datetime import timedelta
 from decimal import Decimal
+from typing import cast
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -262,7 +263,7 @@ class Command(BaseCommand):
                 continue
 
             pregnancy_data = {
-                "lmp": timezone.now().date() - timedelta(weeks=spec["weeks"]),
+                "lmp": timezone.now().date() - timedelta(weeks=cast(int, spec["weeks"])),
             }
             if spec["assign"]:
                 pregnancy_data["assigned_staff"] = doctor.staff

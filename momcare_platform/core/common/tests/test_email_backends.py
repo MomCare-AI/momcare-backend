@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+from email.message import Message
 from io import BytesIO
 from unittest.mock import patch
 
@@ -113,7 +114,7 @@ def test_falls_back_to_the_smtp_password_so_no_new_secret_is_needed(settings):
 
 def test_a_refusal_is_reported_not_swallowed(backend):
     refusal = urllib.error.HTTPError(
-        "https://api.resend.com/emails", 403, "Forbidden", {}, BytesIO(b'{"message":"domain not verified"}')
+        "https://api.resend.com/emails", 403, "Forbidden", Message(), BytesIO(b'{"message":"domain not verified"}')
     )
     with patch("urllib.request.urlopen", side_effect=refusal), pytest.raises(urllib.error.HTTPError):
         backend.send_messages([_message()])

@@ -16,11 +16,16 @@ across every hospital. Every other role belongs to exactly one Organization
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 
 from momcare_platform.core.common.permissions import user_role_code
+
+if TYPE_CHECKING:
+    from rest_framework.request import Request
 
 
 def sees_all_organizations(user) -> bool:
@@ -47,9 +52,16 @@ class OrganizationScopedQuerysetMixin:
     ``organization.Organization`` (e.g. ``"organization"`` or
     ``"location__organization"``) and call ``self.scope_to_organization(queryset)``
     from ``get_queryset``.
+
+    Always mixed into a real ``APIView`` subclass at the use site, never used
+    standalone — ``request`` and ``dispatch`` below come from that other base,
+    which is why they're declared for the type checker rather than inherited.
     """
 
     organization_lookup = "organization"
+
+    if TYPE_CHECKING:
+        request: Request
 
     def dispatch(self, request, *args, **kwargs):
         """Every request handled by a scoped view runs in one transaction.
@@ -61,7 +73,10 @@ class OrganizationScopedQuerysetMixin:
         whatever request reuses this connection next.
         """
         with transaction.atomic():
-            return super().dispatch(request, *args, **kwargs)
+            # The real dispatch() comes from whatever APIView subclass this
+            # mixin is combined with at the use site — mypy has no way to
+            # see that from the mixin alone.
+            return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
 
     def scope_to_organization(self, queryset):
         user = self.request.user

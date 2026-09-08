@@ -3,9 +3,12 @@
 These intervals decide how long a deteriorating patient can go unnoticed
 before somebody more senior is told. Worth testing exactly: an off-by-one at
 the boundary is the difference between escalating on time and not at all.
+
+Two policies, not three: the model's scale is Low/Medium/High, Low never
+raises an alert at all, so only High and Medium have a ladder to climb.
 """
 
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -20,7 +23,7 @@ from momcare_platform.core.alerts.escalation import (
     tier_label,
 )
 
-RAISED = datetime(2026, 8, 22, 12, 0, tzinfo=dt_timezone.utc)
+RAISED = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 
 
 def at(minutes: int) -> datetime:
@@ -41,17 +44,9 @@ def at(minutes: int) -> datetime:
         (600, TIER_ADMIN),  # never climbs past the top
     ],
 )
-def test_critical_climbs_fastest(minutes, expected):
-    """Five minutes, then fifteen. A critical alert nobody answers is the exact
+def test_high_climbs_fastest(minutes, expected):
+    """Five minutes, then fifteen. A High alert nobody answers is the exact
     scenario this platform exists to catch."""
-    assert due_tier("critical", RAISED, at(minutes)) == expected
-
-
-@pytest.mark.parametrize(
-    ("minutes", "expected"),
-    [(14, TIER_CLINICIAN), (15, TIER_WARD), (44, TIER_WARD), (45, TIER_ADMIN)],
-)
-def test_high_climbs_slower(minutes, expected):
     assert due_tier("high", RAISED, at(minutes)) == expected
 
 
@@ -59,17 +54,17 @@ def test_high_climbs_slower(minutes, expected):
     ("minutes", "expected"),
     [(59, TIER_CLINICIAN), (60, TIER_WARD), (179, TIER_WARD), (180, TIER_ADMIN)],
 )
-def test_moderate_has_hours_of_slack(minutes, expected):
-    """Climbing a moderate alert quickly would only train people to ignore the
-    channel, which costs the critical ones their audience."""
-    assert due_tier("moderate", RAISED, at(minutes)) == expected
+def test_medium_has_hours_of_slack(minutes, expected):
+    """Climbing a Medium alert quickly would only train people to ignore the
+    channel, which costs the High ones their audience."""
+    assert due_tier("medium", RAISED, at(minutes)) == expected
 
 
 def test_severity_orders_the_deadlines():
     """A stricter level must never wait longer than a milder one."""
-    critical, high, moderate = policy_for("critical"), policy_for("high"), policy_for("moderate")
-    assert critical.to_ward < high.to_ward < moderate.to_ward
-    assert critical.to_admin < high.to_admin < moderate.to_admin
+    high, medium = policy_for("high"), policy_for("medium")
+    assert high.to_ward < medium.to_ward
+    assert high.to_admin < medium.to_admin
 
 
 # -- Lateness must not compound ------------------------------------------------
@@ -82,9 +77,9 @@ def test_a_late_sweep_lands_on_the_right_rung_not_one_step_up():
     its next run. Stepping up once per missed run would mean a long outage
     silently under-escalated every alert it touched.
     """
-    assert due_tier("critical", RAISED, at(90)) == TIER_ADMIN
+    assert due_tier("high", RAISED, at(90)) == TIER_ADMIN
     # And the same answer whatever tier it is currently sitting on.
-    assert due_tier("critical", RAISED, at(90)) == due_tier("critical", RAISED, at(90))
+    assert due_tier("high", RAISED, at(90)) == due_tier("high", RAISED, at(90))
 
 
 def test_an_unknown_level_falls_back_rather_than_crashing():
@@ -98,14 +93,14 @@ def test_an_unknown_level_falls_back_rather_than_crashing():
 
 
 def test_next_escalation_is_the_deadline_for_the_current_rung():
-    assert next_escalation_at("critical", RAISED, TIER_CLINICIAN) == at(5)
-    assert next_escalation_at("critical", RAISED, TIER_WARD) == at(15)
+    assert next_escalation_at("high", RAISED, TIER_CLINICIAN) == at(5)
+    assert next_escalation_at("high", RAISED, TIER_WARD) == at(15)
 
 
 def test_the_top_rung_has_no_next_deadline():
     """Nothing above the hospital administrator, so the interface must show a
     deadline that does not exist as absent rather than as a date."""
-    assert next_escalation_at("critical", RAISED, TIER_ADMIN) is None
+    assert next_escalation_at("high", RAISED, TIER_ADMIN) is None
     assert TIER_ADMIN == MAX_TIER
 
 

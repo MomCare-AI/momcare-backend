@@ -45,29 +45,43 @@ def pregnancy_for(db):
     return _make
 
 
-def add_bp(pregnancy, systolic, diastolic, *, minutes_ago=1):
-    VitalReading.objects.create(
+# Real, verified vitals combinations — the same ones proven against the
+# actual trained model in test_reassess_risk.py — not arbitrary numbers.
+HIGH_VITALS = {
+    "systolic_bp": 185, "diastolic_bp": 125, "heart_rate": 130, "body_temp_f": 103.0,
+    "hemoglobin": 6.0, "blood_glucose": 250, "stress_score": 9, "phys_activity_score": 1,
+}
+MEDIUM_VITALS = {
+    "systolic_bp": 138, "diastolic_bp": 88, "heart_rate": 95, "body_temp_f": 98.6,
+    "hemoglobin": 10.5, "blood_glucose": 110, "stress_score": 5, "phys_activity_score": 4,
+}
+LOW_VITALS = {
+    "systolic_bp": 118, "diastolic_bp": 76, "heart_rate": 82, "body_temp_f": 98.2,
+    "hemoglobin": 12.1, "blood_glucose": 92, "stress_score": 3, "phys_activity_score": 6,
+}
+
+
+def add_reading(pregnancy, vitals, *, minutes_ago=1):
+    return VitalReading.objects.create(
         pregnancy=pregnancy,
-        reading_type=VitalReading.TYPE_BLOOD_PRESSURE,
-        value=systolic,
-        value_secondary=diastolic,
         recorded_at=timezone.now() - timedelta(minutes=minutes_ago),
         source=VitalReading.SOURCE_MANUAL,
+        **vitals,
     )
 
 
 def go_critical(pregnancy):
-    add_bp(pregnancy, 168, 112)
+    add_reading(pregnancy, HIGH_VITALS)
     return reassess_risk(pregnancy)
 
 
 def go_moderate(pregnancy):
-    add_bp(pregnancy, 145, 92)
+    add_reading(pregnancy, MEDIUM_VITALS)
     return reassess_risk(pregnancy)
 
 
 def recover(pregnancy):
-    add_bp(pregnancy, 116, 74)
+    add_reading(pregnancy, LOW_VITALS)
     return reassess_risk(pregnancy)
 
 
@@ -84,15 +98,15 @@ def test_a_dangerous_reading_raises_an_alert(make_hospital, pregnancy_for):
 
     alert = Alert.objects.get(pregnancy=pregnancy)
     assert alert.status == Alert.STATUS_OPEN
-    assert alert.level == "critical"
-    assert "preeclampsia" in alert.reasons[0].lower()
+    assert alert.level == "high"
+    assert "hypertensive crisis" in alert.reasons[0].lower()
 
 
 def test_a_stable_patient_raises_nothing(make_hospital, pregnancy_for):
     hospital = make_hospital("Quiet Hospital")
     pregnancy = pregnancy_for(hospital)
 
-    add_bp(pregnancy, 115, 74)
+    add_reading(pregnancy, LOW_VITALS)
     reassess_risk(pregnancy)
 
     assert not Alert.objects.exists()
@@ -120,7 +134,7 @@ def test_the_database_refuses_a_second_live_alert(make_hospital, pregnancy_for):
     first = go_critical(pregnancy)
 
     with pytest.raises(IntegrityError), transaction.atomic():
-        Alert.objects.create(pregnancy=pregnancy, assessment=first, level="critical")
+        Alert.objects.create(pregnancy=pregnancy, assessment=first, level="high")
 
 
 # -- Worsening -----------------------------------------------------------------
@@ -134,7 +148,7 @@ def test_worsening_sharpens_the_existing_alert(make_hospital, pregnancy_for):
     go_critical(pregnancy)
 
     alert = Alert.objects.get(pregnancy=pregnancy)
-    assert alert.level == "critical"
+    assert alert.level == "high"
     assert alert.events.filter(kind=AlertEvent.KIND_WORSENED).exists()
 
 
@@ -292,7 +306,7 @@ def test_the_assigned_clinician_is_emailed(make_hospital, pregnancy_for, make_st
 
     assert len(mail.outbox) == 1
     assert mail.outbox[0].to == [doctor.email]
-    assert "CRITICAL" in mail.outbox[0].subject
+    assert "HIGH" in mail.outbox[0].subject
 
 
 def test_an_undeliverable_address_does_not_lose_the_alert(
@@ -327,7 +341,7 @@ def test_the_list_shows_live_alerts_with_the_patient_inline(
     assert body["count"] == 1
     row = body["results"][0]
     assert row["patient_name"] == "Zainab Bibi"
-    assert row["level"] == "critical"
+    assert row["level"] == "high"
     assert row["reasons"]
     assert body["unacknowledged"] == 1
 
@@ -341,7 +355,7 @@ def test_the_list_puts_the_most_severe_first(client, make_hospital, pregnancy_fo
 
     results = client.get(ALERTS, **auth(hospital.admin.email)).json()["results"]
 
-    assert [r["level"] for r in results] == ["critical", "moderate"]
+    assert [r["level"] for r in results] == ["high", "medium"]
 
 
 def test_resolved_alerts_are_asked_for_explicitly(client, make_hospital, pregnancy_for, auth):
@@ -550,6 +564,7 @@ def test_another_hospitals_alert_cannot_be_acknowledged(
     outsider = make_staff(alpha.org, settings.ROLE_PROVIDER, email="doctor@alpha.test")
     go_critical(pregnancy_for(beta))
     alert = Alert.objects.first()
+    assert alert is not None
 
     response = client.post(f"{ALERTS}{alert.id}/acknowledge/", **auth(outsider.email))
 

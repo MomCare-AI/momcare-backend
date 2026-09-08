@@ -8,6 +8,8 @@ from django.db import models
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from momcare_platform.core.users.models import User  # noqa: F401 (used in the "User" string below)
+
 
 PLATFORM_ADMIN_ROLE_CODE = "platform_admin"
 
@@ -49,12 +51,12 @@ class UserManager(BaseUserManager.from_queryset(UserQuerySet)):  # type: ignore[
         user.save(using=self._db)
         return user
 
-    def create_user(self, email: str, password: str | None = None, **extra_fields):  # type: ignore[override]
+    def create_user(self, email: str, password: str | None = None, **extra_fields):
         extra_fields.setdefault("is_staff", False)
         extra_fields.setdefault("is_superuser", False)
         return self._create_user(email, password, **extra_fields)
 
-    def create_superuser(self, email: str, password: str | None = None, **extra_fields):  # type: ignore[override]
+    def create_superuser(self, email: str, password: str | None = None, **extra_fields):
         # A superuser bootstraps a Momcare platform operator, not a hospital
         # admin — it isn't scoped to any single Organization (see User.organization).
         extra_fields.setdefault("is_staff", True)

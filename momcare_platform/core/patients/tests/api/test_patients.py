@@ -71,6 +71,7 @@ def test_enrolment_records_consent(client, make_hospital, auth):
     response = post_patient(client, auth(hospital.admin.email))
 
     consent = Patient.objects.get(id=response.json()["id"]).consents.first()
+    assert consent is not None
     assert consent.status == Consent.STATUS_GRANTED
     assert consent.version == "v1.0"
     assert consent.recorded_by == hospital.admin
@@ -661,9 +662,14 @@ def test_the_list_carries_the_current_risk_level(client, make_hospital, auth):
     assert pregnancy is not None
     VitalReading.objects.create(
         pregnancy=pregnancy,
-        reading_type=VitalReading.TYPE_BLOOD_PRESSURE,
-        value=168,
-        value_secondary=112,
+        systolic_bp=185,
+        diastolic_bp=125,
+        heart_rate=130,
+        body_temp_f=103.0,
+        hemoglobin=6.0,
+        blood_glucose=250,
+        stress_score=9,
+        phys_activity_score=1,
         recorded_at=timezone.now(),
         source=VitalReading.SOURCE_MANUAL,
     )
@@ -671,7 +677,7 @@ def test_the_list_carries_the_current_risk_level(client, make_hospital, auth):
 
     row = client.get(PATIENTS, **auth(hospital.admin.email)).json()["results"][0]
 
-    assert row["risk_level"] == "critical"
+    assert row["risk_level"] == "high"
     assert row["risk_assessed_at"] is not None
     assert row["pregnancy_id"] == str(pregnancy.id)
 
