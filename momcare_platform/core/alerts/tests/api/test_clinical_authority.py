@@ -48,11 +48,16 @@ def live_alert(db):
         pregnancy = patient.current_pregnancy
         VitalReading.objects.create(
             pregnancy=pregnancy,
-            reading_type=VitalReading.TYPE_BLOOD_PRESSURE,
-            value=168,
-            value_secondary=112,
             recorded_at=timezone.now(),
             source=VitalReading.SOURCE_MANUAL,
+            systolic_bp=185,
+            diastolic_bp=125,
+            heart_rate=130,
+            body_temp_f=103.0,
+            hemoglobin=6.0,
+            blood_glucose=250,
+            stress_score=9,
+            phys_activity_score=1,
         )
         reassess_risk(pregnancy)
         return Alert.objects.get(pregnancy=pregnancy)

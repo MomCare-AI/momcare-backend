@@ -7,7 +7,11 @@ class AlertEventInline(admin.TabularInline):
     model = AlertEvent
     extra = 0
     fields = ["created_at", "kind", "tier", "detail", "actor"]
-    readonly_fields = fields
+    # A fresh list, not `= fields` — TabularInline.fields carries a wider
+    # declared type (it can nest lists/tuples for fieldset grouping) than
+    # readonly_fields accepts, so aliasing it here doesn't type-check even
+    # though the runtime values are identical.
+    readonly_fields = ["created_at", "kind", "tier", "detail", "actor"]
     can_delete = False
 
     def has_add_permission(self, request, obj=None):

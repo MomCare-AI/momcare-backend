@@ -38,7 +38,9 @@ class ModuleGatedViewSet:
     module_key: str = ""
 
     def initial(self, request, *args, **kwargs):
-        super().initial(request, *args, **kwargs)  # runs auth/permissions first
+        # Real initial() comes from whatever DRF ViewSet this mixin is
+        # combined with at the use site — same as scoping.py's mixins.
+        super().initial(request, *args, **kwargs)  # type: ignore[misc]  # runs auth/permissions first
         user = request.user
         if user.is_superuser or getattr(user, "organization_id", None) is None:
             return

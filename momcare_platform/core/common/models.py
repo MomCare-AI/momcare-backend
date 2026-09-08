@@ -66,13 +66,16 @@ class Deactivatable(models.Model):
         self.deactivated_at = timezone.now()
         self.deactivated_by = by
         self.deactivation_reason = reason
+        # "updated_at" isn't Deactivatable's own field — it assumes a concrete
+        # model also mixes in TimeStampedModel, true everywhere this is
+        # actually used, but not something mypy can see at this abstract base.
         self.save(
             update_fields=[
                 "is_active",
                 "deactivated_at",
                 "deactivated_by",
                 "deactivation_reason",
-                "updated_at",
+                "updated_at",  # type: ignore[misc]
             ],
         )
 
@@ -81,12 +84,13 @@ class Deactivatable(models.Model):
         self.deactivated_at = None
         self.deactivated_by = None
         self.deactivation_reason = ""
+        # See the matching note in deactivate() above.
         self.save(
             update_fields=[
                 "is_active",
                 "deactivated_at",
                 "deactivated_by",
                 "deactivation_reason",
-                "updated_at",
+                "updated_at",  # type: ignore[misc]
             ],
         )

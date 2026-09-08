@@ -84,7 +84,7 @@ class Device(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
         ]
 
     def __str__(self) -> str:
-        if self.assigned_pregnancy_id:
+        if self.assigned_pregnancy:
             return f"{self.serial_number} → {self.assigned_pregnancy.patient.full_name}"
         return f"{self.serial_number} ({self.get_status_display()})"
 

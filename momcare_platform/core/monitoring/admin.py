@@ -12,7 +12,7 @@ class DeviceAdmin(admin.ModelAdmin):
 
     @admin.display(description="Worn by")
     def wearer(self, obj: Device):
-        return obj.assigned_pregnancy.patient.full_name if obj.assigned_pregnancy_id else "—"
+        return obj.assigned_pregnancy.patient.full_name if obj.assigned_pregnancy else "—"
 
 
 @admin.register(RiskAssessment)

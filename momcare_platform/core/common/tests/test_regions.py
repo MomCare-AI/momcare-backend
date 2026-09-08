@@ -107,6 +107,7 @@ def test_the_mapping_never_names_a_country_the_form_cannot_offer():
     """A row for a country nobody can pick is dead weight, and usually a typo."""
     source = FORM.read_text(encoding="utf-8")
     block = re.search(r"const COUNTRIES = \[(.*?)\];", source, re.S)
+    assert block is not None
     offered = set(re.findall(r'"([^"]+)"', block.group(1)))
 
     stale = (set(regions._BY_COUNTRY) | regions._OUT_OF_SCOPE) - offered
