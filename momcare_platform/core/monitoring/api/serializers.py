@@ -4,79 +4,205 @@ from rest_framework import serializers
 
 from momcare_platform.core.monitoring.models import Device, RiskAssessment, VitalReading
 
-# DRF compares against the field's own type, so a float here would coerce on
-# every request and warn.
-MIN_READING = Decimal("0.01")
+# The 9 vitals the risk model trains and predicts on — every reading-carrying
+# field on VitalReading, kept as one list so the create serializer and the
+# view stay in sync with the model without repeating the field names twice.
+VITAL_FIELDS = [
+    "age",
+    "systolic_bp",
+    "diastolic_bp",
+    "heart_rate",
+    "body_temp_f",
+    "hemoglobin",
+    "blood_glucose",
+    "stress_score",
+    "phys_activity_score",
+]
+
+# Physiologically-plausible bounds, not statistical bounds from any dataset —
+# wide enough that a genuine extreme emergency reading is never rejected, tight
+# enough to catch a data-entry mistake (a heart rate of "1000" is a typo, not
+# a patient). Age and the two vitals come from documented clinical extremes
+# (ICU/patient-monitor alarm-configuration ranges, glucometer measurement
+# specs, and the most extreme medically documented *survived* cases); stress
+# and activity score are this app's own 0-10 self-report scale, not a
+# clinical measurement, so their bound is just the scale's own definition.
+VITAL_BOUNDS = {
+    "age": (10, 60),
+    "systolic_bp": (Decimal("40"), Decimal("300")),
+    "diastolic_bp": (Decimal("20"), Decimal("200")),
+    "heart_rate": (Decimal("20"), Decimal("300")),
+    "body_temp_f": (Decimal("80"), Decimal("115")),
+    "hemoglobin": (Decimal("2"), Decimal("24")),
+    "blood_glucose": (Decimal("20"), Decimal("600")),
+    "stress_score": (Decimal("0"), Decimal("10")),
+    "phys_activity_score": (Decimal("0"), Decimal("10")),
+}
 
 
 class VitalReadingSerializer(serializers.ModelSerializer):
-    display_value = serializers.CharField(read_only=True)
-    unit = serializers.CharField(read_only=True)
-    is_simulated = serializers.BooleanField(read_only=True)
-    reading_type_display = serializers.CharField(source="get_reading_type_display", read_only=True)
     source_display = serializers.CharField(source="get_source_display", read_only=True)
 
     class Meta:
         model = VitalReading
         fields = [
             "id",
-            "reading_type",
-            "reading_type_display",
-            "value",
-            "value_secondary",
-            "display_value",
-            "unit",
-            "recorded_at",
+            *VITAL_FIELDS,
             "source",
             "source_display",
-            "is_simulated",
+            "recorded_at",
             "device",
         ]
         read_only_fields = fields
 
 
 class VitalReadingCreateSerializer(serializers.Serializer):
-    """A single reading, from a device or entered by staff.
+    """One reading event, from a device or entered by staff.
+
+    Every vital is optional — a reading event does not have to carry all 9
+    every time (hemoglobin in particular usually will not, since it comes
+    from a monthly lab report, not the band). At least one must be present,
+    or there is nothing to record.
 
     ``pregnancy`` is never accepted here — it comes from the URL and is scoped
     to the caller's hospital, so a reading cannot be filed against someone
     else's patient.
+
+    Each vital is bounded to a physiologically-plausible range (see
+    ``VITAL_BOUNDS``) — wide enough that a genuine extreme emergency reading
+    is always accepted, tight enough to reject a data-entry mistake (a heart
+    rate of "1000") at the door rather than discovering it later and needing
+    to rescore.
     """
 
-    reading_type = serializers.ChoiceField(choices=VitalReading.TYPE_CHOICES)
-    value = serializers.DecimalField(max_digits=6, decimal_places=2, min_value=MIN_READING)
-    value_secondary = serializers.DecimalField(
+    age = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=VITAL_BOUNDS["age"][0],
+        max_value=VITAL_BOUNDS["age"][1],
+        error_messages={
+            "min_value": "Age must be between 10 and 60 years for a pregnancy record.",
+            "max_value": "Age must be between 10 and 60 years for a pregnancy record.",
+        },
+    )
+    systolic_bp = serializers.DecimalField(
         max_digits=6,
         decimal_places=2,
         required=False,
         allow_null=True,
-        min_value=MIN_READING,
+        min_value=VITAL_BOUNDS["systolic_bp"][0],
+        max_value=VITAL_BOUNDS["systolic_bp"][1],
+        error_messages={
+            "min_value": "Systolic BP must be between 40 and 300 mmHg. Please correct it.",
+            "max_value": "Systolic BP must be between 40 and 300 mmHg. Please correct it.",
+        },
     )
+    diastolic_bp = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=VITAL_BOUNDS["diastolic_bp"][0],
+        max_value=VITAL_BOUNDS["diastolic_bp"][1],
+        error_messages={
+            "min_value": "Diastolic BP must be between 20 and 200 mmHg. Please correct it.",
+            "max_value": "Diastolic BP must be between 20 and 200 mmHg. Please correct it.",
+        },
+    )
+    heart_rate = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=VITAL_BOUNDS["heart_rate"][0],
+        max_value=VITAL_BOUNDS["heart_rate"][1],
+        error_messages={
+            "min_value": "Heart rate must be between 20 and 300 bpm. Please correct it.",
+            "max_value": "Heart rate must be between 20 and 300 bpm. Please correct it.",
+        },
+    )
+    body_temp_f = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=VITAL_BOUNDS["body_temp_f"][0],
+        max_value=VITAL_BOUNDS["body_temp_f"][1],
+        error_messages={
+            "min_value": "Body temperature must be between 80 and 115 °F. Please correct it.",
+            "max_value": "Body temperature must be between 80 and 115 °F. Please correct it.",
+        },
+    )
+    hemoglobin = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=VITAL_BOUNDS["hemoglobin"][0],
+        max_value=VITAL_BOUNDS["hemoglobin"][1],
+        error_messages={
+            "min_value": "Hemoglobin must be between 2 and 24 g/dL. Please correct it.",
+            "max_value": "Hemoglobin must be between 2 and 24 g/dL. Please correct it.",
+        },
+    )
+    blood_glucose = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=VITAL_BOUNDS["blood_glucose"][0],
+        max_value=VITAL_BOUNDS["blood_glucose"][1],
+        error_messages={
+            "min_value": "Blood glucose must be between 20 and 600 mg/dL. Please correct it.",
+            "max_value": "Blood glucose must be between 20 and 600 mg/dL. Please correct it.",
+        },
+    )
+    stress_score = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=VITAL_BOUNDS["stress_score"][0],
+        max_value=VITAL_BOUNDS["stress_score"][1],
+        error_messages={
+            "min_value": "Stress score must be between 0 and 10. Please correct it.",
+            "max_value": "Stress score must be between 0 and 10. Please correct it.",
+        },
+    )
+    phys_activity_score = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=VITAL_BOUNDS["phys_activity_score"][0],
+        max_value=VITAL_BOUNDS["phys_activity_score"][1],
+        error_messages={
+            "min_value": "Physical activity score must be between 0 and 10. Please correct it.",
+            "max_value": "Physical activity score must be between 0 and 10. Please correct it.",
+        },
+    )
+    # Always required, never inferred — see VitalReading's own docstring on
+    # why a device being assigned does not mean these particular numbers
+    # came from it.
+    source = serializers.ChoiceField(choices=VitalReading.SOURCE_CHOICES)
     recorded_at = serializers.DateTimeField(required=False)
-    source = serializers.ChoiceField(
-        choices=[VitalReading.SOURCE_DEVICE, VitalReading.SOURCE_MANUAL],
-        default=VitalReading.SOURCE_MANUAL,
-    )
 
     def validate(self, attrs):
-        reading_type = attrs["reading_type"]
-        secondary = attrs.get("value_secondary")
-
-        if reading_type == VitalReading.TYPE_BLOOD_PRESSURE:
-            # Both halves or neither: a systolic with no diastolic is not a
-            # blood pressure, and a rule evaluating 140/? cannot decide.
-            if secondary is None:
-                raise serializers.ValidationError(
-                    {"value_secondary": "Blood pressure needs both systolic and diastolic values."},
-                )
-            if attrs["value"] <= secondary:
-                raise serializers.ValidationError(
-                    {"value": "Systolic pressure must be higher than diastolic."},
-                )
-        elif secondary is not None:
+        # Both halves or neither: a systolic with no diastolic is not a blood
+        # pressure, and a rule evaluating 140/? cannot decide.
+        systolic = attrs.get("systolic_bp")
+        diastolic = attrs.get("diastolic_bp")
+        if (systolic is None) != (diastolic is None):
             raise serializers.ValidationError(
-                {"value_secondary": "Only blood pressure has a second value."},
+                {"diastolic_bp": "Blood pressure needs both systolic and diastolic values."},
             )
+        if systolic is not None and systolic <= diastolic:
+            raise serializers.ValidationError(
+                {"systolic_bp": "Systolic pressure must be higher than diastolic."},
+            )
+
+        if not any(attrs.get(field) is not None for field in VITAL_FIELDS):
+            raise serializers.ValidationError("At least one vital must be provided.")
 
         return attrs
 
@@ -120,34 +246,44 @@ class DeviceSerializer(serializers.ModelSerializer):
 
 
 class RiskAssessmentSerializer(serializers.ModelSerializer):
-    level_display = serializers.CharField(source="get_level_display", read_only=True)
-    source_display = serializers.CharField(source="get_source_display", read_only=True)
-    reasons = serializers.ListField(read_only=True)
-    needs_acknowledgement = serializers.BooleanField(read_only=True)
-    acknowledged_by_name = serializers.CharField(
-        source="acknowledged_by.get_full_name",
+    risk_level_display = serializers.CharField(source="get_risk_level_display", read_only=True)
+    final_risk_level_display = serializers.CharField(source="get_final_risk_level_display", read_only=True)
+    review_status_display = serializers.CharField(source="get_review_status_display", read_only=True)
+    needs_review = serializers.BooleanField(read_only=True)
+    verified_by_name = serializers.CharField(
+        source="verified_by.get_full_name",
         read_only=True,
         default="",
     )
+    # The vitals behind this judgement, inline — a caller reading an
+    # assessment gets the reading with it, not just a reading_id it has to
+    # look up separately.
+    reading = VitalReadingSerializer(read_only=True)
 
     class Meta:
         model = RiskAssessment
         fields = [
             "id",
-            "level",
-            "level_display",
-            "previous_level",
-            "findings",
-            "reasons",
-            "source",
-            "source_display",
-            "engine_version",
-            "score",
+            "risk_level",
+            "risk_level_display",
+            "final_risk_level",
+            "final_risk_level_display",
+            "previous_risk_level",
+            "confirmed_risk_level",
+            "review_status",
+            "review_status_display",
+            "flagged_for_review",
+            "reading",
+            "bp_category",
+            "heart_rate_category",
+            "temperature_category",
+            "glucose_category",
+            "hemoglobin_category",
             "confidence",
             "assessed_at",
-            "needs_acknowledgement",
-            "acknowledged_at",
-            "acknowledged_by_name",
+            "needs_review",
+            "verified_at",
+            "verified_by_name",
         ]
         read_only_fields = fields
 
@@ -164,11 +300,10 @@ class AttentionPatientSerializer(serializers.Serializer):
     full_name = serializers.CharField()
     mrn = serializers.CharField(allow_null=True)
     gestational_age = serializers.CharField()
-    level = serializers.CharField()
-    level_display = serializers.CharField()
-    reasons = serializers.ListField(child=serializers.CharField())
+    risk_level = serializers.CharField()
+    risk_level_display = serializers.CharField()
     assessed_at = serializers.DateTimeField()
-    needs_acknowledgement = serializers.BooleanField()
+    needs_review = serializers.BooleanField()
     assigned_staff_name = serializers.CharField(allow_blank=True)
     has_responsible_clinician = serializers.BooleanField()
 
@@ -183,12 +318,3 @@ class DeviceAssignSerializer(serializers.Serializer):
     )
 
 
-class SimulateSerializer(serializers.Serializer):
-    """Development only — generates readings so the pipeline can be exercised
-    before any hardware exists. Everything it writes is marked simulated."""
-
-    hours = serializers.IntegerField(min_value=1, max_value=168, default=24)
-    elevated = serializers.BooleanField(
-        default=False,
-        help_text="Generate a hypertensive picture, to demonstrate risk detection.",
-    )

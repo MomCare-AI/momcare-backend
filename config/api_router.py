@@ -10,17 +10,19 @@ from momcare_platform.core.alerts.api.views import (
 )
 from momcare_platform.core.common.programs import iter_programs
 from momcare_platform.core.monitoring.api.views import (
-    AcknowledgeRiskView,
     AttentionQueueView,
     DeviceAssignView,
     DeviceListCreateView,
     LatestReadingsView,
     ReadingListCreateView,
     RiskAssessmentView,
-    SimulateReadingsView,
+    VerifyRiskView,
 )
 from momcare_platform.core.organization.api.dashboard import DashboardSummaryView
-from momcare_platform.core.organization.api.views import MyOrganizationView
+from momcare_platform.core.organization.api.views import (
+    MyOrganizationView,
+    OrganizationConfidenceThresholdView,
+)
 from momcare_platform.core.patients.api.views import (
     CareTeamMembershipEndView,
     CareTeamMembershipListCreateView,
@@ -104,6 +106,11 @@ auth_urlpatterns = [
 
 core_urlpatterns = [
     re_path(r"^organization/me/?$", MyOrganizationView.as_view(), name="organization-me"),
+    re_path(
+        r"^organization/me/confidence-threshold/?$",
+        OrganizationConfidenceThresholdView.as_view(),
+        name="organization-confidence-threshold",
+    ),
     re_path(r"^staff/?$", StaffListView.as_view(), name="staff-list"),
     re_path(
         r"^staff/(?P<staff_id>[0-9a-f-]{36})/?$",
@@ -172,11 +179,6 @@ core_urlpatterns = [
         name="reading-latest",
     ),
     re_path(
-        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/readings/simulate/?$",
-        SimulateReadingsView.as_view(),
-        name="reading-simulate",
-    ),
-    re_path(
         r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/device/?$",
         DeviceAssignView.as_view(),
         name="pregnancy-device",
@@ -189,9 +191,9 @@ core_urlpatterns = [
         name="risk-assessments",
     ),
     re_path(
-        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/risk/(?P<assessment_id>[0-9a-f-]{36})/acknowledge/?$",
-        AcknowledgeRiskView.as_view(),
-        name="risk-acknowledge",
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/risk/(?P<assessment_id>[0-9a-f-]{36})/verify/?$",
+        VerifyRiskView.as_view(),
+        name="risk-verify",
     ),
     # The queue a clinician works from.
     re_path(r"^attention/?$", AttentionQueueView.as_view(), name="attention-queue"),

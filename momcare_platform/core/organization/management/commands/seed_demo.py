@@ -24,7 +24,9 @@ are readable by anyone with dashboard access.
 from __future__ import annotations
 
 import os
+import random
 from datetime import timedelta
+from decimal import Decimal
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -33,10 +35,50 @@ from django.utils import timezone
 
 from momcare_platform.core.common.rls import bypass_rls
 
-# Named so nobody can mistake this for a real hospital. The readings carry a
-# "simulated" source and show a tag in the interface; the people would not
+# Named so nobody can mistake this for a real hospital — the people would not
 # otherwise be marked as fictional at all.
 DEMO_ORG_NAME = "MomCare Demonstration Hospital"
+
+# Loosely realistic resting ranges for pregnancy, used only to give the demo
+# hospital a believable clinical history. Not clinical reference values, and
+# deliberately not a reusable "simulate" capability reachable from the real
+# product — see MEMORY.md on why the old SimulateReadingsView was removed.
+# Every row this produces is tagged source=SOURCE_MANUAL: fictional as data
+# goes, it is not a third kind of provenance the schema needs to represent.
+# Hemoglobin is excluded: it comes from a monthly lab report, not a band, so
+# generated history never invents one. Temperature in Fahrenheit, matching
+# VitalReading.body_temp_f.
+_NORMAL_RANGES = {
+    "systolic_bp": (105, 128),
+    "diastolic_bp": (65, 82),
+    "heart_rate": (72, 96),
+    "body_temp_f": (97.5, 99.0),
+    "blood_glucose": (85, 110),
+    "stress_score": (1, 4),
+    "phys_activity_score": (4, 8),
+}
+
+_ELEVATED_RANGES = {
+    "systolic_bp": (142, 165),
+    "diastolic_bp": (92, 108),
+    "heart_rate": (104, 124),
+    "body_temp_f": (100.2, 101.5),
+    "blood_glucose": (130, 180),
+    "stress_score": (6, 9),
+    "phys_activity_score": (1, 3),
+}
+
+
+def _dec(value: float, places: str = "0.01") -> Decimal:
+    return Decimal(str(round(value, 2))).quantize(Decimal(places))
+
+
+def _demo_vitals(elevated: bool, *, age: int | None) -> dict:
+    ranges = _ELEVATED_RANGES if elevated else _NORMAL_RANGES
+    return {
+        "age": age,
+        **{field: _dec(random.uniform(*band)) for field, band in ranges.items()},
+    }
 
 DEMO_STAFF = [
     ("admin@demo.momcare.solutions", "Demo", "Administrator", "ROLE_HOSPITAL_ADMIN"),
@@ -258,24 +300,37 @@ class Command(BaseCommand):
         each measurement, so appending recent data is enough to make the demo
         current, and it leaves a believable history behind it.
         """
-        from momcare_platform.core.monitoring.services import (  # noqa: PLC0415
-            reassess_risk,
-            simulate_readings,
-        )
+        from momcare_platform.core.monitoring.models import VitalReading  # noqa: PLC0415
+        from momcare_platform.core.monitoring.services import reassess_risk  # noqa: PLC0415
 
         for patient, spec in patients:
             pregnancy = patient.current_pregnancy
             if pregnancy is None:
                 continue
 
-            created = simulate_readings(
-                pregnancy=pregnancy,
-                hours=hours,
-                elevated=spec["state"] == "elevated",
-            )
+            now = timezone.now()
+            start = now - timedelta(hours=hours)
+            dob = patient.date_of_birth
+            age = (now.date() - dob).days // 365 if dob else None
+            elevated = spec["state"] == "elevated"
+
+            readings = []
+            moment = start
+            while moment <= now:
+                readings.append(
+                    VitalReading(
+                        pregnancy=pregnancy,
+                        recorded_at=moment,
+                        source=VitalReading.SOURCE_MANUAL,
+                        **_demo_vitals(elevated, age=age),
+                    ),
+                )
+                moment += timedelta(hours=1)
+            VitalReading.objects.bulk_create(readings)
+
             assessment = reassess_risk(pregnancy)
-            level = assessment.level if assessment else "unchanged"
-            self.stdout.write(f"  {patient.full_name:22} +{len(created):4} readings  -> {level}")
+            level = assessment.final_risk_level if assessment else "unchanged"
+            self.stdout.write(f"  {patient.full_name:22} +{len(readings):4} readings  -> {level}")
 
     # -- Output ---------------------------------------------------------------
 

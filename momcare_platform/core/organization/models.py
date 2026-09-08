@@ -1,4 +1,7 @@
+from decimal import Decimal
+
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from timezone_field import TimeZoneField
 
@@ -135,6 +138,25 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
     established_date = models.DateField(null=True, blank=True)
     date_format = models.CharField(max_length=10, choices=DATE_FORMAT_CHOICES, default="MM-DD-YYYY")
 
+    # This hospital's own risk-model confidence threshold. Below it a prediction
+    # is still recorded, but flagged for a doctor to review.
+    #
+    # Null means "use the platform default" as a live state, rather than copying
+    # 0.70 into every row — so raising the platform default later reaches every
+    # hospital that never set its own, and a hospital that deliberately chose
+    # 0.70 is still distinguishable from one that never chose at all.
+    confidence_threshold = models.DecimalField(
+        max_digits=4,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.000")), MaxValueValidator(Decimal("1.000"))],
+        help_text=(
+            "Model confidence below which an assessment is flagged for a doctor. "
+            "Leave empty to follow the platform default."
+        ),
+    )
+
     class Meta:
         ordering = ["name"]
 
@@ -145,6 +167,17 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
     def can_authenticate(self) -> bool:
         """Members may sign in only once the hospital is approved and still active."""
         return self.status == self.STATUS_APPROVED and self.is_active
+
+    @property
+    def effective_confidence_threshold(self) -> Decimal:
+        """This hospital's threshold, falling back to the platform default.
+
+        Always read through this rather than the column: the column is null for
+        every hospital that has not chosen one, which is most of them.
+        """
+        if self.confidence_threshold is not None:
+            return self.confidence_threshold
+        return settings.MOMCARE_DEFAULT_CONFIDENCE_THRESHOLD
 
     def set_review_status(self, status: str, *, by=None, note: str = "", notify: bool = True) -> None:
         """Record a platform-admin review decision, with who decided and when.

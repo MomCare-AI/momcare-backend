@@ -3,6 +3,7 @@
 
 import ssl
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import environ
@@ -93,6 +94,23 @@ ROLE_PATIENT = "patient"
 # API-only backend: only the Django admin / Swagger use a browser login, and the
 # admin ships its own login view. Point LOGIN_URL at it for any login_required.
 LOGIN_URL = "admin:login"
+
+# RISK MODEL
+# ------------------------------------------------------------------------------
+# Below this model confidence, a prediction is still recorded — never discarded —
+# but flagged_for_review is set so a clinician reviews it. A hospital may raise
+# or lower it for itself via Organization.confidence_threshold; this is the
+# value used when it has not.
+#
+# Raised from 0.70 to 0.80 after running momcare_model.evaluate against the
+# locked v1 model's test set: of the 81 true-High cases the model scores as
+# Low (15.3% of all true High), 0.70 caught only 19 (23%) for review; 0.80
+# catches 39 (48%), at the cost of flagging 17.5% of all predictions instead
+# of 8.9%. Still an operational choice, not a regulatory standard — no
+# regulator sets one, and this trades more review burden for catching more of
+# a specific, real failure mode found in the trained model. Revisit whenever
+# the model is retrained, against that version's own evaluate.py output.
+MOMCARE_DEFAULT_CONFIDENCE_THRESHOLD = Decimal("0.800")
 
 # PASSWORDS
 # ------------------------------------------------------------------------------

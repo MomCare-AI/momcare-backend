@@ -131,7 +131,22 @@ class Alert(UUIDPrimaryKeyModel, TimeStampedModel):
 
     @property
     def reasons(self) -> list[str]:
-        return self.assessment.reasons if self.assessment_id else []
+        """Human-readable context for the mail template, from whichever
+        vital categories are outside normal — no free-text finding survives
+        past scoring, so this is what "why" is left."""
+        if not self.assessment_id:
+            return []
+        return [
+            f"{label}: {value}"
+            for field_name, label in (
+                ("bp_category", "Blood pressure"),
+                ("temperature_category", "Temperature"),
+                ("heart_rate_category", "Heart rate"),
+                ("glucose_category", "Glucose"),
+                ("hemoglobin_category", "Hemoglobin"),
+            )
+            if (value := getattr(self.assessment, field_name, "")) and value != "Normal"
+        ]
 
 
 class AlertEvent(UUIDPrimaryKeyModel):

@@ -19,6 +19,13 @@ class OrganizationSummarySerializer(serializers.ModelSerializer):
     staff_count = serializers.IntegerField(read_only=True)
     patient_count = serializers.IntegerField(read_only=True)
     location_count = serializers.IntegerField(read_only=True)
+    # The hospital's own override, and the number actually used once the
+    # platform default is folded in — see Organization.effective_confidence_threshold.
+    # Both travel together so a caller never has to guess which one a null
+    # confidence_threshold falls back to.
+    effective_confidence_threshold = serializers.DecimalField(
+        max_digits=4, decimal_places=3, read_only=True,
+    )
 
     class Meta:
         model = Organization
@@ -49,6 +56,8 @@ class OrganizationSummarySerializer(serializers.ModelSerializer):
             "patient_count",
             "location_count",
             "building_photo",
+            "confidence_threshold",
+            "effective_confidence_threshold",
             "created_at",
         ]
         read_only_fields = fields
@@ -71,3 +80,19 @@ class OrganizationPhotoUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
         fields = ["building_photo"]
+
+
+class OrganizationConfidenceThresholdSerializer(serializers.ModelSerializer):
+    """A hospital's own override of the model confidence threshold.
+
+    A separate, single-purpose serializer/endpoint rather than folded into
+    the photo update — this is a clinical-safety setting, not a profile
+    detail, and deserves its own narrow write path. ``confidence_threshold``
+    already allows null on the model (see its own field docstring): sending
+    ``{"confidence_threshold": null}`` clears this hospital's override and
+    reverts it to following the platform default live.
+    """
+
+    class Meta:
+        model = Organization
+        fields = ["confidence_threshold"]

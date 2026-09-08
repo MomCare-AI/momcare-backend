@@ -27,9 +27,12 @@ from momcare_platform.core.common.scoping import (
 
 NO_HOSPITAL = {"detail": "This account is not attached to a hospital."}
 
-# Severity first, then oldest first inside a level: the alert that has waited
-# longest at the worst level is the one somebody should open.
-SEVERITY_ORDER = {"critical": 0, "high": 1, "moderate": 2}
+# Same canonical encoding as the trained model everywhere in this project:
+# Low=0, Medium=1, High=2. Severity first, then oldest first inside a level:
+# the alert that has waited longest at the worst level is the one somebody
+# should open — which means sorting on the *negative* of this number, since
+# a queue needs the worst case first.
+SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
 class AlertScopedView(OrganizationScopedQuerysetMixin, APIView):
@@ -92,7 +95,7 @@ class AlertListView(AlertScopedView):
 
         rows = sorted(
             queryset,
-            key=lambda a: (SEVERITY_ORDER.get(a.level, 9), a.raised_at),
+            key=lambda a: (-SEVERITY_ORDER.get(a.level, 0), a.raised_at),
         )
 
         paginator = DefaultPagination()
