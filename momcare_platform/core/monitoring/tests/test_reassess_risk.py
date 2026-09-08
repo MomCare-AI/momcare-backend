@@ -114,6 +114,7 @@ def test_healthy_vitals_score_low_and_raise_no_alert(make_hospital, pregnancy_fo
 
     assessment = reassess_risk(pregnancy)
 
+    assert assessment is not None
     assert assessment.risk_level == RiskAssessment.LEVEL_LOW
     assert assessment.final_risk_level == RiskAssessment.LEVEL_LOW
     assert assessment.flagged_for_review is False
@@ -128,6 +129,7 @@ def test_dangerous_vitals_score_high_and_raise_an_alert(make_hospital, make_staf
 
     assessment = reassess_risk(pregnancy)
 
+    assert assessment is not None
     assert assessment.risk_level == RiskAssessment.LEVEL_HIGH
     assert assessment.final_risk_level == RiskAssessment.LEVEL_HIGH
     alert = Alert.objects.get(pregnancy=pregnancy)
@@ -144,6 +146,7 @@ def test_africa_medium_is_shown_as_high(make_hospital, pregnancy_for):
 
     assessment = reassess_risk(pregnancy)
 
+    assert assessment is not None
     # The model's real answer is preserved even though it isn't what's shown.
     assert assessment.risk_level == RiskAssessment.LEVEL_MEDIUM
     assert assessment.final_risk_level == RiskAssessment.LEVEL_HIGH
@@ -158,6 +161,7 @@ def test_medium_outside_africa_is_not_overridden(make_hospital, pregnancy_for):
 
     assessment = reassess_risk(pregnancy)
 
+    assert assessment is not None
     assert assessment.risk_level == RiskAssessment.LEVEL_MEDIUM
     assert assessment.final_risk_level == RiskAssessment.LEVEL_MEDIUM
 
@@ -173,6 +177,7 @@ def test_low_confidence_flags_the_assessment_and_emails_the_doctor(make_hospital
 
     assessment = reassess_risk(pregnancy)
 
+    assert assessment is not None
     assert assessment.flagged_for_review is True
     assert all(sent.to == [doctor.email] for sent in mail.outbox)  # never the patient
     review_emails = [sent for sent in mail.outbox if "review requested" in sent.subject.lower()]
@@ -189,6 +194,7 @@ def test_high_confidence_is_not_flagged_and_sends_no_review_email(make_hospital,
 
     assessment = reassess_risk(pregnancy)
 
+    assert assessment is not None
     assert assessment.flagged_for_review is False
     review_emails = [sent for sent in mail.outbox if "review requested" in sent.subject.lower()]
     assert len(review_emails) == 0
@@ -208,6 +214,8 @@ def test_a_hospitals_own_threshold_overrides_the_platform_default(make_hospital,
 
     assessment = reassess_risk(pregnancy)
 
+    assert assessment is not None
+    assert assessment.confidence is not None
     assert assessment.confidence < Decimal("0.990")
     assert assessment.flagged_for_review is True
     review_emails = [sent for sent in mail.outbox if "review requested" in sent.subject.lower()]
@@ -235,6 +243,7 @@ def test_worsening_creates_a_new_row_with_previous_level_recorded(make_hospital,
     add_reading(pregnancy, HIGH_VITALS, minutes_ago=1)
     second = reassess_risk(pregnancy)
 
+    assert second is not None
     assert second.previous_risk_level == RiskAssessment.LEVEL_LOW
     assert second.final_risk_level == RiskAssessment.LEVEL_HIGH
     assert RiskAssessment.objects.filter(pregnancy=pregnancy).count() == 2

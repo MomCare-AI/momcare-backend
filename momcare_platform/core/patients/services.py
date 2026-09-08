@@ -64,6 +64,10 @@ def enrol_patient(
                     "Could not allocate a medical record number. Please try again.",
                 ) from None
 
+    # Unreachable with patient still None: the loop above only exits via
+    # `break` (patient assigned) or the `raise` on its last attempt.
+    assert patient is not None
+
     if consent:
         Consent.objects.create(
             patient=patient,

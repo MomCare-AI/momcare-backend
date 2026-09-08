@@ -5,6 +5,7 @@ test needs at least two tenants: a rule that looks correct against one hospital
 tells you nothing about isolation.
 """
 
+from collections.abc import Generator
 from types import SimpleNamespace
 
 import pytest
@@ -24,7 +25,7 @@ def _media_storage(settings, tmpdir) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_throttles() -> None:
+def _reset_throttles() -> Generator[None]:
     """Give every test a fresh rate-limit budget.
 
     DRF keeps throttle counters in the default cache, keyed by client IP — and

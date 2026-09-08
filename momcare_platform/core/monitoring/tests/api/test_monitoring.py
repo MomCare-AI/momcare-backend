@@ -64,18 +64,16 @@ def test_staff_can_record_a_blood_pressure_by_hand(client, make_hospital, pregna
 
     response = client.post(
         readings_url(pregnancy.id),
-        data=json.dumps(
-            {"reading_type": "blood_pressure", "value": "128.0", "value_secondary": "82.0"},
-        ),
+        data=json.dumps({"source": "manual", "systolic_bp": "128.0", "diastolic_bp": "82.0"}),
         content_type="application/json",
         **auth(hospital.admin.email),
     )
 
     assert response.status_code == 201
     body = response.json()
-    assert body["display_value"] == "128/82 mmHg"
+    assert body["systolic_bp"] == "128.00"
+    assert body["diastolic_bp"] == "82.00"
     assert body["source"] == VitalReading.SOURCE_MANUAL
-    assert body["is_simulated"] is False
 
     reading = VitalReading.objects.get(id=body["id"])
     assert reading.recorded_by == hospital.admin
@@ -89,13 +87,13 @@ def test_blood_pressure_needs_both_numbers(client, make_hospital, pregnancy_for,
 
     response = client.post(
         readings_url(pregnancy.id),
-        data=json.dumps({"reading_type": "blood_pressure", "value": "140.0"}),
+        data=json.dumps({"source": "manual", "systolic_bp": "140.0"}),
         content_type="application/json",
         **auth(hospital.admin.email),
     )
 
     assert response.status_code == 400
-    assert "value_secondary" in response.json()
+    assert "diastolic_bp" in response.json()
 
 
 def test_systolic_must_exceed_diastolic(client, make_hospital, pregnancy_for, auth):
@@ -104,9 +102,7 @@ def test_systolic_must_exceed_diastolic(client, make_hospital, pregnancy_for, au
 
     response = client.post(
         readings_url(pregnancy.id),
-        data=json.dumps(
-            {"reading_type": "blood_pressure", "value": "80.0", "value_secondary": "120.0"},
-        ),
+        data=json.dumps({"source": "manual", "systolic_bp": "80.0", "diastolic_bp": "120.0"}),
         content_type="application/json",
         **auth(hospital.admin.email),
     )
@@ -114,18 +110,21 @@ def test_systolic_must_exceed_diastolic(client, make_hospital, pregnancy_for, au
     assert response.status_code == 400
 
 
-def test_a_single_valued_reading_rejects_a_second_number(client, make_hospital, pregnancy_for, auth):
-    hospital = make_hospital("Extra Value Hospital")
+def test_source_is_required(client, make_hospital, pregnancy_for, auth):
+    """A device being assigned never implies these particular numbers came
+    from it — every write has to say where it came from, explicitly."""
+    hospital = make_hospital("No Source Hospital")
     pregnancy = pregnancy_for(hospital)
 
     response = client.post(
         readings_url(pregnancy.id),
-        data=json.dumps({"reading_type": "heart_rate", "value": "88", "value_secondary": "60"}),
+        data=json.dumps({"heart_rate": "88"}),
         content_type="application/json",
         **auth(hospital.admin.email),
     )
 
     assert response.status_code == 400
+    assert "source" in response.json()
 
 
 def test_readings_are_refused_on_a_pregnancy_that_has_ended(
@@ -142,7 +141,7 @@ def test_readings_are_refused_on_a_pregnancy_that_has_ended(
 
     response = client.post(
         readings_url(pregnancy.id),
-        data=json.dumps({"reading_type": "heart_rate", "value": "88"}),
+        data=json.dumps({"source": "manual", "heart_rate": "88"}),
         content_type="application/json",
         **auth(hospital.admin.email),
     )
@@ -150,48 +149,44 @@ def test_readings_are_refused_on_a_pregnancy_that_has_ended(
     assert response.status_code == 400
 
 
-# ── Latest readings ──────────────────────────────────────────────────────────
+# ── Latest reading ───────────────────────────────────────────────────────────
 
 
-def test_latest_returns_the_most_recent_of_each_type(make_hospital, pregnancy_for):
+def test_latest_returns_the_most_recently_recorded_reading(make_hospital, pregnancy_for):
+    """One reading event carries every vital together (wide format) — there is
+    exactly one 'latest', not one per vital type."""
     hospital = make_hospital("Latest Hospital")
     pregnancy = pregnancy_for(hospital)
     now = timezone.now()
 
     VitalReading.objects.create(
-        pregnancy=pregnancy,
-        reading_type=VitalReading.TYPE_HEART_RATE,
-        value=80,
-        recorded_at=now - timedelta(hours=2),
+        pregnancy=pregnancy, source=VitalReading.SOURCE_MANUAL,
+        heart_rate=80, recorded_at=now - timedelta(hours=2),
     )
     newest = VitalReading.objects.create(
-        pregnancy=pregnancy,
-        reading_type=VitalReading.TYPE_HEART_RATE,
-        value=95,
-        recorded_at=now,
+        pregnancy=pregnancy, source=VitalReading.SOURCE_MANUAL,
+        heart_rate=95, recorded_at=now,
     )
 
     latest = latest_readings(pregnancy)
-    assert latest[VitalReading.TYPE_HEART_RATE].id == newest.id
+    assert latest is not None
+    assert latest.id == newest.id
 
 
-def test_a_type_with_no_readings_is_absent_not_normal(make_hospital, pregnancy_for):
+def test_no_readings_yet_is_absent_not_a_fabricated_normal_value(client, make_hospital, pregnancy_for, auth):
     """Missing data must stay visibly missing. A screen that looks calm because
     readings stopped arriving is the worst failure this system could have."""
     hospital = make_hospital("Absent Hospital")
     pregnancy = pregnancy_for(hospital)
-    VitalReading.objects.create(
-        pregnancy=pregnancy,
-        reading_type=VitalReading.TYPE_HEART_RATE,
-        value=88,
-        recorded_at=timezone.now(),
-    )
 
-    latest = latest_readings(pregnancy)
+    assert latest_readings(pregnancy) is None
 
-    assert VitalReading.TYPE_HEART_RATE in latest
-    assert VitalReading.TYPE_BLOOD_PRESSURE not in latest
-    assert VitalReading.TYPE_TEMPERATURE not in latest
+    body = client.get(
+        f"/api/pregnancies/{pregnancy.id}/readings/latest/",
+        **auth(hospital.admin.email),
+    ).json()
+    assert body["reading"] is None
+    assert body["total_count"] == 0
 
 
 # ── Devices ──────────────────────────────────────────────────────────────────
@@ -308,7 +303,7 @@ def test_a_reading_cannot_be_filed_against_another_hospitals_patient(
 
     response = client.post(
         readings_url(beta_pregnancy.id),
-        data=json.dumps({"reading_type": "heart_rate", "value": "88"}),
+        data=json.dumps({"source": "manual", "heart_rate": "88"}),
         content_type="application/json",
         **auth(alpha.admin.email),
     )
@@ -336,7 +331,7 @@ def test_clinical_staff_can_record_readings(client, make_hospital, make_staff, p
 
     response = client.post(
         readings_url(pregnancy.id),
-        data=json.dumps({"reading_type": "temperature", "value": "37.1"}),
+        data=json.dumps({"source": "manual", "body_temp_f": "99.1"}),
         content_type="application/json",
         **auth(nurse.email),
     )

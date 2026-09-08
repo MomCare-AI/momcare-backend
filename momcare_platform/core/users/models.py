@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.db import models
 from django.db.models.functions import Lower
@@ -118,7 +120,7 @@ class User(UUIDPrimaryKeyModel, AbstractBaseUser, PermissionsMixin, AddressMixin
     objects = UserManager()
 
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS: list[str] = []
+    REQUIRED_FIELDS: ClassVar[list[str]] = []
 
     class Meta:
         ordering = ["-created_at"]
@@ -144,4 +146,4 @@ class User(UUIDPrimaryKeyModel, AbstractBaseUser, PermissionsMixin, AddressMixin
 
     @property
     def role_code(self) -> str | None:
-        return self.role.code if self.role_id else None
+        return self.role.code if self.role else None

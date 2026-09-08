@@ -38,6 +38,7 @@ def test_gestational_age_reports_part_weeks():
     edd = date(2026, 11, 12)
     on = edd - timedelta(weeks=12) + timedelta(days=3)
     age = calculate_gestational_age(edd, on_date=on)
+    assert age is not None
     assert (age.weeks, age.days) == (28, 3)
     assert str(age) == "28w 3d"
 
@@ -50,6 +51,7 @@ def test_week_boundaries(offset_days, expected):
     """Rolling over from 39w0d to 38w6d is the edge most likely to be off by one."""
     edd = date(2026, 11, 12)
     age = calculate_gestational_age(edd, on_date=edd - timedelta(days=offset_days))
+    assert age is not None
     assert (age.weeks, age.days) == expected
 
 
@@ -57,6 +59,7 @@ def test_post_term_keeps_counting():
     """Past the due date is clinically significant — it must not clamp at 40w."""
     edd = date(2026, 11, 12)
     age = calculate_gestational_age(edd, on_date=edd + timedelta(days=10))
+    assert age is not None
     assert age.weeks == 41
     assert age.days == 3
 

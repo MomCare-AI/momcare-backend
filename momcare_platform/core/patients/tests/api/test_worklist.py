@@ -54,8 +54,7 @@ def pregnancy_for(db, make_staff):
         pregnancy = patient.current_pregnancy
         VitalReading.objects.create(
             pregnancy=pregnancy,
-            reading_type=VitalReading.TYPE_HEART_RATE,
-            value=80,
+            heart_rate=80,
             recorded_at=timezone.now(),
             source=VitalReading.SOURCE_MANUAL,
         )
@@ -93,8 +92,7 @@ def test_a_pregnancy_with_no_gaps_never_appears(client, make_hospital, make_staf
     pregnancy = patient.current_pregnancy
     VitalReading.objects.create(
         pregnancy=pregnancy,
-        reading_type=VitalReading.TYPE_HEART_RATE,
-        value=80,
+        heart_rate=80,
         recorded_at=timezone.now(),
         source=VitalReading.SOURCE_MANUAL,
     )
@@ -134,8 +132,7 @@ def test_a_stale_reading_beyond_seven_days_is_flagged(client, make_hospital, pre
     VitalReading.objects.filter(pregnancy=pregnancy).delete()
     VitalReading.objects.create(
         pregnancy=pregnancy,
-        reading_type=VitalReading.TYPE_HEART_RATE,
-        value=80,
+        heart_rate=80,
         recorded_at=timezone.now() - timedelta(days=10),
         source=VitalReading.SOURCE_MANUAL,
     )

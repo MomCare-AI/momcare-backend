@@ -71,6 +71,7 @@ def test_readings_are_recent_enough_to_read_as_monitored():
     seed(hours=6)
 
     newest = VitalReading.objects.order_by("-recorded_at").first()
+    assert newest is not None
     age = timezone.now() - newest.recorded_at
     assert age.total_seconds() < 3600, "the newest reading should be within the last hour"
 
@@ -102,7 +103,9 @@ def test_running_twice_adds_readings_rather_than_deleting_them():
     convenience command is not a reason to make an exception."""
     seed(hours=6)
     first = VitalReading.objects.count()
-    oldest_before = VitalReading.objects.order_by("recorded_at").first().id
+    oldest = VitalReading.objects.order_by("recorded_at").first()
+    assert oldest is not None
+    oldest_before = oldest.id
 
     seed(hours=6)
 
@@ -168,11 +171,15 @@ def test_the_demo_hospital_is_named_so_it_cannot_be_mistaken_for_real():
         assert patient.first_name.lower().startswith("demo")
 
 
-def test_seeded_readings_are_labelled_as_simulated():
+def test_seeded_readings_are_labelled_manual_not_a_third_provenance():
+    """The schema has exactly two sources of truth for a reading — device or
+    manual entry. Demo data is fictional, but it is not a third kind of
+    provenance, so every generated row is tagged SOURCE_MANUAL like any other
+    hand-entered reading."""
     seed(hours=6)
 
-    assert not VitalReading.objects.exclude(source=VitalReading.SOURCE_SIMULATED).exists(), (
-        "generated data must never be indistinguishable from a measurement"
+    assert not VitalReading.objects.exclude(source=VitalReading.SOURCE_MANUAL).exists(), (
+        "generated data must use one of the schema's real provenance values"
     )
 
 
