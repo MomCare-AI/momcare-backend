@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.decorators import method_decorator
@@ -5,6 +7,7 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
+from rest_framework.authentication import BaseAuthentication
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -105,7 +108,7 @@ class RegisterView(APIView):
     application, not a sign-up.
     """
 
-    authentication_classes = []
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -136,7 +139,7 @@ class RegisterView(APIView):
 class LoginView(APIView):
     """Email + password → JWT access token (refresh in HttpOnly cookie)."""
 
-    authentication_classes = []
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -195,7 +198,7 @@ class RefreshView(APIView):
     self-heals at the very next refresh.
     """
 
-    authentication_classes = []
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -282,7 +285,9 @@ def _revoke_outstanding_refresh_tokens(user) -> None:
 
     for outstanding in OutstandingToken.objects.filter(user=user):
         try:
-            RefreshToken(outstanding.token).blacklist()
+            # simplejwt's own stubs type this parameter as Token | None, but
+            # passing the raw token string is its documented usage.
+            RefreshToken(outstanding.token).blacklist()  # type: ignore[arg-type]
         except TokenError:
             # Already blacklisted, or expired. Either way there is nothing to revoke.
             continue
@@ -325,7 +330,7 @@ class PasswordResetRequestView(APIView):
     """
 
     permission_classes = [AllowAny]
-    authentication_classes = []
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
     throttle_scope = "auth_sensitive"
 
     def post(self, request):
@@ -361,7 +366,7 @@ class PasswordResetConfirmView(APIView):
     """Set a new password using the emailed link."""
 
     permission_classes = [AllowAny]
-    authentication_classes = []
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
     throttle_scope = "auth_sensitive"
 
     def post(self, request):

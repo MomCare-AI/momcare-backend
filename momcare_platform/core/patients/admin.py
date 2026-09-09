@@ -74,7 +74,10 @@ class PregnancyAdmin(admin.ModelAdmin):
 @admin.register(PregnancyRiskFactors)
 class PregnancyRiskFactorsAdmin(admin.ModelAdmin):
     list_display = ["pregnancy", *PregnancyRiskFactors.FACTOR_FIELDS]
-    list_filter = PregnancyRiskFactors.FACTOR_FIELDS
+    # django-stubs' list_filter type is broader than plain list[str] and lists
+    # are invariant, so a dynamically-built list of field names never matches
+    # structurally even though it's valid at runtime.
+    list_filter = PregnancyRiskFactors.FACTOR_FIELDS  # type: ignore[assignment]
     search_fields = ["pregnancy__patient__mrn", "pregnancy__patient__last_name"]
 
 

@@ -29,14 +29,19 @@ class OrganizationAdmin(admin.ModelAdmin):
     readonly_fields = ["created_at", "updated_at", "reviewed_at", "reviewed_by"]
     actions = ["approve_hospitals", "reject_hospitals", "suspend_hospitals"]
 
-    def get_actions(self, request):
+    def get_actions(self, request, *args, **kwargs):
         """Drop Django's bulk delete — tenants are soft-deleted, never erased.
 
         A hospital row anchors its users, patients and audit log; destroying it
         would take the audit trail with it. Use Reject or Suspend to block
         access, or ``deactivate()`` to retire a hospital.
+
+        ``*args, **kwargs`` rather than matching Django's exact signature here:
+        newer Django versions added an ``action_location`` parameter, and
+        accepting anything keeps this compatible across versions without
+        depending on a type only django-stubs defines.
         """
-        actions = super().get_actions(request)
+        actions = super().get_actions(request, *args, **kwargs)
         actions.pop("delete_selected", None)
         return actions
 

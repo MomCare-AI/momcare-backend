@@ -38,14 +38,22 @@ def pregnancy_for(db):
     return _make
 
 
-def add_bp(pregnancy, systolic, diastolic):
+HIGH_VITALS = {
+    "systolic_bp": 185, "diastolic_bp": 125, "heart_rate": 130, "body_temp_f": 103.0,
+    "hemoglobin": 6.0, "blood_glucose": 250, "stress_score": 9, "phys_activity_score": 1,
+}
+LOW_VITALS = {
+    "systolic_bp": 118, "diastolic_bp": 76, "heart_rate": 82, "body_temp_f": 98.2,
+    "hemoglobin": 12.1, "blood_glucose": 92, "stress_score": 3, "phys_activity_score": 6,
+}
+
+
+def add_reading(pregnancy, vitals):
     VitalReading.objects.create(
         pregnancy=pregnancy,
-        reading_type=VitalReading.TYPE_BLOOD_PRESSURE,
-        value=systolic,
-        value_secondary=diastolic,
         recorded_at=timezone.now(),
         source=VitalReading.SOURCE_MANUAL,
+        **vitals,
     )
 
 
@@ -63,7 +71,7 @@ def test_a_patient_never_assessed_is_its_own_category_not_stable(client, make_ho
     assert response.status_code == 200, response.content
     risk = response.json()["risk"]
     assert risk["not_assessed"] == 1
-    assert risk["stable"] == 0
+    assert risk["low"] == 0
     assert risk["total"] == 1
     assert risk["needing_attention"] == 0
 
@@ -72,19 +80,19 @@ def test_risk_levels_are_counted_by_the_latest_assessment_only(client, make_hosp
     """Worsening replaces the count, it does not add to it - one pregnancy is
     one row in the distribution, however many readings led to it."""
     hospital = make_hospital("Distribution Hospital")
-    critical = pregnancy_for(hospital, "Ayesha")
-    add_bp(critical, 168, 112)
-    reassess_risk(critical)
+    high = pregnancy_for(hospital, "Ayesha")
+    add_reading(high, HIGH_VITALS)
+    reassess_risk(high)
 
-    stable = pregnancy_for(hospital, "Hina")
-    add_bp(stable, 115, 74)
-    reassess_risk(stable)
+    low = pregnancy_for(hospital, "Hina")
+    add_reading(low, LOW_VITALS)
+    reassess_risk(low)
 
     response = client.get(SUMMARY, **auth(hospital.admin.email))
 
     risk = response.json()["risk"]
-    assert risk["critical"] == 1
-    assert risk["stable"] == 1
+    assert risk["high"] == 1
+    assert risk["low"] == 1
     assert risk["total"] == 2
     assert risk["needing_attention"] == 1
 
@@ -95,7 +103,7 @@ def test_a_closed_pregnancy_is_not_counted(client, make_hospital, auth, pregnanc
 
     hospital = make_hospital("Closed Hospital")
     pregnancy = pregnancy_for(hospital)
-    add_bp(pregnancy, 168, 112)
+    add_reading(pregnancy, HIGH_VITALS)
     reassess_risk(pregnancy)
     pregnancy.status = Pregnancy.STATUS_DELIVERED
     pregnancy.save(update_fields=["status", "updated_at"])

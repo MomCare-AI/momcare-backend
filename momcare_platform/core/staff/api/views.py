@@ -1,8 +1,11 @@
+from typing import ClassVar
+
 from django.conf import settings
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
+from rest_framework.authentication import BaseAuthentication
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -201,7 +204,7 @@ class StaffInviteRevokeView(HospitalPortalView):
 class InviteDetailView(APIView):
     """Public: what the recipient sees when they open their invitation link."""
 
-    authentication_classes = []
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
     permission_classes = [AllowAny]
 
     def get(self, request, token):
@@ -222,7 +225,7 @@ class InviteDetailView(APIView):
 class InviteAcceptView(APIView):
     """Public: the recipient sets their name and password and joins the hospital."""
 
-    authentication_classes = []
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
     permission_classes = [AllowAny]
 
     def post(self, request, token):
@@ -239,6 +242,8 @@ class InviteAcceptView(APIView):
         except InviteError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+        # accept_invite() always sets the organization from the invite row.
+        assert user.organization is not None
         return Response(
             {
                 "detail": "Your account is ready. You can now sign in.",

@@ -16,12 +16,16 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 from django.http import HttpRequest, HttpResponse
 from django.urls import Resolver404, resolve
 from django.utils.cache import add_never_cache_headers
 
 from momcare_platform.core.common.request_logging import request_id_ctx, user_id_ctx
+
+if TYPE_CHECKING:
+    from momcare_platform.core.users.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +80,7 @@ class AuditLogMiddleware:
         path = request.path
         if not path.startswith(_PHI_PREFIXES):
             return
-        action = _METHOD_TO_ACTION.get(request.method)
+        action = _METHOD_TO_ACTION.get(request.method) if request.method else None
         if action is None:
             return
 
@@ -136,7 +140,10 @@ class DisplayTimezoneMiddleware:
 
             result = JWTAuthentication().authenticate(request)
             if result is not None:
-                user = result[0]
+                # simplejwt's stub types this as the generic AbstractBaseUser,
+                # but it's always our own User model at runtime — the one with
+                # a UUID `id`, which the base class doesn't declare.
+                user = cast("User", result[0])
                 tz = resolve_display_tz(user)
                 user_ctx_token = user_id_ctx.set(str(user.id))
         except Exception:  # noqa: BLE001 - display tz is best-effort; never break the request
