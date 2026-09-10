@@ -57,7 +57,7 @@ class MonitoringView(OrganizationScopedQuerysetMixin, APIView):
                 .select_related("patient", "patient__location")
                 .get(pk=pregnancy_id)
             )
-        except (Pregnancy.DoesNotExist, DjangoValidationError, ValueError):
+        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
             return None, Response(
                 {"detail": "Pregnancy not found."},
                 status=status.HTTP_404_NOT_FOUND,
@@ -227,7 +227,7 @@ class VerifyRiskView(MonitoringView):
 
         try:
             assessment = pregnancy.risk_assessments.get(pk=assessment_id)
-        except (RiskAssessment.DoesNotExist, DjangoValidationError, ValueError):
+        except RiskAssessment.DoesNotExist, DjangoValidationError, ValueError:
             return Response({"detail": "Assessment not found."}, status=status.HTTP_404_NOT_FOUND)
 
         confirmed = request.data.get("confirmed_risk_level")
@@ -291,9 +291,7 @@ class AttentionQueueView(MonitoringView):
                     "assessed_at": current.assessed_at,
                     "needs_review": current.needs_review,
                     "assigned_staff_name": (
-                        pregnancy.assigned_staff.user.get_full_name()
-                        if pregnancy.assigned_staff_id
-                        else ""
+                        pregnancy.assigned_staff.user.get_full_name() if pregnancy.assigned_staff_id else ""
                     ),
                     "has_responsible_clinician": pregnancy.has_responsible_clinician,
                 },
@@ -361,13 +359,10 @@ class DeviceAssignView(MonitoringView):
         serializer = DeviceAssignSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        device = (
-            Device.objects.filter(
-                organization=request.user.organization,
-                pk=serializer.validated_data["device_id"],
-            )
-            .first()
-        )
+        device = Device.objects.filter(
+            organization=request.user.organization,
+            pk=serializer.validated_data["device_id"],
+        ).first()
         if device is None:
             return Response({"detail": "Device not found."}, status=status.HTTP_404_NOT_FOUND)
 

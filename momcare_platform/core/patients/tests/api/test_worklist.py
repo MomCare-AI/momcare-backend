@@ -238,7 +238,11 @@ def test_no_lead_clinician_is_flagged(client, make_hospital, pregnancy_for, auth
 
 
 def test_an_inactive_lead_clinician_still_counts_as_unaccountable(
-    client, make_hospital, make_staff, pregnancy_for, auth,
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
 ):
     hospital = make_hospital("Departed Clinician Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doctor@departed.test")
@@ -318,7 +322,10 @@ def test_rows_with_more_gaps_sort_first(client, make_hospital, make_staff, auth)
 
 
 def test_assigned_to_me_scopes_a_provider_to_their_own_cases(
-    client, make_hospital, make_staff, auth,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
 ):
     hospital = make_hospital("Scoped Worklist Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doctor@scopedworklist.test")
@@ -353,7 +360,10 @@ def test_assigned_to_me_scopes_a_provider_to_their_own_cases(
 
 
 def test_hospital_admin_sees_the_full_unfiltered_worklist(
-    client, make_hospital, make_staff, auth,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
 ):
     hospital = make_hospital("Admin Worklist Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doctor@adminworklist.test")

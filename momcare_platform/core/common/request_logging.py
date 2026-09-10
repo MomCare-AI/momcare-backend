@@ -20,10 +20,29 @@ user_id_ctx: ContextVar[str | None] = ContextVar("user_id_ctx", default=None)
 # JsonFormatter's own field merging is a caller-supplied `extra={...}` kwarg.
 _RECORD_ATTRS = frozenset(
     {
-        "args", "created", "exc_info", "exc_text", "filename", "funcName",
-        "levelname", "levelno", "lineno", "message", "module", "msecs", "msg",
-        "name", "pathname", "process", "processName", "relativeCreated",
-        "stack_info", "thread", "threadName", "taskName", "asctime",
+        "args",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "thread",
+        "threadName",
+        "taskName",
+        "asctime",
     }
 )
 

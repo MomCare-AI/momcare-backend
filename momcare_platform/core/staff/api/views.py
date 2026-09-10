@@ -91,7 +91,8 @@ class StaffProfileView(HospitalPortalView):
     def _get_staff_or_404(self, staff_id):
         try:
             return self.scope_to_organization(Staff.objects.all()).select_related(
-                "user", "user__role",
+                "user",
+                "user__role",
             ).get(pk=staff_id), None
         except Staff.DoesNotExist:
             return None, Response({"detail": "Staff member not found."}, status=status.HTTP_404_NOT_FOUND)

@@ -74,8 +74,7 @@ def _tenant_access_error(user) -> dict | None:
             f"Contact {settings.SUPPORT_EMAIL} if you believe this is a mistake."
         ),
         Organization.STATUS_SUSPENDED: (
-            "Your hospital's access has been suspended. "
-            f"Please contact {settings.SUPPORT_EMAIL}."
+            f"Your hospital's access has been suspended. Please contact {settings.SUPPORT_EMAIL}."
         ),
     }
 

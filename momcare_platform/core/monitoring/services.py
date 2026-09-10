@@ -55,7 +55,6 @@ def unassign_device(*, device: Device, status: str = Device.STATUS_RETURNED) -> 
     device.save(update_fields=["assigned_pregnancy", "assigned_at", "status", "updated_at"])
     return device
 
-
 @transaction.atomic
 def reassess_risk(pregnancy) -> RiskAssessment | None:
     """Score a pregnancy from its latest reading via the trained model.

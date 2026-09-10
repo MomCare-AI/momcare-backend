@@ -56,7 +56,7 @@ class AlertScopedView(OrganizationScopedQuerysetMixin, APIView):
     def get_alert_or_404(self, alert_id):
         try:
             return self.alerts().get(pk=alert_id), None
-        except (Alert.DoesNotExist, DjangoValidationError, ValueError):
+        except Alert.DoesNotExist, DjangoValidationError, ValueError:
             return None, Response(
                 {"detail": "Alert not found."},
                 status=status.HTTP_404_NOT_FOUND,

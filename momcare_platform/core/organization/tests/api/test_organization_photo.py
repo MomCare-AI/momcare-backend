@@ -71,7 +71,9 @@ def test_a_hospital_admin_can_remove_the_building_photo(client, make_hospital, a
 
 
 def test_other_fields_cannot_be_changed_through_this_endpoint(
-    client, make_hospital, auth,
+    client,
+    make_hospital,
+    auth,
 ):
     """The write serializer exposes only building_photo - proven by sending
     a field that would matter clinically (name) and confirming it's silently

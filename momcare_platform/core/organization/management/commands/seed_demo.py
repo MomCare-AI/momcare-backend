@@ -108,6 +108,7 @@ def redirect_to_inbox(address: str, contact: str) -> str:
     local = local.split("+", 1)[0]
     return f"{local}+{tag}@{domain}"
 
+
 # Obviously fictional. The third is deliberately left without a clinician so the
 # "no clinician assigned" warning has something to show.
 DEMO_PATIENTS = [

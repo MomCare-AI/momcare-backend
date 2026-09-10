@@ -115,9 +115,7 @@ def test_a_deactivated_staff_members_membership_must_not_read_as_currently_assig
     assert ever_assigned.exists()
 
 
-def test_an_already_deactivated_staff_member_cannot_be_newly_assigned(
-    make_hospital, make_staff, pregnancy_for
-):
+def test_an_already_deactivated_staff_member_cannot_be_newly_assigned(make_hospital, make_staff, pregnancy_for):
     """Found by manual testing: nothing stopped a brand-new assignment for
     someone who had already left. It never leaked anything (the query-time
     staff__is_active check already caught it), but it let a meaningless row
@@ -136,9 +134,7 @@ def test_an_already_deactivated_staff_member_cannot_be_newly_assigned(
         )
 
 
-def test_ending_an_existing_membership_still_works_after_staff_deactivates(
-    make_hospital, make_staff, pregnancy_for
-):
+def test_ending_an_existing_membership_still_works_after_staff_deactivates(make_hospital, make_staff, pregnancy_for):
     """The guard is create-only - a row that already existed before the staff
     member left must still be endable, never stuck because of the same check
     that (correctly) blocks a brand-new assignment."""
@@ -178,9 +174,7 @@ def test_multiple_concurrent_nurses_are_supported(make_hospital, make_staff, pre
     assert active_nurses.count() == 2
 
 
-def test_pregnancy_assigned_staff_is_untouched_by_care_team_membership(
-    make_hospital, make_staff, pregnancy_for
-):
+def test_pregnancy_assigned_staff_is_untouched_by_care_team_membership(make_hospital, make_staff, pregnancy_for):
     """The one thing this whole model is explicitly forbidden from doing."""
     hospital = make_hospital("Untouched Hospital")
     lead = make_staff(hospital.org, settings.ROLE_PROVIDER, "lead@untouched.test")

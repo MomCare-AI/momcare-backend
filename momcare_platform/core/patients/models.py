@@ -6,10 +6,14 @@ from momcare_platform.core.common.models import Deactivatable, TimeStampedModel,
 from momcare_platform.core.common.obstetrics import calculate_gestational_age, edd_from_lmp
 
 BLOOD_GROUP_CHOICES = [
-    ("A+", "A+"), ("A-", "A−"),
-    ("B+", "B+"), ("B-", "B−"),
-    ("AB+", "AB+"), ("AB-", "AB−"),
-    ("O+", "O+"), ("O-", "O−"),
+    ("A+", "A+"),
+    ("A-", "A−"),
+    ("B+", "B+"),
+    ("B-", "B−"),
+    ("AB+", "AB+"),
+    ("AB-", "AB−"),
+    ("O+", "O+"),
+    ("O-", "O−"),
 ]
 
 
