@@ -11,6 +11,7 @@ import pytest
 from django.conf import settings
 from django.core import mail
 from django.db import IntegrityError, transaction
+from django.test import override_settings
 from django.utils import timezone
 
 from momcare_platform.core.alerts import escalation
@@ -313,6 +314,29 @@ def test_the_assigned_clinician_is_emailed(make_hospital, pregnancy_for, make_st
     assert len(mail.outbox) == 1
     assert mail.outbox[0].to == [doctor.email]
     assert "HIGH" in mail.outbox[0].subject
+
+
+@override_settings(MOMCARE_ALERT_EMAILS_ENABLED=False)
+def test_alert_emails_can_be_switched_off_without_losing_the_alert(
+    make_hospital, pregnancy_for, make_staff,
+):
+    """MOMCARE_ALERT_EMAILS_ENABLED exists so testing the model against the
+    one shared account (no separate staging backend) does not spend the same
+    Resend quota a real emergency would. Proven here by checking the one
+    thing it must never touch: the alert itself, its tier, and the audit
+    trail recording who would have been told."""
+    hospital = make_hospital("Quiet Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doc@quiet.test")
+    pregnancy = pregnancy_for(hospital, clinician=doctor)
+    mail.outbox.clear()
+
+    go_critical(pregnancy)
+
+    assert mail.outbox == []
+    alert = Alert.objects.get(pregnancy=pregnancy)
+    assert alert.tier == escalation.TIER_CLINICIAN
+    notified = alert.events.get(kind=AlertEvent.KIND_NOTIFIED)
+    assert doctor.email in notified.detail or doctor.get_full_name() in notified.detail
 
 
 def test_an_undeliverable_address_does_not_lose_the_alert(

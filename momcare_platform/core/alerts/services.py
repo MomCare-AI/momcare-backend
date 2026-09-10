@@ -82,6 +82,10 @@ def notify(alert: Alert, tier: int) -> int:
     than passed over: "nobody was on this rung" is exactly the finding an
     incident review needs, and it is why an empty tier escalates immediately
     instead of waiting out the clock.
+
+    "Reached" counts the in-portal alert, not the email — that is the primary
+    channel (see below), and stays true regardless of
+    ``MOMCARE_ALERT_EMAILS_ENABLED``.
     """
     recipients = recipients_for_tier(alert, tier)
 
@@ -94,11 +98,12 @@ def notify(alert: Alert, tier: int) -> int:
         )
         return 0
 
-    for user in recipients:
-        # Best-effort, like every other send in this system: a mail outage must
-        # not roll back the alert. The in-portal alert is the primary channel;
-        # email is a second attempt at reaching the same person.
-        send_alert_notification(alert, user, tier)
+    if settings.MOMCARE_ALERT_EMAILS_ENABLED:
+        for user in recipients:
+            # Best-effort, like every other send in this system: a mail outage
+            # must not roll back the alert. The in-portal alert is the primary
+            # channel; email is a second attempt at reaching the same person.
+            send_alert_notification(alert, user, tier)
 
     names = ", ".join(u.get_full_name() or u.email for u in recipients[:3])
     if len(recipients) > 3:
@@ -122,11 +127,14 @@ def notify_low_confidence(assessment) -> bool:
 
     Best-effort, like every other send in this system: a mail outage must
     not roll back the assessment. Silent (returns False) when there is no
-    active assigned clinician to tell — the flag on the assessment row is
-    itself the permanent record, so nothing is lost, only not delivered yet.
+    active assigned clinician to tell, or when ``MOMCARE_ALERT_EMAILS_
+    ENABLED`` is off — the flag on the assessment row is itself the
+    permanent record, so nothing is lost, only not delivered yet.
     """
     staff = assessment.pregnancy.assigned_staff
     if not (staff and staff.is_active and staff.user and staff.user.is_active):
+        return False
+    if not settings.MOMCARE_ALERT_EMAILS_ENABLED:
         return False
     return send_low_confidence_notification(assessment, staff.user)
 
