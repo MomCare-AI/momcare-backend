@@ -182,7 +182,7 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         try:
             user_id = urlsafe_base64_decode(attrs["uid"]).decode()
             user = User.objects.get(pk=user_id)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist, DjangoUnicodeDecodeError):
+        except TypeError, ValueError, OverflowError, User.DoesNotExist, DjangoUnicodeDecodeError:
             raise serializers.ValidationError(
                 {"detail": "This reset link is not valid. Request a new one."},
             ) from None

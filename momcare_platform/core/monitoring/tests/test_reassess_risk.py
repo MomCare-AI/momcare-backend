@@ -13,6 +13,7 @@ from decimal import Decimal
 import pytest
 from django.conf import settings
 from django.core import mail
+from django.test import override_settings
 from django.utils import timezone
 
 from momcare_platform.core.alerts.models import Alert
@@ -182,6 +183,26 @@ def test_low_confidence_flags_the_assessment_and_emails_the_doctor(make_hospital
     assert all(sent.to == [doctor.email] for sent in mail.outbox)  # never the patient
     review_emails = [sent for sent in mail.outbox if "review requested" in sent.subject.lower()]
     assert len(review_emails) == 1
+
+
+@override_settings(MOMCARE_ALERT_EMAILS_ENABLED=False)
+def test_low_confidence_still_flags_the_assessment_with_alert_emails_off(
+    make_hospital, make_staff, pregnancy_for,
+):
+    """The flag on the row is the permanent record — MOMCARE_ALERT_EMAILS_
+    ENABLED must only stop the email, never the flag itself, since the
+    email is best-effort delivery of something the database already knows."""
+    hospital = make_hospital("Quiet Uncertain Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doctor@quietuncertain.test")
+    pregnancy = pregnancy_for(hospital, clinician=doctor)
+    add_reading(pregnancy, MEDIUM_LOW_CONFIDENCE_VITALS)
+    mail.outbox.clear()
+
+    assessment = reassess_risk(pregnancy)
+
+    assert assessment is not None
+    assert assessment.flagged_for_review is True
+    assert mail.outbox == []
 
 
 def test_high_confidence_is_not_flagged_and_sends_no_review_email(make_hospital, make_staff, pregnancy_for):

@@ -231,12 +231,15 @@ def test_organization_endpoint_returns_only_your_own_hospital(client, make_hospi
     assert response.status_code == 200
     assert response.json()["name"] == "Alpha Org"
 
+
 # ── The invitation link ──────────────────────────────────────────────────────
 
 
 @override_settings(FRONTEND_URL="https://momcare.example.pk")
 def test_the_emailed_invite_link_points_at_the_running_frontend(
-    client, make_hospital, auth,
+    client,
+    make_hospital,
+    auth,
 ):
     """Guards a bug that shipped silently.
 
@@ -265,7 +268,6 @@ def test_the_invite_link_has_exactly_one_source_of_truth():
 
     settings_file = Path(base_settings.__file__)
     definitions = [
-        line for line in settings_file.read_text(encoding="utf-8").splitlines()
-        if line.startswith("FRONTEND_URL")
+        line for line in settings_file.read_text(encoding="utf-8").splitlines() if line.startswith("FRONTEND_URL")
     ]
     assert len(definitions) == 1, f"FRONTEND_URL defined {len(definitions)} times: {definitions}"

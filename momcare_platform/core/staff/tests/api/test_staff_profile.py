@@ -21,12 +21,14 @@ def test_a_staff_member_can_update_their_own_profile(client, make_hospital, make
 
     response = client.patch(
         detail_url(nurse.staff.id),
-        data=json.dumps({
-            "qualifications": "BSN, RN",
-            "specialty": "Obstetric nursing",
-            "registration_number": "PNC-88213",
-            "registration_authority": "Pakistan Nursing Council",
-        }),
+        data=json.dumps(
+            {
+                "qualifications": "BSN, RN",
+                "specialty": "Obstetric nursing",
+                "registration_number": "PNC-88213",
+                "registration_authority": "Pakistan Nursing Council",
+            }
+        ),
         content_type="application/json",
         **auth(nurse.email),
     )
@@ -91,7 +93,10 @@ def test_practicing_since_derives_years_of_experience(client, make_hospital, mak
 
 
 def test_a_staff_member_cannot_change_their_own_role_or_employee_id(
-    client, make_hospital, make_staff, auth,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
 ):
     """The write serializer only exposes credentialing fields - proven here
     by sending a role_code the API doesn't even accept, not just trusting
@@ -132,7 +137,10 @@ def test_staff_in_another_hospital_cannot_be_reached(client, make_hospital, make
 
 
 def test_the_staff_list_carries_the_new_credentialing_fields(
-    client, make_hospital, make_staff, auth,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
 ):
     hospital = make_hospital("List Fields Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doctor@listfields.test")

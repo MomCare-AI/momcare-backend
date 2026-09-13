@@ -136,8 +136,7 @@ def send_alert_notification(alert, user, tier: int) -> bool:
     patient = alert.pregnancy.patient
     reasons = "\n".join(f"  - {reason}" for reason in alert.reasons) or "  - Outside clinical range."
     escalated = (
-        f"\nThis alert reached you because it was escalated to the "
-        f"{escalation.tier_label(tier).lower()}.\n"
+        f"\nThis alert reached you because it was escalated to the {escalation.tier_label(tier).lower()}.\n"
         if tier != escalation.TIER_CLINICIAN
         else ""
     )

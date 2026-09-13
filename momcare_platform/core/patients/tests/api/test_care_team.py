@@ -44,7 +44,11 @@ def end_url(patient_id, pregnancy_id, membership_id):
 
 
 def test_a_hospital_admin_can_add_a_care_team_member(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("Add Member Hospital")
     nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@addmember.test")
@@ -67,7 +71,12 @@ def test_a_hospital_admin_can_add_a_care_team_member(
 
 @pytest.mark.parametrize("role", [settings.ROLE_PROVIDER, settings.ROLE_NURSE, settings.ROLE_CARE_MANAGER])
 def test_non_admins_cannot_add_a_care_team_member(
-    client, make_hospital, make_staff, auth, pregnancy_for, role,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
+    role,
 ):
     """Provider and nurse never get write access. A care_manager with no
     active membership on *this* pregnancy is denied too - see the
@@ -88,7 +97,11 @@ def test_non_admins_cannot_add_a_care_team_member(
 
 
 def test_everyone_on_hospital_staff_can_read_the_care_team(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("Read Access Hospital")
     nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@readaccess.test")
@@ -106,7 +119,11 @@ def test_everyone_on_hospital_staff_can_read_the_care_team(
 
 
 def test_an_admin_cannot_assign_a_staff_member_from_another_hospital(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """OrganizationStaffField's own job - reused here, not reinvented."""
     hospital_a = make_hospital("Hospital A CareTeam")
@@ -126,7 +143,11 @@ def test_an_admin_cannot_assign_a_staff_member_from_another_hospital(
 
 
 def test_a_deactivated_staff_member_cannot_be_assigned_through_the_api(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("Deactivated API Hospital")
     nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@deactivatedapi.test")
@@ -148,7 +169,11 @@ def test_a_deactivated_staff_member_cannot_be_assigned_through_the_api(
 
 
 def test_a_hospital_admin_can_end_a_membership(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("End Membership Hospital")
     nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@endmembership.test")
@@ -168,7 +193,11 @@ def test_a_hospital_admin_can_end_a_membership(
 
 
 def test_provider_and_nurse_cannot_end_a_membership(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("Non Admin End Hospital")
     provider = make_staff(hospital.org, settings.ROLE_PROVIDER, "provider@nonadminend.test")
@@ -192,7 +221,11 @@ def test_provider_and_nurse_cannot_end_a_membership(
 
 
 def test_an_active_care_manager_on_the_pregnancy_can_add_a_member(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("CM Add Hospital")
     manager = make_staff(hospital.org, settings.ROLE_CARE_MANAGER, "manager@cmadd.test")
@@ -211,7 +244,11 @@ def test_an_active_care_manager_on_the_pregnancy_can_add_a_member(
 
 
 def test_an_active_care_manager_on_the_pregnancy_can_end_a_membership(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("CM End Hospital")
     manager = make_staff(hospital.org, settings.ROLE_CARE_MANAGER, "manager@cmend.test")
@@ -231,13 +268,19 @@ def test_an_active_care_manager_on_the_pregnancy_can_end_a_membership(
 
 
 def test_a_care_manager_can_end_their_own_membership(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("CM Self End Hospital")
     manager = make_staff(hospital.org, settings.ROLE_CARE_MANAGER, "manager@cmselfend.test")
     pregnancy = pregnancy_for(hospital)
     own_membership = CareTeamMembership.objects.create(
-        pregnancy=pregnancy, staff=manager.staff, role="care_manager",
+        pregnancy=pregnancy,
+        staff=manager.staff,
+        role="care_manager",
     )
 
     response = client.post(
@@ -251,7 +294,11 @@ def test_a_care_manager_can_end_their_own_membership(
 
 
 def test_after_self_ending_the_care_managers_next_write_is_denied(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """The important loophole check: self-removal must take effect
     immediately, not just cosmetically. Authorization is re-checked fresh
@@ -262,7 +309,9 @@ def test_after_self_ending_the_care_managers_next_write_is_denied(
     nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@cmloophole.test")
     pregnancy = pregnancy_for(hospital)
     own_membership = CareTeamMembership.objects.create(
-        pregnancy=pregnancy, staff=manager.staff, role="care_manager",
+        pregnancy=pregnancy,
+        staff=manager.staff,
+        role="care_manager",
     )
     client.post(
         end_url(pregnancy.patient_id, pregnancy.id, own_membership.id),
@@ -280,7 +329,11 @@ def test_after_self_ending_the_care_managers_next_write_is_denied(
 
 
 def test_a_care_manager_can_add_another_care_manager_to_the_same_pregnancy(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """The explicit delegation decision: case-scoped, not organization-wide.
     The newly added care_manager gets the same pregnancy-scoped authority,
@@ -310,7 +363,11 @@ def test_a_care_manager_can_add_another_care_manager_to_the_same_pregnancy(
 
 
 def test_a_care_manager_not_on_this_pregnancy_cannot_add_or_end(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """Case-scoped, not role-wide: holding the care_manager role is not
     itself the permission - an active membership on *this* pregnancy is."""
@@ -336,7 +393,11 @@ def test_a_care_manager_not_on_this_pregnancy_cannot_add_or_end(
 
 
 def test_an_inactive_care_manager_membership_grants_no_write_access(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """Holding a membership row that has already ended is the same as never
     having held one, for authorization purposes."""
@@ -358,7 +419,11 @@ def test_an_inactive_care_manager_membership_grants_no_write_access(
 
 
 def test_a_care_manager_cannot_assign_staff_from_another_hospital(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """OrganizationStaffField's scoping is actor-independent - proven again
     here for the care_manager write path, not just the admin one."""
@@ -380,7 +445,11 @@ def test_a_care_manager_cannot_assign_staff_from_another_hospital(
 
 
 def test_ending_a_membership_from_another_pregnancy_returns_404(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """The existing URL scoping (pregnancy__patient=patient,
     pregnancy_id=pregnancy_id) must keep holding under the new permission
@@ -403,7 +472,11 @@ def test_ending_a_membership_from_another_pregnancy_returns_404(
 
 
 def test_a_patient_in_another_hospital_returns_404_not_403(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """Cross-tenant reads return 404, never 403 - a 403 would confirm the
     record exists elsewhere. Same rule as everywhere else in this API."""
@@ -428,7 +501,11 @@ def patients_url(**params):
 
 
 def test_a_providers_my_patients_includes_both_lead_and_co_provider_cases(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """The fix from the critique pass: assigned_staff alone would have made
     a genuine co-provider invisible in their own workspace."""
@@ -461,7 +538,11 @@ def test_a_providers_my_patients_includes_both_lead_and_co_provider_cases(
 
 
 def test_a_nurses_my_patients_is_membership_only(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("Nurse My Patients Hospital")
     nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@nursemine.test")
@@ -480,7 +561,11 @@ def test_a_nurses_my_patients_is_membership_only(
 
 
 def test_an_ended_membership_no_longer_counts_toward_my_patients(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     hospital = make_hospital("Ended Membership Hospital")
     nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@endedmine.test")
@@ -494,9 +579,12 @@ def test_an_ended_membership_no_longer_counts_toward_my_patients(
 
 
 def test_hospital_admin_assigned_to_me_returns_empty_not_everyone(
-    client, make_hospital, auth, pregnancy_for,
+    client,
+    make_hospital,
+    auth,
+    pregnancy_for,
 ):
-    """"My patients" isn't a concept that applies to an admin - an honest
+    """ "My patients" isn't a concept that applies to an admin - an honest
     empty result, not silently falling back to the whole hospital under a
     label that would be wrong for this role."""
     hospital = make_hospital("Admin Empty Hospital")
@@ -509,7 +597,11 @@ def test_hospital_admin_assigned_to_me_returns_empty_not_everyone(
 
 
 def test_without_the_query_param_everyone_still_sees_the_full_hospital_list(
-    client, make_hospital, make_staff, auth, pregnancy_for,
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+    pregnancy_for,
 ):
     """The default, unfiltered behaviour every existing page already relies
     on must not change just because this filter was added."""

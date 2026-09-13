@@ -92,8 +92,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.WARNING(
-                f"Rewound {alerts} alert(s) and {assessments} assessment(s). "
-                "Readings and patient records untouched.",
+                f"Rewound {alerts} alert(s) and {assessments} assessment(s). Readings and patient records untouched.",
             ),
         )
 
@@ -126,8 +125,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Set the demo password on {changed} account(s)."))
         if skipped:
             self.stdout.write(
-                f"Left {skipped} platform/superuser account(s) untouched. "
-                "Pass --include-admins to reset those too.",
+                f"Left {skipped} platform/superuser account(s) untouched. Pass --include-admins to reset those too.",
             )
 
     def _report(self, password: str, include_admins: bool = True):

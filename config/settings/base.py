@@ -213,6 +213,17 @@ EMAIL_TIMEOUT = 5
 DEFAULT_FROM_EMAIL = env("DJANGO_DEFAULT_FROM_EMAIL", default="MomCare <noreply@momcare.example>")
 SERVER_EMAIL = env("DJANGO_SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
 
+# Alert email is a second attempt at reaching someone the in-portal alert
+# already notified — see core/alerts/services.py's own docstring. There is
+# one Resend account shared by every hospital and no separate staging
+# backend, so exercising the model (manually, or via the "Test AI" panel)
+# spends the same quota a real emergency would. This gates only the two
+# alert-related sends (send_alert_notification, send_low_confidence_
+# notification); every other email — registration, staff invites, password
+# reset — is unaffected, and so is the alert itself, its escalation clock,
+# and the in-portal notification: only the email leg is skipped.
+MOMCARE_ALERT_EMAILS_ENABLED = env.bool("MOMCARE_ALERT_EMAILS_ENABLED", default=True)
+
 # ADMIN
 # ------------------------------------------------------------------------------
 ADMIN_URL = "admin/"

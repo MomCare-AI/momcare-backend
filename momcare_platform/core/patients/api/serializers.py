@@ -138,9 +138,7 @@ class PregnancyWriteSerializer(PregnancySerializer):
     assigned_staff = OrganizationStaffField(required=False, allow_null=True)
 
     class Meta(PregnancySerializer.Meta):
-        read_only_fields = [
-            f for f in PregnancySerializer.Meta.read_only_fields if f != "risk_factors"
-        ]
+        read_only_fields = [f for f in PregnancySerializer.Meta.read_only_fields if f != "risk_factors"]
 
     def update(self, instance, validated_data):
         factors = validated_data.pop("risk_factors", None)

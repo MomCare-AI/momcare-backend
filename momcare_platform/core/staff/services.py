@@ -58,11 +58,7 @@ def accept_invite(*, token: str, password: str, first_name: str = "", last_name:
     """
     with bypass_rls():
         try:
-            invite = (
-                StaffInvite.objects.select_for_update()
-                .select_related("organization", "role")
-                .get(token=token)
-            )
+            invite = StaffInvite.objects.select_for_update().select_related("organization", "role").get(token=token)
         except StaffInvite.DoesNotExist as exc:
             raise InviteError("This invitation link is not valid.") from exc
 
