@@ -13,7 +13,6 @@ from decimal import Decimal
 import pytest
 from django.conf import settings
 from django.core import mail
-from django.test import override_settings
 from django.utils import timezone
 
 from momcare_platform.core.alerts.models import Alert
@@ -167,10 +166,11 @@ def test_medium_outside_africa_is_not_overridden(make_hospital, pregnancy_for):
     assert assessment.final_risk_level == RiskAssessment.LEVEL_MEDIUM
 
 
-def test_low_confidence_flags_the_assessment_and_emails_the_doctor(make_hospital, make_staff, pregnancy_for):
-    """Medium is actionable on its own, so the alert path already emails the
-    assigned clinician once. Low confidence adds a second, distinct email —
-    the two are independent channels and both are expected to fire here."""
+def test_low_confidence_flags_the_assessment_without_emailing_anyone(make_hospital, make_staff, pregnancy_for):
+    """The flag on the row is the permanent record of a low-confidence result.
+    There is no email leg for this, same as the alert path — one Resend
+    account is shared by every hospital, so a message on every uncertain
+    prediction would spend the same quota a real emergency needs."""
     hospital = make_hospital("Uncertain Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doctor@uncertain.test")
     pregnancy = pregnancy_for(hospital, clinician=doctor)
@@ -180,34 +180,10 @@ def test_low_confidence_flags_the_assessment_and_emails_the_doctor(make_hospital
 
     assert assessment is not None
     assert assessment.flagged_for_review is True
-    assert all(sent.to == [doctor.email] for sent in mail.outbox)  # never the patient
-    review_emails = [sent for sent in mail.outbox if "review requested" in sent.subject.lower()]
-    assert len(review_emails) == 1
-
-
-@override_settings(MOMCARE_ALERT_EMAILS_ENABLED=False)
-def test_low_confidence_still_flags_the_assessment_with_alert_emails_off(
-    make_hospital, make_staff, pregnancy_for,
-):
-    """The flag on the row is the permanent record — MOMCARE_ALERT_EMAILS_
-    ENABLED must only stop the email, never the flag itself, since the
-    email is best-effort delivery of something the database already knows."""
-    hospital = make_hospital("Quiet Uncertain Hospital")
-    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doctor@quietuncertain.test")
-    pregnancy = pregnancy_for(hospital, clinician=doctor)
-    add_reading(pregnancy, MEDIUM_LOW_CONFIDENCE_VITALS)
-    mail.outbox.clear()
-
-    assessment = reassess_risk(pregnancy)
-
-    assert assessment is not None
-    assert assessment.flagged_for_review is True
     assert mail.outbox == []
 
 
-def test_high_confidence_is_not_flagged_and_sends_no_review_email(make_hospital, make_staff, pregnancy_for):
-    """Medium is still actionable, so the ordinary alert email still fires —
-    what must NOT happen is the separate low-confidence review email."""
+def test_high_confidence_is_not_flagged(make_hospital, make_staff, pregnancy_for):
     hospital = make_hospital("Confident Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doctor@confident.test")
     pregnancy = pregnancy_for(hospital, clinician=doctor)
@@ -217,8 +193,6 @@ def test_high_confidence_is_not_flagged_and_sends_no_review_email(make_hospital,
 
     assert assessment is not None
     assert assessment.flagged_for_review is False
-    review_emails = [sent for sent in mail.outbox if "review requested" in sent.subject.lower()]
-    assert len(review_emails) == 0
 
 
 def test_a_hospitals_own_threshold_overrides_the_platform_default(make_hospital, make_staff, pregnancy_for):
@@ -239,8 +213,6 @@ def test_a_hospitals_own_threshold_overrides_the_platform_default(make_hospital,
     assert assessment.confidence is not None
     assert assessment.confidence < Decimal("0.990")
     assert assessment.flagged_for_review is True
-    review_emails = [sent for sent in mail.outbox if "review requested" in sent.subject.lower()]
-    assert len(review_emails) == 1
 
 
 def test_unchanged_level_writes_no_second_assessment(make_hospital, pregnancy_for):

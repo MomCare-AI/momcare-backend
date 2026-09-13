@@ -128,8 +128,6 @@ def reassess_risk(pregnancy) -> RiskAssessment | None:
     )
 
     alert_services.sync_alert_for(assessment)
-    if flagged_for_review:
-        alert_services.notify_low_confidence(assessment)
 
     return assessment
 

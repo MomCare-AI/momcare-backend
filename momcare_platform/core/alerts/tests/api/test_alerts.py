@@ -11,7 +11,6 @@ import pytest
 from django.conf import settings
 from django.core import mail
 from django.db import IntegrityError, transaction
-from django.test import override_settings
 from django.utils import timezone
 
 from momcare_platform.core.alerts import escalation
@@ -303,28 +302,12 @@ def test_a_departed_clinician_is_not_a_valid_recipient(
     assert alert.tier > escalation.TIER_CLINICIAN
 
 
-def test_the_assigned_clinician_is_emailed(make_hospital, pregnancy_for, make_staff):
-    hospital = make_hospital("Mail Hospital")
-    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doc@mail.test")
-    pregnancy = pregnancy_for(hospital, clinician=doctor)
-    mail.outbox.clear()
-
-    go_critical(pregnancy)
-
-    assert len(mail.outbox) == 1
-    assert mail.outbox[0].to == [doctor.email]
-    assert "HIGH" in mail.outbox[0].subject
-
-
-@override_settings(MOMCARE_ALERT_EMAILS_ENABLED=False)
-def test_alert_emails_can_be_switched_off_without_losing_the_alert(
-    make_hospital, pregnancy_for, make_staff,
-):
-    """MOMCARE_ALERT_EMAILS_ENABLED exists so testing the model against the
-    one shared account (no separate staging backend) does not spend the same
-    Resend quota a real emergency would. Proven here by checking the one
-    thing it must never touch: the alert itself, its tier, and the audit
-    trail recording who would have been told."""
+def test_alerts_never_send_email_only_the_portal_notification(make_hospital, pregnancy_for, make_staff):
+    """There is one Resend account shared by every hospital and no separate
+    staging backend, so an email on every threshold crossing would spend the
+    same quota a real emergency needs. The in-portal alert is the only
+    channel — proven here by checking the one thing that must still happen:
+    the alert itself, its tier, and the audit trail recording who was told."""
     hospital = make_hospital("Quiet Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doc@quiet.test")
     pregnancy = pregnancy_for(hospital, clinician=doctor)
@@ -337,25 +320,6 @@ def test_alert_emails_can_be_switched_off_without_losing_the_alert(
     assert alert.tier == escalation.TIER_CLINICIAN
     notified = alert.events.get(kind=AlertEvent.KIND_NOTIFIED)
     assert doctor.email in notified.detail or doctor.get_full_name() in notified.detail
-
-
-def test_an_undeliverable_address_does_not_lose_the_alert(
-    make_hospital,
-    pregnancy_for,
-    make_staff,
-):
-    """Email is the second attempt at reaching someone; the in-portal alert is
-    the first. An address that cannot be sent to must never mean no alert
-    exists — that would trade a visible problem for an invisible one."""
-    hospital = make_hospital("Resilient Hospital")
-    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, "doc@resilient.test")
-    pregnancy = pregnancy_for(hospital, clinician=doctor)
-    doctor.email = ""
-    doctor.save(update_fields=["email"])
-
-    go_critical(pregnancy)
-
-    assert Alert.objects.filter(pregnancy=pregnancy, status=Alert.STATUS_OPEN).exists()
 
 
 # -- The API -------------------------------------------------------------------

@@ -120,69 +120,6 @@ def send_staff_invitation(invite, accept_url: str) -> bool:
     )
 
 
-def send_alert_notification(alert, user, tier: int) -> bool:
-    """Tell one person that a patient needs attention.
-
-    Terse on purpose. This lands on a phone, often at night, and the only
-    things that decide whether someone gets up are who, how bad, and why. The
-    portal holds the detail; this is the interrupt.
-
-    The patient is named because the recipient already has clinical access to
-    her record — but nothing beyond her name, gestation and the findings goes
-    into an email, since mail leaves systems we control.
-    """
-    from momcare_platform.core.alerts import escalation  # noqa: PLC0415
-
-    patient = alert.pregnancy.patient
-    reasons = "\n".join(f"  - {reason}" for reason in alert.reasons) or "  - Outside clinical range."
-    escalated = (
-        f"\nThis alert reached you because it was escalated to the {escalation.tier_label(tier).lower()}.\n"
-        if tier != escalation.TIER_CLINICIAN
-        else ""
-    )
-
-    return _send(
-        subject=f"MomCare {alert.level.upper()}: {patient.full_name}",
-        body=(
-            f"{patient.full_name} needs review.\n\n"
-            f"Level:     {alert.level.upper()}\n"
-            f"Gestation: {alert.pregnancy.gestational_age_display or 'unknown'}\n"
-            f"MRN:       {patient.mrn or 'not assigned'}\n\n"
-            f"Why:\n{reasons}\n"
-            f"{escalated}\n"
-            "Open MomCare to review the readings and acknowledge this alert.\n\n"
-            "This is decision support from monitored vitals, not a diagnosis.\n\n"
-            "- MomCare"
-        ),
-        to=user.email,
-    )
-
-
-def send_low_confidence_notification(assessment, user) -> bool:
-    """Tell the assigned clinician a prediction fell below the confidence
-    threshold and is worth a second look — never sent to the patient.
-
-    Deliberately calmer than send_alert_notification: a flagged result is
-    not an emergency by itself, just a number the model is unsure of.
-    """
-    patient = assessment.pregnancy.patient
-    return _send(
-        subject=f"MomCare: review requested — {patient.full_name}",
-        body=(
-            f"{patient.full_name}'s latest assessment fell below the confidence "
-            "threshold and is worth a second look before you rely on it.\n\n"
-            f"Result:     {assessment.final_risk_level.upper()}\n"
-            f"Confidence: {float(assessment.confidence):.0%}\n"
-            f"Gestation:  {assessment.pregnancy.gestational_age_display or 'unknown'}\n"
-            f"MRN:        {patient.mrn or 'not assigned'}\n\n"
-            "Open MomCare to review the readings behind this result.\n\n"
-            "This is decision support from monitored vitals, not a diagnosis.\n\n"
-            "- MomCare"
-        ),
-        to=user.email,
-    )
-
-
 def send_password_reset(user, reset_url: str) -> bool:
     """The link that lets somebody back into their own account.
 

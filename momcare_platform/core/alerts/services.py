@@ -17,7 +17,6 @@ from django.utils import timezone
 
 from momcare_platform.core.alerts import escalation
 from momcare_platform.core.alerts.models import Alert, AlertEvent
-from momcare_platform.core.common.mail import send_alert_notification, send_low_confidence_notification
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +82,11 @@ def notify(alert: Alert, tier: int) -> int:
     incident review needs, and it is why an empty tier escalates immediately
     instead of waiting out the clock.
 
-    "Reached" counts the in-portal alert, not the email — that is the primary
-    channel (see below), and stays true regardless of
-    ``MOMCARE_ALERT_EMAILS_ENABLED``.
+    "Reached" means the in-portal alert — the only channel. There is no
+    email leg: one Resend account is shared by every hospital with no
+    separate staging backend, so a clinical alert firing on every threshold
+    crossing during testing or model development would spend the same quota
+    a real emergency needs.
     """
     recipients = recipients_for_tier(alert, tier)
 
@@ -98,13 +99,6 @@ def notify(alert: Alert, tier: int) -> int:
         )
         return 0
 
-    if settings.MOMCARE_ALERT_EMAILS_ENABLED:
-        for user in recipients:
-            # Best-effort, like every other send in this system: a mail outage
-            # must not roll back the alert. The in-portal alert is the primary
-            # channel; email is a second attempt at reaching the same person.
-            send_alert_notification(alert, user, tier)
-
     names = ", ".join(u.get_full_name() or u.email for u in recipients[:3])
     if len(recipients) > 3:
         names += f" and {len(recipients) - 3} more"
@@ -116,27 +110,6 @@ def notify(alert: Alert, tier: int) -> int:
         detail=f"{escalation.tier_label(tier)}: {names}",
     )
     return len(recipients)
-
-
-def notify_low_confidence(assessment) -> bool:
-    """Tell the assigned clinician a prediction fell below the confidence
-    threshold — never the patient. A flag means "worth a second look," not
-    an emergency, so this bypasses the Alert/escalation ladder entirely:
-    there is no episode to acknowledge or climb, just one notice to the one
-    person already responsible for this pregnancy.
-
-    Best-effort, like every other send in this system: a mail outage must
-    not roll back the assessment. Silent (returns False) when there is no
-    active assigned clinician to tell, or when ``MOMCARE_ALERT_EMAILS_
-    ENABLED`` is off — the flag on the assessment row is itself the
-    permanent record, so nothing is lost, only not delivered yet.
-    """
-    staff = assessment.pregnancy.assigned_staff
-    if not (staff and staff.is_active and staff.user and staff.user.is_active):
-        return False
-    if not settings.MOMCARE_ALERT_EMAILS_ENABLED:
-        return False
-    return send_low_confidence_notification(assessment, staff.user)
 
 
 # -- Raising and closing ------------------------------------------------------
