@@ -246,3 +246,46 @@ def test_a_staff_login_is_unaffected_by_the_verification_gate(client, make_hospi
     response = post(client, LOGIN, email="n@unaffected.test", password="TestPass!2026")
 
     assert response.status_code == 200, response.content
+
+
+# ── This endpoint is patient-only, even though every other role also sits at
+# is_email_verified=False forever (nothing ever sets it for them) ──────────
+
+
+def test_verify_cannot_be_used_to_log_in_as_a_hospital_admin(client, make_hospital):
+    """The bypass this guards against: since a hospital_admin's row also has
+    is_email_verified=False permanently, submitting a *correct* code for
+    their email must still be refused — not silently issue that admin's
+    real tokens to whoever holds the code. Proves the role filter is what
+    stops it, not the code check (the code here is genuinely valid)."""
+    hospital = make_hospital("Verify Bypass Trap Hospital")
+    _, code = EmailVerificationCode.issue(hospital.admin)
+
+    response = post(client, VERIFY, email=hospital.admin.email, code=code)
+
+    assert response.status_code == 400, response.content
+    assert "access" not in response.json()
+    hospital.admin.refresh_from_db()
+    assert hospital.admin.is_email_verified is False
+
+
+def test_verify_cannot_be_used_to_log_in_as_a_staff_member(client, make_hospital, make_staff):
+    hospital = make_hospital("Verify Staff Bypass Trap Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "n@verifybypass.test")
+    _, code = EmailVerificationCode.issue(nurse)
+
+    response = post(client, VERIFY, email=nurse.email, code=code)
+
+    assert response.status_code == 400, response.content
+    assert "access" not in response.json()
+
+
+def test_resend_does_not_email_a_hospital_admin_a_patient_otp(client, make_hospital):
+    hospital = make_hospital("Resend Bypass Trap Hospital")
+    mail.outbox.clear()
+
+    response = post(client, RESEND, email=hospital.admin.email)
+
+    assert response.status_code == 200, response.content
+    assert len(mail.outbox) == 0
+    assert not EmailVerificationCode.objects.filter(user=hospital.admin).exists()

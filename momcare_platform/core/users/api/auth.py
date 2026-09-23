@@ -518,7 +518,11 @@ class VerifyPatientEmailView(APIView):
             )
 
         with bypass_rls():
-            user = User.objects.filter(email__iexact=email, is_email_verified=False).first()
+            user = User.objects.filter(
+                email__iexact=email,
+                is_email_verified=False,
+                role__code=settings.ROLE_PATIENT,
+            ).first()
             valid = user is not None and EmailVerificationCode.verify(user, code)
 
             if not valid:
@@ -563,7 +567,11 @@ class ResendPatientVerificationView(APIView):
             return Response({"detail": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         with bypass_rls():
-            user = User.objects.filter(email__iexact=email, is_email_verified=False).first()
+            user = User.objects.filter(
+                email__iexact=email,
+                is_email_verified=False,
+                role__code=settings.ROLE_PATIENT,
+            ).first()
             if user is not None:
                 _, code = EmailVerificationCode.issue(user)
                 send_email_otp(user, code)
