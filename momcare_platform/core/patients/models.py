@@ -40,6 +40,16 @@ class Patient(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
         on_delete=models.PROTECT,
         related_name="patients",
     )
+    # Denormalized from location.organization, the same way Device carries its
+    # own direct organization FK — needed so CNIC uniqueness (below) can be
+    # scoped correctly. A hospital can have several locations; a
+    # location-scoped constraint would miss a duplicate CNIC at a different
+    # branch of the same hospital.
+    organization = models.ForeignKey(
+        "organization.Organization",
+        on_delete=models.PROTECT,
+        related_name="patients",
+    )
     # Optional, and SET_NULL: losing an app account must never destroy a
     # clinical record. The previous CASCADE would have deleted the patient.
     user = models.OneToOneField(
@@ -61,20 +71,51 @@ class Patient(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
     # Indexed but NOT unique, unlike User.phone: households share a phone, and a
     # husband's or neighbour's number is often the only contact available.
     phone = models.CharField(_("phone"), max_length=20, blank=True, db_index=True)
-    # Also not unique — typos happen, the same woman may be registered at two
-    # hospitals, and not everyone holds a CNIC. Duplicates are surfaced for a
-    # human to judge rather than blocked by the database.
-    cnic = models.CharField(_("CNIC"), max_length=20, blank=True, db_index=True)
+    # Not unique across the whole platform — the same woman may legitimately be
+    # registered at two hospitals. It IS unique within one hospital (see the
+    # constraint below): a CNIC is a personal government ID, so two patients at
+    # one hospital sharing one is far more likely a data-entry mistake than a
+    # real case. null=True, never "", so two CNIC-less patients at the same
+    # hospital don't false-positive collide under that constraint.
+    # noqa DJ001: null=True on a CharField is exactly what's wanted here. Ruff
+    # exempts unique=True fields (see mrn below) because NULL is how you avoid
+    # blank-value collisions; this field's uniqueness is a Meta constraint
+    # instead, which the rule can't see, so the exemption is stated by hand.
+    cnic = models.CharField(_("CNIC"), max_length=20, blank=True, null=True, db_index=True)  # noqa: DJ001
     blood_group = models.CharField(max_length=3, choices=BLOOD_GROUP_CHOICES, blank=True)
 
     # ── Emergency contact ────────────────────────────────────────────────────
     emergency_contact_name = models.CharField(max_length=100, blank=True)
     emergency_contact_phone = models.CharField(max_length=20, blank=True)
     emergency_contact_relation = models.CharField(max_length=50, blank=True)
+    # Captured now for a future notification feature — no send-logic exists
+    # yet. Not a new kind of system user; just better-captured data on the
+    # existing emergency contact.
+    emergency_contact_email = models.EmailField(blank=True, default="")
 
-    # Medical record number — an identifier, not clinical content. Globally
-    # unique, but hospital-prefixed so it reads as hospital-scoped.
+    # Medical record number — an identifier, not clinical content. Supplied by
+    # the hospital from its own numbering, never generated here.
     mrn = models.CharField(max_length=100, unique=True, null=True, blank=True)
+
+    # When she agreed to be monitored. A single date, matching the reference
+    # platform's own shape — deliberately not an event history: this records
+    # that consent was given, not every time it changed.
+    consent_date = models.DateField(null=True, blank=True)
+
+    # The outside clinician involved in her care — the doctor who referred her
+    # in, or a specialist she also sees. SET_NULL, not PROTECT: removing a
+    # referral contact from the hospital's list must never be blocked by, or
+    # cascade into, a patient's record.
+    #
+    # Distinct from emergency_contact_* above: that is her own family, stored
+    # on her row; this is a shared record many patients can point at.
+    secondary_provider = models.ForeignKey(
+        "staff.SecondaryProvider",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="patients",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -84,6 +125,16 @@ class Patient(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
             models.Index(fields=["cnic"]),
             models.Index(fields=["last_name", "first_name"]),
         ]
+        constraints = [
+            # Scoped to the hospital, not the platform: the same woman may
+            # legitimately hold a record at two hospitals. Conditional on
+            # cnic IS NOT NULL so CNIC-less patients never collide.
+            models.UniqueConstraint(
+                fields=["organization", "cnic"],
+                condition=models.Q(cnic__isnull=False),
+                name="unique_cnic_per_organization",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.full_name} ({self.mrn})" if self.mrn else self.full_name
@@ -91,11 +142,6 @@ class Patient(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
     @property
     def full_name(self) -> str:
         return f"{self.first_name} {self.last_name}".strip()
-
-    @property
-    def organization(self):
-        """The hospital, reached through the location — Patient has no direct FK."""
-        return self.location.organization
 
     @property
     def has_app_account(self) -> bool:
@@ -107,8 +153,8 @@ class Patient(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
         return self.pregnancies.filter(status=Pregnancy.STATUS_ACTIVE).first()
 
     @property
-    def latest_consent(self):
-        return self.consents.first()
+    def has_consent(self) -> bool:
+        return self.consent_date is not None
 
 
 class Pregnancy(UUIDPrimaryKeyModel, TimeStampedModel):
@@ -187,24 +233,76 @@ class Pregnancy(UUIDPrimaryKeyModel, TimeStampedModel):
     gravida = models.PositiveSmallIntegerField(null=True, blank=True)
     para = models.PositiveSmallIntegerField(null=True, blank=True)
 
-    # The lead clinician — one accountable name for this pregnancy. This field
-    # is permanent, not a placeholder: a future PregnancyCareTeam will add
-    # supporting members *alongside* it rather than replacing it, so that
-    # change stays additive and needs no migration of live clinical records.
+    # The care team — one of each at a time. The lead clinician (provider) is
+    # the accountable name alert escalation routes to; nurse and care_manager
+    # are the supporting roles. Deliberately three plain columns rather than a
+    # join table: no multi-nurse rotation, no handoff history, matching the
+    # reference implementation's shape. See the patient-onboarding design doc.
     #
     # PROTECT preserves who was responsible. Staff is soft-deleted, so this
     # never blocks anything in practice — it guarantees history survives.
-    assigned_staff = models.ForeignKey(
+    provider = models.ForeignKey(
         "staff.Staff",
         on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name="assigned_pregnancies",
     )
+    nurse = models.ForeignKey(
+        "staff.Staff",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="nursed_pregnancies",
+    )
+    care_manager = models.ForeignKey(
+        "staff.Staff",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="care_managed_pregnancies",
+    )
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ACTIVE, db_index=True)
     outcome_date = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True)
+
+    # ── Obstetric history ────────────────────────────────────────────────────
+    # The standard antenatal booking-form questions, held here on the pregnancy
+    # rather than in a table of their own: they are answered once per pregnancy
+    # and never independently of it.
+    #
+    # Three-state rather than boolean, because "not asked" is clinically
+    # different from "no" — a boolean silently turns an unknown into a
+    # negative, which is exactly the direction that hides risk.
+    #
+    # Note the trained model does NOT currently read these (it takes 9 vitals;
+    # see momcare_model/config.py::FEATURE_COLS). They are recorded because a
+    # previous C-section or preeclampsia is textbook obstetric risk, and
+    # whether they should feed scoring is one of the questions the outstanding
+    # obstetrician review has to answer.
+    YES = "yes"
+    NO = "no"
+    UNKNOWN = "unknown"
+    ANSWER_CHOICES = [(YES, "Yes"), (NO, "No"), (UNKNOWN, "Unknown")]
+
+    FACTOR_FIELDS = [
+        "previous_c_section",
+        "previous_preeclampsia",
+        "previous_gestational_diabetes",
+        "previous_preterm_birth",
+        "chronic_hypertension",
+        "diabetes",
+        "multiple_pregnancy",
+    ]
+
+    previous_c_section = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
+    previous_preeclampsia = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
+    previous_gestational_diabetes = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
+    previous_preterm_birth = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
+    chronic_hypertension = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
+    diabetes = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
+    multiple_pregnancy = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
 
     class Meta:
         ordering = ["-created_at"]
@@ -267,190 +365,7 @@ class Pregnancy(UUIDPrimaryKeyModel, TimeStampedModel):
         route alerts to this person, an inactive assignment is the same silent
         failure as no assignment at all, and both must surface.
         """
-        return self.assigned_staff is not None and self.assigned_staff.is_active
-
-
-class CareTeamMembership(UUIDPrimaryKeyModel, TimeStampedModel):
-    """A supporting member of a pregnancy's care team.
-
-    Additive to ``Pregnancy.assigned_staff``, never a replacement for it —
-    ``assigned_staff`` stays the one accountable lead clinician that alert
-    escalation routes to. This model answers a different question: who else
-    is genuinely working this case (nurses on rotation, a co-managing
-    provider, a coordinating care manager), where "one person" doesn't fit
-    the way it does for the lead.
-
-    A row is never mutated to change who holds it — ending one and starting
-    another is how a handoff is recorded, the same convention already used by
-    ``Consent`` and ``AlertEvent`` in this codebase. ``started_at``/
-    ``ended_at`` are therefore the history; there is no separate event log,
-    because "who was responsible on a given day" is answerable directly from
-    those two columns without one.
-
-    PROTECT on both foreign keys for the same reason ``Pregnancy.
-    assigned_staff`` and ``ClinicalNote.author`` use it: Staff is
-    soft-deleted, so this never blocks anything in practice, and it
-    guarantees the historical relationship survives.
-    """
-
-    ROLE_NURSE = "nurse"
-    ROLE_PROVIDER = "provider"
-    ROLE_CARE_MANAGER = "care_manager"
-    ROLE_CHOICES = [
-        (ROLE_NURSE, "Nurse"),
-        (ROLE_PROVIDER, "Provider"),
-        (ROLE_CARE_MANAGER, "Care manager"),
-    ]
-
-    pregnancy = models.ForeignKey(
-        "patients.Pregnancy",
-        on_delete=models.PROTECT,
-        related_name="care_team_memberships",
-    )
-    staff = models.ForeignKey(
-        "staff.Staff",
-        on_delete=models.PROTECT,
-        related_name="care_team_memberships",
-    )
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, db_index=True)
-
-    started_at = models.DateTimeField(auto_now_add=True)
-    ended_at = models.DateTimeField(null=True, blank=True)
-    # Denormalized alongside ended_at rather than derived from it, so the
-    # query every "my patients" view needs (pregnancy, role, is_active) can
-    # hit a plain index instead of an ended_at IS NULL scan on every row.
-    is_active = models.BooleanField(default=True, db_index=True)
-
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="+",
-        help_text="Who made this assignment.",
-    )
-    ended_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="+",
-        help_text="Who ended this assignment.",
-    )
-
-    class Meta:
-        ordering = ["-started_at"]
-        indexes = [
-            # "Who's on this pregnancy's care team, in this role, right now" —
-            # the query every patient-detail Care Team panel needs.
-            models.Index(fields=["pregnancy", "role", "is_active"]),
-            # "What's assigned to me, in this role, right now" — the query
-            # every nurse/care_manager "my patients" view needs.
-            models.Index(fields=["staff", "role", "is_active"]),
-        ]
-
-    def __str__(self) -> str:
-        state = "active" if self.is_active else "ended"
-        return f"{self.staff} — {self.get_role_display()} on {self.pregnancy_id} ({state})"
-
-    def _rejects_new_assignment(self) -> bool:
-        # Only true on creation - an existing row (e.g. one being ended) must
-        # never be blocked from saving just because the staff member it
-        # already, historically, points at has since been deactivated. What
-        # this actually prevents: assigning someone who has *already left* to
-        # a *new* case, which the query-time is_active check in every "who's
-        # on this team" lookup would otherwise silently and confusingly
-        # accept, then immediately exclude from every result.
-        #
-        # self._state.adding, not "self.pk is None" - every model here uses a
-        # client-generated UUID default, so the pk is already populated the
-        # moment the object is constructed in Python, well before save() ever
-        # runs. self.pk is None would never be true for this model at all,
-        # guard included, and the check would silently never fire.
-        return bool(self._state.adding and self.staff_id and not self.staff.is_active)
-
-    def clean(self):
-        # Runs during full_clean() - i.e. the moment a ModelForm (Django
-        # admin's add page, and any future DRF serializer that validates via
-        # the model rather than around it) checks validity, before it ever
-        # attempts to save. This is what turns the rule into a normal red
-        # form error instead of an unhandled exception reaching the caller.
-        from django.core.exceptions import ValidationError  # noqa: PLC0415
-
-        if self._rejects_new_assignment():
-            raise ValidationError(
-                {"staff": "This staff member is deactivated and cannot be assigned to a new care team."},
-            )
-
-    def save(self, *args, **kwargs):
-        # Kept as a second, independent enforcement point - not every caller
-        # goes through a ModelForm (a direct .objects.create(), or a future
-        # service function, would skip clean() entirely and reach here
-        # first). Same rule, same message, just reached a different way.
-        if self._rejects_new_assignment():
-            from django.core.exceptions import ValidationError  # noqa: PLC0415
-
-            raise ValidationError(
-                {"staff": "This staff member is deactivated and cannot be assigned to a new care team."},
-            )
-        super().save(*args, **kwargs)
-
-    def end(self, *, by=None) -> None:
-        """Close this membership without deleting it — history must survive."""
-        from django.utils import timezone  # noqa: PLC0415
-
-        self.is_active = False
-        self.ended_at = timezone.now()
-        self.ended_by = by
-        self.save(update_fields=["is_active", "ended_at", "ended_by", "updated_at"])
-
-
-class PregnancyRiskFactors(UUIDPrimaryKeyModel, TimeStampedModel):
-    """Standard obstetric history for one pregnancy.
-
-    Three-state rather than boolean, because "not asked" is clinically
-    different from "no". A boolean silently converts an unknown into a
-    negative, which is exactly the direction that hides risk.
-
-    These are the factors on any antenatal booking form, not a guess at what a
-    particular model will want — extend the list as clinical needs emerge.
-    """
-
-    YES = "yes"
-    NO = "no"
-    UNKNOWN = "unknown"
-    ANSWER_CHOICES = [(YES, "Yes"), (NO, "No"), (UNKNOWN, "Unknown")]
-
-    FACTOR_FIELDS = [
-        "previous_c_section",
-        "previous_preeclampsia",
-        "previous_gestational_diabetes",
-        "previous_preterm_birth",
-        "chronic_hypertension",
-        "diabetes",
-        "multiple_pregnancy",
-    ]
-
-    pregnancy = models.OneToOneField(
-        "patients.Pregnancy",
-        on_delete=models.CASCADE,
-        related_name="risk_factors",
-    )
-
-    previous_c_section = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
-    previous_preeclampsia = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
-    previous_gestational_diabetes = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
-    previous_preterm_birth = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
-    chronic_hypertension = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
-    diabetes = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
-    multiple_pregnancy = models.CharField(max_length=10, choices=ANSWER_CHOICES, default=UNKNOWN)
-
-    class Meta:
-        verbose_name = "pregnancy risk factors"
-        verbose_name_plural = "pregnancy risk factors"
-
-    def __str__(self) -> str:
-        return f"Risk factors — {self.pregnancy.patient.full_name}"
+        return self.provider is not None and self.provider.is_active
 
     @property
     def present_factors(self) -> list[str]:
@@ -463,94 +378,98 @@ class PregnancyRiskFactors(UUIDPrimaryKeyModel, TimeStampedModel):
         return [f for f in self.FACTOR_FIELDS if getattr(self, f) == self.UNKNOWN]
 
 
-class Consent(UUIDPrimaryKeyModel, TimeStampedModel):
-    """One consent event for one patient.
+class PatientJoinRequest(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A self-registered woman asking a hospital to take her on.
 
-    An append-only history rather than a field on Patient: consent can be
-    withdrawn and given again, policies get new versions, and the question that
-    matters later is "what was agreed, when, and who recorded it" — which a
-    single overwritten date cannot answer.
+    She registers in the mobile app with no hospital attached, fills in what
+    she knows about herself, and sends this to a hospital she picks. Until a
+    hospital approves it there is no ``Patient`` row at all — only this
+    request — because a Patient's whole invariant is "belongs to exactly one
+    hospital", and a record belonging to nobody would break every query that
+    relies on it.
 
-    Rows are never modified or deleted; a change of mind is a new row.
+    She may have one open request with each of several hospitals at once —
+    the constraint below is per hospital, not overall. The first to approve
+    gets her: ``Patient.user`` is a one-to-one, so one login belongs to one
+    clinical record, and the remaining requests are marked WITHDRAWN rather
+    than left pending against a woman who is already somebody's patient.
+
+    ``draft`` holds what she reported, as the same JSON shape the hospital-side
+    onboarding endpoint accepts. Deliberately JSON rather than twenty mirrored
+    columns: it is transient, it is re-validated by the real serializer before
+    anything is created, and duplicating the patient schema here would mean
+    changing two places every time a field moves.
+
+    Approval does not create anything itself — it calls the same
+    ``onboard_patient()`` a walk-in uses. One creation path, so a woman who
+    self-registered and one who walked in are the same kind of record.
     """
 
-    STATUS_GRANTED = "granted"
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    # Closed because she joined somewhere else, not because this hospital
+    # said no. Kept distinct from "rejected" so the record does not blame a
+    # hospital for a decision it never made.
     STATUS_WITHDRAWN = "withdrawn"
-    STATUS_CHOICES = [(STATUS_GRANTED, "Granted"), (STATUS_WITHDRAWN, "Withdrawn")]
-
-    METHOD_IN_PERSON = "in_person"
-    METHOD_VERBAL = "verbal"
-    METHOD_DIGITAL = "digital"
-    METHOD_CHOICES = [
-        (METHOD_IN_PERSON, "In person, signed"),
-        (METHOD_VERBAL, "Verbal, witnessed"),
-        (METHOD_DIGITAL, "Digital"),
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_WITHDRAWN, "Withdrawn"),
     ]
 
-    patient = models.ForeignKey(
-        "patients.Patient",
-        on_delete=models.PROTECT,
-        related_name="consents",
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="join_requests",
+        help_text="Her self-registered account, which has no organization yet.",
     )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
-    # When this event happened — a withdrawal has no "granted at".
-    recorded_at = models.DateTimeField(auto_now_add=True, db_index=True)
-    version = models.CharField(
-        max_length=20,
-        default="v1.0",
-        help_text="Which consent policy the patient agreed to.",
+    organization = models.ForeignKey(
+        "organization.Organization",
+        on_delete=models.CASCADE,
+        related_name="join_requests",
     )
-    method = models.CharField(max_length=20, choices=METHOD_CHOICES, default=METHOD_IN_PERSON)
-    recorded_by = models.ForeignKey(
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    draft = models.JSONField(default=dict, blank=True)
+
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="recorded_consents",
+        related_name="+",
     )
-    note = models.TextField(blank=True)
-
-    class Meta:
-        ordering = ["-recorded_at"]
-        verbose_name_plural = "consents"
-        indexes = [models.Index(fields=["patient", "-recorded_at"])]
-
-    def __str__(self) -> str:
-        return f"{self.patient.full_name} — {self.get_status_display()} ({self.version})"
-
-    @property
-    def is_current_grant(self) -> bool:
-        return self.status == self.STATUS_GRANTED
-
-
-class ClinicalNote(UUIDPrimaryKeyModel, TimeStampedModel):
-    """A clinician's written observation on a pregnancy, append-only.
-
-    Replaces ``Pregnancy.notes`` as the real record of "what did a doctor
-    think" — that field is a single overwritable TextField with no author and
-    no date, which contradicts the project's own rule that an observation is
-    never edited and a correction is a new record, same as ``Consent`` and
-    ``AlertEvent``.
-    """
-
-    pregnancy = models.ForeignKey(
-        "patients.Pregnancy",
+    decision_note = models.TextField(blank=True)
+    # The record approval created. PROTECT, like every other pointer at a
+    # clinical record: the request is the audit trail of how that patient
+    # came to exist.
+    patient = models.ForeignKey(
+        "patients.Patient",
         on_delete=models.PROTECT,
-        related_name="clinical_notes",
+        null=True,
+        blank=True,
+        related_name="join_request",
     )
-    # PROTECT, not SET_NULL: a note with no author is a note nobody can be
-    # asked about. Staff is soft-deleted, so this never blocks anything in
-    # practice — see the identical reasoning on Pregnancy.assigned_staff.
-    author = models.ForeignKey(
-        "staff.Staff",
-        on_delete=models.PROTECT,
-        related_name="clinical_notes",
-    )
-    body = models.TextField()
 
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["pregnancy", "-created_at"])]
+        indexes = [models.Index(fields=["organization", "status"])]
+        constraints = [
+            # One live request per hospital at a time. Without this she could
+            # spam one hospital, and a reviewer would not know which row is
+            # the real one. A decided request never blocks a fresh attempt.
+            models.UniqueConstraint(
+                fields=["user", "organization"],
+                condition=models.Q(status="pending"),
+                name="one_pending_join_request_per_hospital",
+            ),
+        ]
 
     def __str__(self) -> str:
-        return f"Note on {self.pregnancy_id} by {self.author}"
+        return f"{self.user.email} → {self.organization.name} ({self.status})"
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status == self.STATUS_PENDING

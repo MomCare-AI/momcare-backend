@@ -12,8 +12,8 @@ from django.conf import settings
 
 from momcare_platform.core.locations.services import ensure_default_location
 from momcare_platform.core.organization.models import Organization
-from momcare_platform.core.patients.models import Consent, Patient, Pregnancy, PregnancyRiskFactors
-from momcare_platform.core.patients.services import enrol_patient
+from momcare_platform.core.patients.models import Patient, Pregnancy
+from momcare_platform.core.patients.services import onboard_patient
 from momcare_platform.core.users.models import Role, User
 
 pytestmark = pytest.mark.django_db
@@ -28,7 +28,6 @@ def enrolment_payload(**overrides):
         "phone": "03001234567",
         "cnic": "61101-1234567-8",
         "blood_group": "O+",
-        "consent": {"status": "granted", "version": "v1.0", "method": "in_person"},
     }
     payload.update(overrides)
     return payload
@@ -66,65 +65,94 @@ def test_patient_is_enrolled_without_any_user_account(client, make_hospital, aut
     assert patient.location.organization == hospital.org
 
 
-def test_enrolment_records_consent(client, make_hospital, auth):
-    hospital = make_hospital("Consent Hospital")
+def test_mrn_is_supplied_by_the_hospital_not_generated(client, make_hospital, auth):
+    """The hospital brings its own numbering; the platform never invents a
+    competing identifier for the same woman."""
+    hospital = make_hospital("Alpha Care")
+
+    response = post_patient(client, auth(hospital.admin.email), mrn="AC-2026-0042")
+
+    assert response.status_code == 201
+    assert response.json()["mrn"] == "AC-2026-0042"
+
+
+def test_mrn_is_optional(client, make_hospital, auth):
+    hospital = make_hospital("No MRN Hospital")
+
     response = post_patient(client, auth(hospital.admin.email))
 
-    consent = Patient.objects.get(id=response.json()["id"]).consents.first()
-    assert consent is not None
-    assert consent.status == Consent.STATUS_GRANTED
-    assert consent.version == "v1.0"
-    assert consent.recorded_by == hospital.admin
+    assert response.status_code == 201
+    assert response.json()["mrn"] is None
 
 
-def test_enrolment_requires_consent(client, make_hospital, auth):
-    """Storing a patient's record without a recorded agreement is refused."""
-    hospital = make_hospital("No Consent Hospital")
-    payload = enrolment_payload()
-    payload.pop("consent")
-
-    response = client.post(
-        PATIENTS,
-        data=json.dumps(payload),
-        content_type="application/json",
-        **auth(hospital.admin.email),
-    )
-
-    assert response.status_code == 400
-    assert "consent" in response.json()
-    assert not Patient.objects.exists()
-
-
-def test_mrn_is_hospital_prefixed_and_sequential(client, make_hospital, auth):
-    hospital = make_hospital("Alpha Care")
+def test_two_patients_without_an_mrn_do_not_collide(client, make_hospital, auth):
+    """Blank MRN is stored as NULL, never "" — otherwise the second MRN-less
+    patient would collide with the first under the unique constraint."""
+    hospital = make_hospital("Blank MRN Hospital")
     headers = auth(hospital.admin.email)
 
-    first = post_patient(client, headers, first_name="One").json()["mrn"]
-    second = post_patient(client, headers, first_name="Two", cnic="").json()["mrn"]
+    first = post_patient(client, headers, first_name="One", cnic="", mrn="")
+    second = post_patient(client, headers, first_name="Two", cnic="", mrn="")
 
-    assert first == "ALPH-000001"
-    assert second == "ALPH-000002"
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert Patient.objects.filter(mrn__isnull=True).count() == 2
+
+
+def test_a_duplicate_mrn_is_rejected(client, make_hospital, auth):
+    hospital = make_hospital("Duplicate MRN Hospital")
+    headers = auth(hospital.admin.email)
+    post_patient(client, headers, first_name="One", mrn="DUP-001")
+
+    response = post_patient(client, headers, first_name="Two", cnic="", mrn="DUP-001")
+
+    assert response.status_code == 400
+    assert "mrn" in response.json()
+
+
+def test_a_duplicate_mrn_is_rejected_case_insensitively(client, make_hospital, auth):
+    hospital = make_hospital("Case MRN Hospital")
+    headers = auth(hospital.admin.email)
+    post_patient(client, headers, first_name="One", mrn="abc-001")
+
+    response = post_patient(client, headers, first_name="Two", cnic="", mrn="ABC-001")
+
+    assert response.status_code == 400
+    assert "mrn" in response.json()
 
 
 def test_mrn_is_unique_across_hospitals(client, make_hospital, auth):
+    """MRN uniqueness is global, unlike CNIC which is scoped per hospital."""
     alpha = make_hospital("Alpha MRN")
     beta = make_hospital("Beta MRN")
+    post_patient(client, auth(alpha.admin.email), mrn="SHARED-001")
 
-    a = post_patient(client, auth(alpha.admin.email)).json()["mrn"]
-    b = post_patient(client, auth(beta.admin.email)).json()["mrn"]
+    response = post_patient(client, auth(beta.admin.email), mrn="SHARED-001")
 
-    assert a != b
-    assert Patient.objects.filter(mrn=a).count() == 1
+    assert response.status_code == 400
+
+
+def test_two_hospitals_sharing_a_name_prefix_can_both_onboard(client, make_hospital, auth):
+    """Regression: MRNs used to be generated from the first four characters of
+    the hospital's name, so two hospitals whose names shared a prefix produced
+    colliding MRNs and the second could not onboard anyone at all."""
+    first = make_hospital("APITEST Maternity")
+    second = make_hospital("APITEST Rival Hospital")
+
+    for index in range(6):
+        post_patient(client, auth(first.admin.email), first_name=f"P{index}", cnic=f"61101-111111{index}-1")
+
+    response = post_patient(client, auth(second.admin.email), first_name="Rival", cnic="")
+
+    assert response.status_code == 201
 
 
 def test_a_patient_survives_deletion_of_her_user_account(make_hospital):
     """SET_NULL, not CASCADE — losing an app account must not erase a record."""
     hospital = make_hospital("SetNull Hospital")
-    patient = enrol_patient(
+    patient = onboard_patient(
         organization=hospital.org,
-        recorded_by=hospital.admin,
         patient_data={"first_name": "Zara", "last_name": "Khan"},
-        consent={"status": Consent.STATUS_GRANTED},
     )
     account = User.objects.create_user(email="zara@example.test", password="AppPass!2026")
     patient.user = account
@@ -146,11 +174,9 @@ def test_patient_count_includes_patients_without_a_user(make_hospital):
     enrolled without an app account was invisible — the dashboard would have
     read zero with a full ward."""
     hospital = make_hospital("Count Hospital")
-    enrol_patient(
+    onboard_patient(
         organization=hospital.org,
-        recorded_by=hospital.admin,
         patient_data={"first_name": "NoAccount"},
-        consent={"status": Consent.STATUS_GRANTED},
     )
 
     assert hospital.org.patient_count == 1
@@ -158,11 +184,9 @@ def test_patient_count_includes_patients_without_a_user(make_hospital):
 
 def test_patient_count_includes_patients_with_a_user(make_hospital):
     hospital = make_hospital("Count With User")
-    patient = enrol_patient(
+    patient = onboard_patient(
         organization=hospital.org,
-        recorded_by=hospital.admin,
         patient_data={"first_name": "WithAccount"},
-        consent={"status": Consent.STATUS_GRANTED},
     )
     patient.user = User.objects.create_user(email="withaccount@example.test", password="AppPass!2026")
     patient.save(update_fields=["user", "updated_at"])
@@ -277,11 +301,11 @@ def test_risk_factors_default_to_unknown(client, make_hospital, auth):
         pregnancy={"lmp": date(2026, 2, 5).isoformat()},
     )
 
-    factors = response.json()["current_pregnancy"]["risk_factors"]
-    for field in PregnancyRiskFactors.FACTOR_FIELDS:
-        assert factors[field] == PregnancyRiskFactors.UNKNOWN
-    assert factors["present_factors"] == []
-    assert len(factors["unanswered_factors"]) == len(PregnancyRiskFactors.FACTOR_FIELDS)
+    pregnancy = response.json()["current_pregnancy"]
+    for field in Pregnancy.FACTOR_FIELDS:
+        assert pregnancy[field] == Pregnancy.UNKNOWN
+    assert pregnancy["present_factors"] == []
+    assert len(pregnancy["unanswered_factors"]) == len(Pregnancy.FACTOR_FIELDS)
 
 
 def test_risk_factors_are_recorded_when_given(client, make_hospital, auth):
@@ -292,15 +316,16 @@ def test_risk_factors_are_recorded_when_given(client, make_hospital, auth):
         auth(hospital.admin.email),
         pregnancy={
             "lmp": date(2026, 2, 5).isoformat(),
-            "risk_factors": {"previous_c_section": "yes", "diabetes": "no"},
+            "previous_c_section": "yes",
+            "diabetes": "no",
         },
     )
 
-    factors = response.json()["current_pregnancy"]["risk_factors"]
-    assert factors["previous_c_section"] == "yes"
-    assert factors["diabetes"] == "no"
-    assert factors["previous_preeclampsia"] == "unknown"
-    assert factors["present_factors"] == ["previous_c_section"]
+    pregnancy = response.json()["current_pregnancy"]
+    assert pregnancy["previous_c_section"] == "yes"
+    assert pregnancy["diabetes"] == "no"
+    assert pregnancy["previous_preeclampsia"] == "unknown"
+    assert pregnancy["present_factors"] == ["previous_c_section"]
 
 
 def test_only_one_active_pregnancy_at_a_time(client, make_hospital, auth):
@@ -380,12 +405,12 @@ def test_a_clinician_can_be_assigned_at_enrolment(client, make_hospital, make_st
         auth(hospital.admin.email),
         pregnancy={
             "lmp": date(2026, 2, 5).isoformat(),
-            "assigned_staff": str(doctor.staff.id),
+            "provider": str(doctor.staff.id),
         },
     )
 
     pregnancy = response.json()["current_pregnancy"]
-    assert pregnancy["assigned_staff"] == str(doctor.staff.id)
+    assert pregnancy["provider"] == str(doctor.staff.id)
     assert pregnancy["has_responsible_clinician"] is True
 
 
@@ -405,12 +430,12 @@ def test_cannot_assign_a_clinician_from_another_hospital(client, make_hospital, 
         auth(alpha.admin.email),
         pregnancy={
             "lmp": date(2026, 2, 5).isoformat(),
-            "assigned_staff": str(beta_doctor.staff.id),
+            "provider": str(beta_doctor.staff.id),
         },
     )
 
     assert response.status_code == 400
-    errors = response.json()["pregnancy"]["assigned_staff"]
+    errors = response.json()["pregnancy"]["provider"]
     # "does not exist" rather than "belongs to another hospital": the message
     # must not confirm that this clinician is real somewhere else.
     assert "does not exist" in errors[0]
@@ -433,14 +458,14 @@ def test_cannot_patch_in_another_hospitals_clinician(client, make_hospital, make
 
     response = client.patch(
         f"{PATIENTS}{patient_id}/pregnancies/{pregnancy.id}/",
-        data=json.dumps({"assigned_staff": str(beta_doctor.staff.id)}),
+        data=json.dumps({"provider": str(beta_doctor.staff.id)}),
         content_type="application/json",
         **headers,
     )
 
     assert response.status_code == 400
     pregnancy.refresh_from_db()
-    assert pregnancy.assigned_staff is None
+    assert pregnancy.provider is None
 
 
 def test_an_unassigned_pregnancy_reports_no_responsible_clinician(client, make_hospital, auth):
@@ -468,7 +493,7 @@ def test_a_departed_clinician_no_longer_counts_as_responsible(client, make_hospi
         headers,
         pregnancy={
             "lmp": date(2026, 2, 5).isoformat(),
-            "assigned_staff": str(doctor.staff.id),
+            "provider": str(doctor.staff.id),
         },
     ).json()["id"]
 
@@ -476,28 +501,8 @@ def test_a_departed_clinician_no_longer_counts_as_responsible(client, make_hospi
 
     detail = client.get(f"{PATIENTS}{patient_id}/", **headers).json()
     pregnancy = detail["current_pregnancy"]
-    assert pregnancy["assigned_staff"] is not None, "the historical assignment must be kept"
+    assert pregnancy["provider"] is not None, "the historical assignment must be kept"
     assert pregnancy["has_responsible_clinician"] is False, "an inactive clinician must not count"
-
-
-# ── Consent history ──────────────────────────────────────────────────────────
-
-
-def test_consent_can_be_withdrawn_without_losing_the_original(client, make_hospital, auth):
-    hospital = make_hospital("Withdraw Hospital")
-    headers = auth(hospital.admin.email)
-    patient_id = post_patient(client, headers).json()["id"]
-
-    response = client.post(
-        f"{PATIENTS}{patient_id}/consent/",
-        data=json.dumps({"status": "withdrawn", "note": "Patient asked to stop monitoring."}),
-        content_type="application/json",
-        **headers,
-    )
-
-    assert response.status_code == 201
-    history = Patient.objects.get(id=patient_id).consents.all()
-    assert [c.status for c in history] == ["withdrawn", "granted"]
 
 
 # ── Search and pagination ────────────────────────────────────────────────────
@@ -522,7 +527,7 @@ def test_search_matches_each_identifier(client, make_hospital, auth, term):
 def test_search_matches_mrn(client, make_hospital, auth):
     hospital = make_hospital("MRN Search")
     headers = auth(hospital.admin.email)
-    mrn = post_patient(client, headers).json()["mrn"]
+    mrn = post_patient(client, headers, mrn="SEARCH-0001").json()["mrn"]
 
     results = client.get(f"{PATIENTS}?search={mrn}", **headers).json()["results"]
 
@@ -646,10 +651,22 @@ def test_enrolment_is_audited_with_the_acting_user(client, make_hospital, auth):
 def test_the_list_carries_the_current_risk_level(client, make_hospital, auth):
     """The list is triage: a clinician decides which row to open from it, so the
     risk level has to travel with the row rather than one click away."""
+    import importlib
+
+    from django.apps import apps as django_apps
     from django.utils import timezone  # noqa: PLC0415
 
-    from momcare_platform.core.monitoring.models import VitalReading  # noqa: PLC0415
-    from momcare_platform.core.monitoring.services import reassess_risk  # noqa: PLC0415
+    # Resolved via the app registry / a runtime module lookup, not a static
+    # import: both live in modules.pregnancy.vitals, which core (this test
+    # included) must never import statically — the `core must not import
+    # modules` contract. reassess_risk is a function, not a model, so
+    # apps.get_model() (used for VitalReading) doesn't apply to it;
+    # importlib.import_module() is the same "not a Python import statement"
+    # escape hatch for the same reason.
+    VitalReading = django_apps.get_model("monitoring", "VitalReading")
+    reassess_risk = importlib.import_module(
+        "momcare_platform.modules.pregnancy.vitals.services",
+    ).reassess_risk
 
     hospital = make_hospital("Triage Hospital")
     post_patient(
@@ -723,3 +740,319 @@ def test_listing_more_patients_does_not_cost_more_queries(
 
     assert response.status_code == 200
     assert response.json()["count"] == 6
+
+
+# ── Organization column, CNIC uniqueness, emergency contact email ─────────────
+
+
+def test_patient_organization_is_set_from_the_enrolling_hospital(client, make_hospital, auth):
+    hospital = make_hospital("Org Column Hospital")
+    response = post_patient(client, auth(hospital.admin.email))
+
+    patient = Patient.objects.get(id=response.json()["id"])
+    assert patient.organization_id == hospital.org.id
+
+
+def test_cnic_is_unique_within_a_hospital(client, make_hospital, auth):
+    hospital = make_hospital("CNIC Unique Hospital")
+    headers = auth(hospital.admin.email)
+    post_patient(client, headers, first_name="First", cnic="61101-1111111-1")
+
+    response = post_patient(client, headers, first_name="Second", cnic="61101-1111111-1")
+
+    assert response.status_code == 400
+
+
+def test_cnic_can_repeat_across_different_hospitals(client, make_hospital, auth):
+    alpha = make_hospital("CNIC Alpha")
+    beta = make_hospital("CNIC Beta")
+
+    first = post_patient(client, auth(alpha.admin.email), cnic="61101-2222222-2")
+    second = post_patient(client, auth(beta.admin.email), cnic="61101-2222222-2")
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+
+def test_two_patients_without_cnic_do_not_collide(client, make_hospital, auth):
+    """Blank CNIC is stored as NULL, never '', so two blank values never
+    false-positive collide under the unique constraint."""
+    hospital = make_hospital("No CNIC Hospital")
+    headers = auth(hospital.admin.email)
+
+    first = post_patient(client, headers, first_name="First", cnic="")
+    second = post_patient(client, headers, first_name="Second", cnic="")
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+
+def test_emergency_contact_email_is_accepted_and_stored(client, make_hospital, auth):
+    hospital = make_hospital("Emergency Email Hospital")
+    response = post_patient(
+        client,
+        auth(hospital.admin.email),
+        emergency_contact_email="brother@example.test",
+    )
+
+    patient = Patient.objects.get(id=response.json()["id"])
+    assert patient.emergency_contact_email == "brother@example.test"
+
+
+# ── Care team: provider / nurse / care_manager ────────────────────────────────
+
+
+def test_pregnancy_accepts_provider_nurse_and_care_manager_together(client, make_hospital, make_staff, auth):
+    hospital = make_hospital("Full Care Team Hospital")
+    provider = make_staff(hospital.org, settings.ROLE_PROVIDER, "provider@fullcareteam.test")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@fullcareteam.test")
+    care_manager = make_staff(hospital.org, settings.ROLE_CARE_MANAGER, "cm@fullcareteam.test")
+
+    response = post_patient(
+        client,
+        auth(hospital.admin.email),
+        pregnancy={
+            "lmp": "2026-01-01",
+            "provider": str(provider.staff.id),
+            "nurse": str(nurse.staff.id),
+            "care_manager": str(care_manager.staff.id),
+        },
+    )
+
+    assert response.status_code == 201
+    pregnancy = Patient.objects.get(id=response.json()["id"]).current_pregnancy
+    assert pregnancy.provider_id == provider.staff.id
+    assert pregnancy.nurse_id == nurse.staff.id
+    assert pregnancy.care_manager_id == care_manager.staff.id
+
+
+# ── ?assigned_to=me ──────────────────────────────────────────────────────────
+
+
+def test_assigned_to_me_returns_patients_where_caller_is_the_nurse(
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+):
+    hospital = make_hospital("Assigned To Me Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@assignedtome.test")
+    other_nurse = make_staff(hospital.org, settings.ROLE_NURSE, "other@assignedtome.test")
+
+    post_patient(
+        client,
+        auth(hospital.admin.email),
+        first_name="Mine",
+        cnic="61101-3333333-1",
+        pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
+    )
+    post_patient(
+        client,
+        auth(hospital.admin.email),
+        first_name="NotMine",
+        cnic="61101-3333333-2",
+        pregnancy={"lmp": "2026-01-01", "nurse": str(other_nurse.staff.id)},
+    )
+
+    response = client.get(f"{PATIENTS}?assigned_to=me", **auth("nurse@assignedtome.test"))
+
+    names = [row["full_name"] for row in response.json()["results"]]
+    assert names == ["Mine Bibi"]
+
+
+def test_assigned_to_me_returns_patients_where_caller_is_the_provider(
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+):
+    hospital = make_hospital("Provider Assigned Hospital")
+    provider = make_staff(hospital.org, settings.ROLE_PROVIDER, "provider@providerassigned.test")
+
+    post_patient(
+        client,
+        auth(hospital.admin.email),
+        first_name="Mine",
+        cnic="61101-4444444-1",
+        pregnancy={"lmp": "2026-01-01", "provider": str(provider.staff.id)},
+    )
+    post_patient(client, auth(hospital.admin.email), first_name="NotMine", cnic="61101-4444444-2")
+
+    response = client.get(f"{PATIENTS}?assigned_to=me", **auth("provider@providerassigned.test"))
+
+    names = [row["full_name"] for row in response.json()["results"]]
+    assert names == ["Mine Bibi"]
+
+
+def test_assigned_to_me_is_an_honest_empty_list_for_a_hospital_admin(client, make_hospital, auth):
+    """ "My patients" isn't a concept that applies to an admin — an empty
+    result, not the param silently ignored and everyone returned."""
+    hospital = make_hospital("Admin Assigned Hospital")
+    post_patient(client, auth(hospital.admin.email))
+
+    response = client.get(f"{PATIENTS}?assigned_to=me", **auth(hospital.admin.email))
+
+    assert response.json()["count"] == 0
+
+
+# ── Care-team assignment rules: role match, capacity ─────────────────────────
+
+
+def test_assigning_a_nurse_to_the_provider_slot_is_rejected(client, make_hospital, make_staff, auth):
+    hospital = make_hospital("Role Mismatch Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@rolemismatch.test")
+
+    response = post_patient(
+        client,
+        auth(hospital.admin.email),
+        pregnancy={"lmp": "2026-01-01", "provider": str(nurse.staff.id)},
+    )
+
+    assert response.status_code == 400
+    assert "provider" in response.json()["pregnancy"]
+
+
+def test_assigning_a_provider_to_the_nurse_slot_is_rejected(client, make_hospital, make_staff, auth):
+    hospital = make_hospital("Nurse Slot Mismatch Hospital")
+    provider = make_staff(hospital.org, settings.ROLE_PROVIDER, "provider@nurseslot.test")
+
+    response = post_patient(
+        client,
+        auth(hospital.admin.email),
+        pregnancy={"lmp": "2026-01-01", "nurse": str(provider.staff.id)},
+    )
+
+    assert response.status_code == 400
+    assert "nurse" in response.json()["pregnancy"]
+
+
+def test_assigning_a_staff_member_already_at_capacity_is_rejected(client, make_hospital, make_staff, auth):
+    hospital = make_hospital("Over Capacity Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@overcapacity.test")
+    nurse.staff.max_patients = 1
+    nurse.staff.save(update_fields=["max_patients"])
+    post_patient(
+        client,
+        auth(hospital.admin.email),
+        first_name="First",
+        cnic="61101-5555555-1",
+        pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
+    )
+
+    response = post_patient(
+        client,
+        auth(hospital.admin.email),
+        first_name="Second",
+        cnic="61101-5555555-2",
+        pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
+    )
+
+    assert response.status_code == 400
+    assert "nurse" in response.json()["pregnancy"]
+
+
+def test_a_staff_member_with_no_max_patients_is_never_at_capacity(client, make_hospital, make_staff, auth):
+    """max_patients=None means unlimited — the capacity check must not treat
+    it as zero."""
+    hospital = make_hospital("Unlimited Capacity Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@unlimited.test")
+
+    first = post_patient(
+        client,
+        auth(hospital.admin.email),
+        first_name="First",
+        cnic="61101-6666666-1",
+        pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
+    )
+    second = post_patient(
+        client,
+        auth(hospital.admin.email),
+        first_name="Second",
+        cnic="61101-6666666-2",
+        pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+
+def test_patching_a_pregnancy_without_changing_the_nurse_does_not_recheck_capacity(
+    client,
+    make_hospital,
+    make_staff,
+    auth,
+):
+    """An unchanged assignment must not fail its own capacity check just
+    because the staff member is now full."""
+    hospital = make_hospital("Idempotent Reassign Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, "nurse@idempotentreassign.test")
+    nurse.staff.max_patients = 1
+    nurse.staff.save(update_fields=["max_patients"])
+    created = post_patient(
+        client,
+        auth(hospital.admin.email),
+        pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
+    ).json()
+    patient_id = created["id"]
+    pregnancy_id = created["current_pregnancy"]["id"]
+
+    response = client.patch(
+        f"{PATIENTS}{patient_id}/pregnancies/{pregnancy_id}/",
+        data=json.dumps({"nurse": str(nurse.staff.id), "notes": "same nurse, new note"}),
+        content_type="application/json",
+        **auth(hospital.admin.email),
+    )
+
+    assert response.status_code == 200
+
+
+def test_an_explicitly_null_pregnancy_is_accepted(client, make_hospital, auth):
+    """A frontend that builds the whole object and sets the absent parts to
+    null means the same thing as omitting them — not a 400."""
+    hospital = make_hospital("Null Pregnancy Hospital")
+
+    response = post_patient(client, auth(hospital.admin.email), pregnancy=None)
+
+    assert response.status_code == 201
+    assert response.json()["current_pregnancy"] is None
+
+
+# ── Consent ──────────────────────────────────────────────────────────────────
+
+
+def test_consent_date_is_recorded_when_given(client, make_hospital, auth):
+    hospital = make_hospital("Consent Date Hospital")
+
+    response = post_patient(client, auth(hospital.admin.email), consent_date="2026-02-10")
+
+    assert response.status_code == 201
+    assert response.json()["consent_date"] == "2026-02-10"
+    assert Patient.objects.get(id=response.json()["id"]).has_consent is True
+
+
+def test_consent_date_is_optional(client, make_hospital, auth):
+    """A hospital that records consent on paper leaves it blank rather than
+    inventing a date."""
+    hospital = make_hospital("No Consent Date Hospital")
+
+    response = post_patient(client, auth(hospital.admin.email))
+
+    assert response.status_code == 201
+    assert response.json()["consent_date"] is None
+    assert Patient.objects.get(id=response.json()["id"]).has_consent is False
+
+
+def test_consent_date_can_be_set_later_by_patch(client, make_hospital, auth):
+    hospital = make_hospital("Later Consent Hospital")
+    headers = auth(hospital.admin.email)
+    patient_id = post_patient(client, headers).json()["id"]
+
+    response = client.patch(
+        f"{PATIENTS}{patient_id}/",
+        data=json.dumps({"consent_date": "2026-03-01"}),
+        content_type="application/json",
+        **headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["consent_date"] == "2026-03-01"

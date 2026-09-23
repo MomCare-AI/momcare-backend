@@ -1,320 +1,241 @@
-from decimal import Decimal
-
+from django.core.validators import RegexValidator
+from django.utils import timezone
 from rest_framework import serializers
 
-from momcare_platform.core.monitoring.models import Device, RiskAssessment, VitalReading
+from momcare_platform.core.monitoring.models import (
+    MAX_SESSION_DURATION_SECONDS,
+    ClinicalTag,
+    MonitoringNote,
+    MonitoringSession,
+)
+from momcare_platform.core.monitoring.services import get_or_create_tags
 
-# The 9 vitals the risk model trains and predicts on — every reading-carrying
-# field on VitalReading, kept as one list so the create serializer and the
-# view stay in sync with the model without repeating the field names twice.
-VITAL_FIELDS = [
-    "age",
-    "systolic_bp",
-    "diastolic_bp",
-    "heart_rate",
-    "body_temp_f",
-    "hemoglobin",
-    "blood_glucose",
-    "stress_score",
-    "phys_activity_score",
-]
-
-# Physiologically-plausible bounds, not statistical bounds from any dataset —
-# wide enough that a genuine extreme emergency reading is never rejected, tight
-# enough to catch a data-entry mistake (a heart rate of "1000" is a typo, not
-# a patient). Age and the two vitals come from documented clinical extremes
-# (ICU/patient-monitor alarm-configuration ranges, glucometer measurement
-# specs, and the most extreme medically documented *survived* cases); stress
-# and activity score are this app's own 0-10 self-report scale, not a
-# clinical measurement, so their bound is just the scale's own definition.
-VITAL_BOUNDS = {
-    "age": (10, 60),
-    "systolic_bp": (Decimal("40"), Decimal("300")),
-    "diastolic_bp": (Decimal("20"), Decimal("200")),
-    "heart_rate": (Decimal("20"), Decimal("300")),
-    "body_temp_f": (Decimal("80"), Decimal("115")),
-    "hemoglobin": (Decimal("2"), Decimal("24")),
-    "blood_glucose": (Decimal("20"), Decimal("600")),
-    "stress_score": (Decimal("0"), Decimal("10")),
-    "phys_activity_score": (Decimal("0"), Decimal("10")),
-}
+HEX_COLOR_VALIDATOR = RegexValidator(
+    regex=r"^#[0-9A-Fa-f]{6}$",
+    message="color must be a hex code like #RRGGBB.",
+)
 
 
-class VitalReadingSerializer(serializers.ModelSerializer):
-    source_display = serializers.CharField(source="get_source_display", read_only=True)
-
+class ClinicalTagSerializer(serializers.ModelSerializer):
     class Meta:
-        model = VitalReading
-        fields = [
-            "id",
-            *VITAL_FIELDS,
-            "source",
-            "source_display",
-            "recorded_at",
-            "device",
-        ]
-        read_only_fields = fields
+        model = ClinicalTag
+        fields = ["id", "name", "color", "organization", "location", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
 
-
-class VitalReadingCreateSerializer(serializers.Serializer):
-    """One reading event, from a device or entered by staff.
-
-    Every vital is optional — a reading event does not have to carry all 9
-    every time (hemoglobin in particular usually will not, since it comes
-    from a monthly lab report, not the band). At least one must be present,
-    or there is nothing to record.
-
-    ``pregnancy`` is never accepted here — it comes from the URL and is scoped
-    to the caller's hospital, so a reading cannot be filed against someone
-    else's patient.
-
-    Each vital is bounded to a physiologically-plausible range (see
-    ``VITAL_BOUNDS``) — wide enough that a genuine extreme emergency reading
-    is always accepted, tight enough to reject a data-entry mistake (a heart
-    rate of "1000") at the door rather than discovering it later and needing
-    to rescore.
-    """
-
-    age = serializers.IntegerField(
-        required=False,
-        allow_null=True,
-        min_value=VITAL_BOUNDS["age"][0],
-        max_value=VITAL_BOUNDS["age"][1],
-        error_messages={
-            "min_value": "Age must be between 10 and 60 years for a pregnancy record.",
-            "max_value": "Age must be between 10 and 60 years for a pregnancy record.",
-        },
-    )
-    systolic_bp = serializers.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        required=False,
-        allow_null=True,
-        min_value=VITAL_BOUNDS["systolic_bp"][0],
-        max_value=VITAL_BOUNDS["systolic_bp"][1],
-        error_messages={
-            "min_value": "Systolic BP must be between 40 and 300 mmHg. Please correct it.",
-            "max_value": "Systolic BP must be between 40 and 300 mmHg. Please correct it.",
-        },
-    )
-    diastolic_bp = serializers.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        required=False,
-        allow_null=True,
-        min_value=VITAL_BOUNDS["diastolic_bp"][0],
-        max_value=VITAL_BOUNDS["diastolic_bp"][1],
-        error_messages={
-            "min_value": "Diastolic BP must be between 20 and 200 mmHg. Please correct it.",
-            "max_value": "Diastolic BP must be between 20 and 200 mmHg. Please correct it.",
-        },
-    )
-    heart_rate = serializers.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        required=False,
-        allow_null=True,
-        min_value=VITAL_BOUNDS["heart_rate"][0],
-        max_value=VITAL_BOUNDS["heart_rate"][1],
-        error_messages={
-            "min_value": "Heart rate must be between 20 and 300 bpm. Please correct it.",
-            "max_value": "Heart rate must be between 20 and 300 bpm. Please correct it.",
-        },
-    )
-    body_temp_f = serializers.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        required=False,
-        allow_null=True,
-        min_value=VITAL_BOUNDS["body_temp_f"][0],
-        max_value=VITAL_BOUNDS["body_temp_f"][1],
-        error_messages={
-            "min_value": "Body temperature must be between 80 and 115 °F. Please correct it.",
-            "max_value": "Body temperature must be between 80 and 115 °F. Please correct it.",
-        },
-    )
-    hemoglobin = serializers.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        required=False,
-        allow_null=True,
-        min_value=VITAL_BOUNDS["hemoglobin"][0],
-        max_value=VITAL_BOUNDS["hemoglobin"][1],
-        error_messages={
-            "min_value": "Hemoglobin must be between 2 and 24 g/dL. Please correct it.",
-            "max_value": "Hemoglobin must be between 2 and 24 g/dL. Please correct it.",
-        },
-    )
-    blood_glucose = serializers.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        required=False,
-        allow_null=True,
-        min_value=VITAL_BOUNDS["blood_glucose"][0],
-        max_value=VITAL_BOUNDS["blood_glucose"][1],
-        error_messages={
-            "min_value": "Blood glucose must be between 20 and 600 mg/dL. Please correct it.",
-            "max_value": "Blood glucose must be between 20 and 600 mg/dL. Please correct it.",
-        },
-    )
-    stress_score = serializers.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        required=False,
-        allow_null=True,
-        min_value=VITAL_BOUNDS["stress_score"][0],
-        max_value=VITAL_BOUNDS["stress_score"][1],
-        error_messages={
-            "min_value": "Stress score must be between 0 and 10. Please correct it.",
-            "max_value": "Stress score must be between 0 and 10. Please correct it.",
-        },
-    )
-    phys_activity_score = serializers.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        required=False,
-        allow_null=True,
-        min_value=VITAL_BOUNDS["phys_activity_score"][0],
-        max_value=VITAL_BOUNDS["phys_activity_score"][1],
-        error_messages={
-            "min_value": "Physical activity score must be between 0 and 10. Please correct it.",
-            "max_value": "Physical activity score must be between 0 and 10. Please correct it.",
-        },
-    )
-    # Always required, never inferred — see VitalReading's own docstring on
-    # why a device being assigned does not mean these particular numbers
-    # came from it.
-    source = serializers.ChoiceField(choices=VitalReading.SOURCE_CHOICES)
-    recorded_at = serializers.DateTimeField(required=False)
+    def validate_color(self, value):
+        if not value:
+            return None
+        HEX_COLOR_VALIDATOR(value)
+        return value
 
     def validate(self, attrs):
-        # Both halves or neither: a systolic with no diastolic is not a blood
-        # pressure, and a rule evaluating 140/? cannot decide.
-        systolic = attrs.get("systolic_bp")
-        diastolic = attrs.get("diastolic_bp")
-        if (systolic is None) != (diastolic is None):
-            raise serializers.ValidationError(
-                {"diastolic_bp": "Blood pressure needs both systolic and diastolic values."},
-            )
-        if systolic is not None and systolic <= diastolic:
-            raise serializers.ValidationError(
-                {"systolic_bp": "Systolic pressure must be higher than diastolic."},
-            )
+        """Exactly one of organization/location, and it must be the
+        caller's own hospital -- the model's CheckConstraint enforces the
+        "exactly one" half at the DB level; this is what stops a hospital
+        admin planting a tag under another tenant's organization/location
+        by id before it ever reaches that constraint.
+        """
+        request = self.context.get("request")
+        caller_org = getattr(getattr(request, "user", None), "organization", None) if request else None
 
-        if not any(attrs.get(field) is not None for field in VITAL_FIELDS):
-            raise serializers.ValidationError("At least one vital must be provided.")
+        organization = attrs.get("organization", getattr(self.instance, "organization", None))
+        location = attrs.get("location", getattr(self.instance, "location", None))
 
+        if bool(organization) == bool(location):
+            raise serializers.ValidationError("Provide exactly one of 'organization' or 'location'.")
+        if organization is not None and organization != caller_org:
+            raise serializers.ValidationError({"organization": "Must be your own hospital."})
+        if location is not None and (caller_org is None or location.organization_id != caller_org.id):
+            raise serializers.ValidationError({"location": "Must belong to your own hospital."})
         return attrs
 
 
-class DeviceSerializer(serializers.ModelSerializer):
-    status_display = serializers.CharField(source="get_status_display", read_only=True)
-    acquisition_display = serializers.CharField(source="get_acquisition_display", read_only=True)
-    wearer_name = serializers.CharField(
-        source="assigned_pregnancy.patient.full_name",
-        read_only=True,
-        default="",
-    )
-    is_assigned = serializers.BooleanField(read_only=True)
+class TagSpecSerializer(serializers.Serializer):
+    """A single entry in a ``tags`` list on note creation/update.
+
+    Two mutually exclusive modes:
+      * **Attach existing** -- pass ``id`` (UUID) of an already-created
+        ``ClinicalTag`` visible to the caller. ``name``/``color`` are
+        ignored in this mode -- an existing, shared tag is never silently
+        renamed or repainted by attaching it.
+      * **Create new** -- pass ``name`` (and optionally ``color``). If a
+        tag with that name already exists in scope (case-insensitive),
+        it's reused and the given ``color`` is ignored (see
+        ``services.get_or_create_tags``).
+    """
+
+    id = serializers.UUIDField(required=False, allow_null=True, default=None)
+    name = serializers.CharField(max_length=100, required=False, allow_blank=True, default="", trim_whitespace=True)
+    color = serializers.CharField(max_length=7, required=False, allow_null=True, default=None)
+
+    def validate_color(self, value):
+        if value:
+            HEX_COLOR_VALIDATOR(value)
+        return value
+
+    def validate(self, attrs):
+        has_id = attrs.get("id") is not None
+        has_name = bool(attrs.get("name", "").strip())
+        if has_id and has_name:
+            raise serializers.ValidationError("Provide either 'id' (existing tag) or 'name' (new tag), not both.")
+        if not has_id and not has_name:
+            raise serializers.ValidationError("Either 'id' (existing tag) or 'name' (new tag) is required.")
+        return attrs
+
+
+class MonitoringSessionSerializer(serializers.ModelSerializer):
+    patient_name = serializers.CharField(source="patient.full_name", read_only=True)
+    mrn = serializers.CharField(source="patient.mrn", read_only=True, default="")
+    pregnancy_id = serializers.UUIDField(source="pregnancy.id", read_only=True, default=None)
+    gestational_age = serializers.CharField(source="pregnancy.gestational_age_display", read_only=True, default="")
+    added_by_name = serializers.CharField(source="added_by.get_full_name", read_only=True, default="")
 
     class Meta:
-        model = Device
+        model = MonitoringSession
         fields = [
             "id",
-            "serial_number",
-            "status",
-            "status_display",
-            "acquisition",
-            "acquisition_display",
-            "assigned_pregnancy",
-            "wearer_name",
-            "is_assigned",
-            "assigned_at",
-            "notes",
+            "patient",
+            "patient_name",
+            "mrn",
+            "pregnancy_id",
+            "gestational_age",
+            "duration_seconds",
+            "recorded_at",
+            "added_by",
+            "added_by_name",
             "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "patient", "added_by", "created_at", "updated_at"]
+
+    def validate_duration_seconds(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("duration_seconds must be greater than zero.")
+        if value > MAX_SESSION_DURATION_SECONDS:
+            raise serializers.ValidationError(
+                f"duration_seconds cannot exceed {MAX_SESSION_DURATION_SECONDS} seconds (24 hours).",
+            )
+        return value
+
+    def validate_recorded_at(self, value):
+        if value > timezone.now():
+            raise serializers.ValidationError("recorded_at cannot be in the future.")
+        return value
+
+
+class MonitoringNoteSerializer(serializers.ModelSerializer):
+    patient_name = serializers.CharField(source="patient.full_name", read_only=True)
+    mrn = serializers.CharField(source="patient.mrn", read_only=True, default="")
+    pregnancy_id = serializers.UUIDField(source="pregnancy.id", read_only=True, default=None)
+    session_id = serializers.PrimaryKeyRelatedField(source="session", read_only=True, pk_field=serializers.UUIDField())
+    added_by_name = serializers.CharField(source="added_by.get_full_name", read_only=True, default="")
+    tags = ClinicalTagSerializer(many=True, read_only=True)
+    tags_input = TagSpecSerializer(many=True, write_only=True, required=False)
+
+    class Meta:
+        model = MonitoringNote
+        fields = [
+            "id",
+            "patient",
+            "patient_name",
+            "mrn",
+            "pregnancy_id",
+            "session_id",
+            "note",
+            "recorded_at",
+            "added_by",
+            "added_by_name",
+            "tags",
+            "tags_input",
+            "left_voicemail",
+            "two_way_communication",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = [
             "id",
-            "status_display",
-            "acquisition_display",
-            "assigned_pregnancy",
-            "wearer_name",
-            "is_assigned",
-            "assigned_at",
+            "patient",
+            "session_id",
+            "recorded_at",
+            "added_by",
             "created_at",
+            "updated_at",
         ]
 
+    def validate_note(self, value):
+        cleaned = value.strip()
+        if not cleaned:
+            raise serializers.ValidationError("note cannot be blank.")
+        return cleaned
 
-class RiskAssessmentSerializer(serializers.ModelSerializer):
-    risk_level_display = serializers.CharField(source="get_risk_level_display", read_only=True)
-    final_risk_level_display = serializers.CharField(source="get_final_risk_level_display", read_only=True)
-    review_status_display = serializers.CharField(source="get_review_status_display", read_only=True)
-    needs_review = serializers.BooleanField(read_only=True)
-    verified_by_name = serializers.CharField(
-        source="verified_by.get_full_name",
-        read_only=True,
-        default="",
-    )
-    # The vitals behind this judgement, inline — a caller reading an
-    # assessment gets the reading with it, not just a reading_id it has to
-    # look up separately.
-    reading = VitalReadingSerializer(read_only=True)
+    def validate(self, attrs):
+        note_text = attrs.get("note", getattr(self.instance, "note", "")).strip()
+        left_voicemail = attrs.get("left_voicemail", getattr(self.instance, "left_voicemail", False))
+        two_way = attrs.get("two_way_communication", getattr(self.instance, "two_way_communication", False))
+        if (left_voicemail or two_way) and not note_text:
+            raise serializers.ValidationError(
+                {"left_voicemail": "left_voicemail/two_way_communication require a non-empty note."},
+            )
+        if left_voicemail and two_way:
+            raise serializers.ValidationError(
+                {"left_voicemail": "left_voicemail and two_way_communication cannot both be true."},
+            )
+        return attrs
 
-    class Meta:
-        model = RiskAssessment
-        fields = [
-            "id",
-            "risk_level",
-            "risk_level_display",
-            "final_risk_level",
-            "final_risk_level_display",
-            "previous_risk_level",
-            "confirmed_risk_level",
-            "review_status",
-            "review_status_display",
-            "flagged_for_review",
-            "reading",
-            "bp_category",
-            "heart_rate_category",
-            "temperature_category",
-            "glucose_category",
-            "hemoglobin_category",
-            "confidence",
-            "assessed_at",
-            "needs_review",
-            "verified_at",
-            "verified_by_name",
-        ]
-        read_only_fields = fields
+    def update(self, instance, validated_data):
+        tag_specs = validated_data.pop("tags_input", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if tag_specs is not None:
+            instance.tags.set(get_or_create_tags(tag_specs, location=instance.patient.location))
+        return instance
 
 
-class AttentionPatientSerializer(serializers.Serializer):
-    """One row of the queue a clinician actually works from.
-
-    Deliberately flat and small: this list is scanned, not read, so it carries
-    only what decides whether to open the record.
+class CombinedMonitoringSerializer(serializers.Serializer):
+    """Input for ``POST /patients/<patient_id>/monitoring/`` -- creates a
+    session, a note, or both, atomically. ``patient`` comes from the URL,
+    not the body.
     """
 
-    patient_id = serializers.UUIDField()
-    pregnancy_id = serializers.UUIDField()
-    full_name = serializers.CharField()
-    mrn = serializers.CharField(allow_null=True)
-    gestational_age = serializers.CharField()
-    risk_level = serializers.CharField()
-    risk_level_display = serializers.CharField()
-    assessed_at = serializers.DateTimeField()
-    needs_review = serializers.BooleanField()
-    assigned_staff_name = serializers.CharField(allow_blank=True)
-    has_responsible_clinician = serializers.BooleanField()
+    duration_seconds = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=1)
+    recorded_at = serializers.DateTimeField(required=False)
+    note = serializers.CharField(required=False, allow_blank=True, allow_null=True, default="")
+    tags = TagSpecSerializer(many=True, required=False, allow_null=True, default=list)
+    left_voicemail = serializers.BooleanField(required=False, default=False)
+    two_way_communication = serializers.BooleanField(required=False, default=False)
 
+    def validate_duration_seconds(self, value):
+        if value is None:
+            return value
+        if value > MAX_SESSION_DURATION_SECONDS:
+            raise serializers.ValidationError(
+                f"duration_seconds cannot exceed {MAX_SESSION_DURATION_SECONDS} seconds (24 hours).",
+            )
+        return value
 
-class DeviceAssignSerializer(serializers.Serializer):
-    device_id = serializers.UUIDField()
-    acquisition = serializers.ChoiceField(
-        choices=Device.ACQUISITION_CHOICES,
-        required=False,
-        allow_blank=True,
-        default="",
-    )
+    def validate_recorded_at(self, value):
+        if value > timezone.now():
+            raise serializers.ValidationError("recorded_at cannot be in the future.")
+        return value
 
+    def validate(self, attrs):
+        duration = attrs.get("duration_seconds")
+        note_text = (attrs.get("note") or "").strip()
+        tags = attrs.get("tags") or []
+        left_voicemail = attrs.get("left_voicemail", False)
+        two_way = attrs.get("two_way_communication", False)
 
+        if tags and not note_text:
+            raise serializers.ValidationError({"tags": "tags require a non-empty note."})
+        if (left_voicemail or two_way) and not note_text:
+            raise serializers.ValidationError(
+                {"left_voicemail": "left_voicemail/two_way_communication require a non-empty note."},
+            )
+        if left_voicemail and two_way:
+            raise serializers.ValidationError(
+                {"left_voicemail": "left_voicemail and two_way_communication cannot both be true."},
+            )
+        if not duration and not note_text:
+            raise serializers.ValidationError("Provide at least a duration or a note.")
+        return attrs

@@ -46,7 +46,7 @@ def set_current_organization(organization_id) -> None:
 @contextmanager
 def bypass_rls() -> Iterator[None]:
     """Cross-tenant access for the three paths that legitimately need it:
-    ``escalate_alerts``, ``seed_demo`` and other management commands, and
+    ``escalate_alerts``, ``demo_setup`` and other management commands, and
     Django admin for a platform administrator.
 
     Never call this from request-handling code. Everything reached from an

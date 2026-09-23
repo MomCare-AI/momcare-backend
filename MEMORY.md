@@ -9,6 +9,13 @@ Last updated: 2026-09-07 — model training and backend wiring are **done and
 live**, on branch `feature/model-training`. This update supersedes every
 "not built yet" item the previous version of this file listed.
 
+**Refreshed 2026-09-13**, in place, not a new header: §6b's claim that a
+low-confidence flag sends an email is corrected — that email (and the
+equivalent one for a raised alert) was deleted the same day, portal-only
+notifications now, permanently by design. Nothing else in this file changed;
+everything else here was checked against the current code on that date and
+still holds.
+
 ---
 
 ## 1. What the system does
@@ -23,7 +30,8 @@ a real Postgres database, not a prototype.
 ## 2. Status in one paragraph
 
 The model is trained (`momcare_model/models/artifacts/v1/`), wired into the
-live scoring path (`core.monitoring.services.reassess_risk()`), and reachable
+live scoring path (`modules.pregnancy.vitals.services.reassess_risk()` —
+moved out of `core.monitoring` on 2026-09-16, same function, new home), and reachable
 through the real API (`POST /pregnancies/{id}/readings/`). Test accuracy is
 **88.40%**, matching the locked training recipe. A known limitation exists —
 see §9 — and is mitigated, not fixed, by the confidence threshold. The
@@ -97,7 +105,7 @@ from `country`, never stored as its own field, never a model input.
 | Platform default | **`Decimal("0.800")`** — `settings.MOMCARE_DEFAULT_CONFIDENCE_THRESHOLD` |
 | Per-hospital override | `Organization.confidence_threshold` (nullable — null means "follow the platform default," a live state) |
 | Always read via | `Organization.effective_confidence_threshold` |
-| Below threshold | `RiskAssessment.flagged_for_review = True`, and `alerts.services.notify_low_confidence()` emails the assigned clinician **only** — never the patient |
+| Below threshold | `RiskAssessment.flagged_for_review = True`. **No email fires for this** — `notify_low_confidence()` existed briefly but was deleted on 2026-09-13 (commit `da94b70`), see the note at the end of this section |
 
 Raised from 70%→80% on 2026-09-07 after running `momcare_model.evaluate`
 against the real test set: 15.3% of true-High cases score as Low (81 of 530).
@@ -108,8 +116,26 @@ confident) — that's the real, measured cost of this safety margin, not a bug.
 
 **The prediction is never hidden or withheld** — always shown, flagged or not.
 There is no "old `doctor_notified` boolean" anymore; the real field is
-`flagged_for_review`, and the actual notification is a real email, not just a
-flag.
+`flagged_for_review`.
+
+**Correction, 2026-09-13**: the sentence that used to end this paragraph said
+"the actual notification is a real email, not just a flag" — that was true
+between whenever `notify_low_confidence()` was added and 2026-09-13, and is
+false now. Commit `da94b70` ("remove alert emails entirely instead of gating
+them behind a flag") deleted `notify_low_confidence()`
+(then `core/alerts/services.py`, now `modules/pregnancy/alerts/services.py`
+after the 2026-09-16 move — same function, same commit history, new path),
+`send_alert_notification()` and
+`send_low_confidence_notification()` (`core/common/mail.py`), and the
+`MOMCARE_ALERT_EMAILS_ENABLED` setting that used to gate them — all in one
+pass, along with the equivalent email for a raised/worsened *alert* (not just
+a low-confidence flag). Reason: one Resend account is shared by every
+hospital with no separate staging backend, so any of these emails firing
+during testing or model development spends the same quota a real emergency
+needs. `flagged_for_review` is now genuinely flag-only — the row is the
+permanent record, nothing more is sent. The in-portal alert and its
+`AlertEvent` audit trail are unaffected; only the email leg is gone, on
+purpose. Do not re-add it without re-reading that commit message.
 
 ---
 
@@ -125,7 +151,9 @@ recorded_at · device · recorded_by · created_at`
 `"manual"` — never inferred from whether a device happens to be assigned
 (a nurse can manually enter a reading while a band is worn). There is no
 third "simulated" value anymore — the old fake-data simulator was removed
-entirely; `seed_demo`'s own generated history is tagged `"manual"`.
+entirely. `seed_demo` (the public-site demo-hospital seeder) was later
+removed too, 2026-09-13 — production data is now always real hospital data,
+never fictional.
 
 ### `RiskAssessment` — one row per level *transition*, not per reading
 
@@ -163,7 +191,8 @@ cookie and issues a new access token; `POST /api/auth/logout/` blacklists it.
 Body: any subset of the 9 vitals (at least one required) **plus required
 `source`** (`"device"` or `"manual"`), optional `recorded_at`. Every vital has
 a physiologically-plausible min/max — see `VITAL_BOUNDS` in
-`momcare_platform/core/monitoring/api/serializers.py` — violating one returns
+`momcare_platform/modules/pregnancy/vitals/api/serializers.py` (moved from
+`core/monitoring/` on 2026-09-16) — violating one returns
 a 400 with a specific message, not a silent save.
 Response = the saved reading, **plus** `risk_changed` (bool) and `risk_level`.
 **Important gotcha:** `risk_level` here is `null` whenever the risk level
@@ -223,7 +252,8 @@ number specifically, not just overall accuracy.
 
 - **Obstetrician clinical review** — nobody with medical training has
   confirmed the 5 category thresholds, the escalation timings in
-  `core/alerts/escalation.py`, or the model's behavior are sound for real
+  `modules/pregnancy/alerts/escalation.py` (moved from `core/alerts/` on
+  2026-09-16), or the model's behavior are sound for real
   pregnant patients. Documented as a hard requirement before real clinical
   use; not something engineering work can close.
 - **Retraining** — see §9. Blocked on better/more data, not on approval.

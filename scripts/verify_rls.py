@@ -24,9 +24,15 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from pathlib import Path
 
 import django
 import psycopg
+
+# Running this as `python scripts/verify_rls.py` puts scripts/ on sys.path,
+# not the project root, so `config` is not importable — the documented command
+# failed with ModuleNotFoundError until this line existed.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.local")
 django.setup()
@@ -119,7 +125,18 @@ def main() -> int:
                 def make(name: str):
                     org = Organization.objects.create(name=name, country="Pakistan")
                     location = Location.objects.create(organization=org, name="Main")
-                    Patient.objects.create(location=location, first_name="Test", last_name=name)
+                    # Patient carries BOTH location and a denormalised
+                    # organization: the scoping path is still
+                    # location__organization, but the direct column is NOT NULL
+                    # (it scopes the per-hospital CNIC constraint). Omitting it
+                    # here failed with an IntegrityError rather than a policy
+                    # result, which is a stale probe, not a working one.
+                    Patient.objects.create(
+                        location=location,
+                        organization=org,
+                        first_name="Test",
+                        last_name=name,
+                    )
                     return org.id
 
                 ours = make("Verify Hospital A")

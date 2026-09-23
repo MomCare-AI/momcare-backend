@@ -29,9 +29,9 @@ uv run pytest momcare_platform/core -q
 ```
 
 **Deployed and live:** `https://momcare.solutions` (frontend, Vercel) /
-`https://api.momcare.solutions` (this backend, Railway), Postgres on Neon, transactional
-email via Resend. See `DEPLOY.md` for every environment variable and which failures are
-silent.
+`https://api.momcare.solutions` (this backend, Railway), Postgres also on Railway (moved
+off Neon — see `DEPLOY.md`), transactional email via Resend. See `DEPLOY.md` for every
+environment variable and which failures are silent.
 
 **Tenant isolation is now two real layers, not one.** Application-level scoping
 (`core/common/scoping.py`) plus Postgres Row-Level Security — RLS was written and tested

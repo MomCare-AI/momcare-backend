@@ -1,312 +1,239 @@
-"""Continuous monitoring — devices and the readings they produce.
+"""Clinical contact logging — a record that staff spoke with or about a
+patient, separate from the machine-recorded vitals in
+``modules.pregnancy.vitals``.
 
-This is the layer that turns MomCare from a record system into a monitoring
-one. Readings attach to a **pregnancy**, never directly to a patient: a heart
-rate of 110 is unremarkable at 12 weeks and worth attention at 38, so a reading
-without its gestational context cannot be interpreted.
+Adapted from Neuro_RPM's own ``core.monitoring`` (ClinicalTag/
+MonitoringSession/MonitoringNote), with three deliberate departures from
+that reference implementation:
+
+1. **No RPM/CCM program split.** Neuro_RPM's ``MonitoringSession`` carries
+   separate ``rpm_duration_seconds``/``ccm_duration_seconds``/
+   ``oor_duration_seconds`` fields because a single call can count toward
+   two concurrently-open CMS billing programs at once. MomCare has exactly
+   one program (pregnancy monitoring) and bills no insurer, so that split
+   collapses to one ``duration_seconds`` field. ``note_type`` (which
+   program a note counted toward) is dropped for the same reason.
+2. **Attaches to Patient, with an optional Pregnancy.** Neuro_RPM attaches
+   to ``Patient`` directly -- not even to its own episode table,
+   ``PatientProgramEnrollment`` -- for the same multi-program reason above.
+   MomCare's Pregnancy *is* clinically meaningful the way Neuro_RPM's
+   enrollment isn't (a symptom means something different at 12 weeks vs. 38),
+   and a patient has at most one active pregnancy at a time (see
+   ``Pregnancy``'s own ``one_active_pregnancy_per_patient`` constraint), so
+   there's no multi-program ambiguity to avoid by skipping it. But
+   ``onboard_patient()`` allows a patient with no pregnancy at all
+   (``pregnancy_data`` is optional), so ``pregnancy`` here is nullable and
+   auto-filled from ``patient.current_pregnancy`` at creation time
+   (``services.create_combined_monitoring``) rather than required.
+3. **ClinicalTag is tenant-scoped.** Neuro_RPM is single-tenant, so its
+   ``ClinicalTag`` is one global, unscoped list. MomCare is shared-schema
+   multi-tenant, so a tag needs an owner -- following the same
+   organization-or-location hierarchy Neuro_RPM itself uses for
+   ``NoteTemplate``/``ChronicCondition``/``Medication`` (org-level entries
+   visible hospital-wide; location-level entries visible only there; a new
+   Location copies its organization's tags down as independent rows --
+   see ``signals.py``).
 """
 
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
-from django.utils.translation import gettext_lazy as _
+from django.utils import timezone
 
-from momcare_platform.core.common.models import Deactivatable, TimeStampedModel, UUIDPrimaryKeyModel
+from momcare_platform.core.common.models import TimeStampedModel, UUIDPrimaryKeyModel
+
+HEX_COLOR_VALIDATOR = RegexValidator(
+    regex=r"^#[0-9A-Fa-f]{6}$",
+    message="color must be a hex code like #RRGGBB.",
+)
+
+# A monitoring contact can't sensibly run longer than a day, nor claim zero
+# duration -- a zero-length session is a note without a session (see
+# services.create_combined_monitoring).
+MAX_SESSION_DURATION_SECONDS = 86400
 
 
-class Device(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
-    """A wearable band, and who is currently wearing it.
+class ClinicalTag(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A reusable clinical label attached to monitoring notes.
 
-    The assignment is what lets an incoming reading resolve to a patient: the
-    band knows its own serial, not whose wrist it is on. Assignment is to a
-    **pregnancy** rather than a patient, so a band reissued for a later
-    pregnancy does not silently attach new readings to the old episode.
-
-    ``acquisition`` records how the mother came by it. MomCare targets
-    resource-constrained settings, so a device may be sold, subsidised, or lent
-    by the hospital for the high-risk weeks and reclaimed afterwards — a model
-    that only supports purchase would exclude the women most at risk.
+    Scoped to exactly one of ``organization`` or ``location`` -- never both,
+    never neither (enforced below). Org-level tags are visible to every
+    location of that hospital; a location's own tags are visible only
+    there. Populated via get-or-create (``services.get_or_create_tags``) so
+    the dropdown grows organically as staff type new tags, never created
+    directly through a client-supplied id. An existing tag's ``color`` is
+    never silently overwritten by a later get-or-create call -- only the
+    dedicated edit endpoint changes it.
     """
 
-    STATUS_IN_STOCK = "in_stock"
-    STATUS_ASSIGNED = "assigned"
-    STATUS_RETURNED = "returned"
-    STATUS_FAULTY = "faulty"
-    STATUS_LOST = "lost"
-    STATUS_CHOICES = [
-        (STATUS_IN_STOCK, "In stock"),
-        (STATUS_ASSIGNED, "Assigned"),
-        (STATUS_RETURNED, "Returned"),
-        (STATUS_FAULTY, "Faulty"),
-        (STATUS_LOST, "Lost"),
-    ]
-
-    ACQUISITION_SOLD = "sold"
-    ACQUISITION_LOANED = "loaned"
-    ACQUISITION_SUBSIDISED = "subsidised"
-    ACQUISITION_CHOICES = [
-        (ACQUISITION_SOLD, "Sold"),
-        (ACQUISITION_LOANED, "Loaned by the hospital"),
-        (ACQUISITION_SUBSIDISED, "Subsidised"),
-    ]
-
-    serial_number = models.CharField(max_length=64, unique=True, db_index=True)
     organization = models.ForeignKey(
         "organization.Organization",
-        on_delete=models.PROTECT,
-        related_name="devices",
-    )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_IN_STOCK, db_index=True)
-
-    assigned_pregnancy = models.ForeignKey(
-        "patients.Pregnancy",
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         null=True,
         blank=True,
-        related_name="devices",
+        related_name="clinical_tags",
     )
-    assigned_at = models.DateTimeField(null=True, blank=True)
-    acquisition = models.CharField(max_length=20, choices=ACQUISITION_CHOICES, blank=True)
-    notes = models.TextField(blank=True)
+    location = models.ForeignKey(
+        "locations.Location",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="clinical_tags",
+    )
+    name = models.CharField(max_length=100)
+    # null=True (not just blank) distinguishes "no color ever set" (None)
+    # from a future empty-string convention -- same reasoning as Neuro_RPM's
+    # own field.
+    color = models.CharField(max_length=7, null=True, blank=True, validators=[HEX_COLOR_VALIDATOR])  # noqa: DJ001
 
     class Meta:
-        ordering = ["serial_number"]
-        indexes = [models.Index(fields=["organization", "status"])]
+        ordering = ["name"]
+        verbose_name = "Clinical Tag"
+        verbose_name_plural = "Clinical Tags"
         constraints = [
-            # A band cannot be on two wrists. Only assigned devices are
-            # constrained; many can sit in stock unassigned.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(organization__isnull=False, location__isnull=True)
+                    | models.Q(organization__isnull=True, location__isnull=False)
+                ),
+                name="clinicaltag_exactly_one_scope",
+            ),
+            # Case-sensitive DB backstop; case-insensitive matching itself
+            # happens in get_or_create_tags, same split Neuro_RPM uses.
             models.UniqueConstraint(
-                fields=["assigned_pregnancy"],
-                condition=models.Q(status="assigned"),
-                name="one_active_device_per_pregnancy",
+                fields=["organization", "name"],
+                condition=models.Q(organization__isnull=False),
+                name="unique_org_clinical_tag_name",
+            ),
+            models.UniqueConstraint(
+                fields=["location", "name"],
+                condition=models.Q(location__isnull=False),
+                name="unique_location_clinical_tag_name",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["organization", "name"]),
+            models.Index(fields=["location", "name"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class MonitoringSession(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A single, independent block of time spent on a patient contact --
+    a call, a chart review, a follow-up. Every session is its own row
+    (never merged/accumulated server-side). Hard-deleted -- no soft delete.
+    """
+
+    patient = models.ForeignKey(
+        "patients.Patient",
+        on_delete=models.CASCADE,
+        related_name="monitoring_sessions",
+    )
+    # Nullable: onboard_patient() allows a Patient with no Pregnancy yet, and
+    # a note logged between two pregnancies has nowhere else to point. Set
+    # automatically from patient.current_pregnancy when one exists --
+    # see services.create_combined_monitoring.
+    pregnancy = models.ForeignKey(
+        "patients.Pregnancy",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="monitoring_sessions",
+    )
+    duration_seconds = models.PositiveIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(MAX_SESSION_DURATION_SECONDS)],
+    )
+    # Actual time of the clinical contact (may be backdated for retroactive
+    # entries) -- distinct from created_at/updated_at, which are system-managed.
+    recorded_at = models.DateTimeField(default=timezone.now)
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="monitoring_sessions_added",
+    )
+
+    class Meta:
+        ordering = ["-recorded_at"]
+        verbose_name = "Monitoring Session"
+        verbose_name_plural = "Monitoring Sessions"
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(duration_seconds__gt=0)
+                & models.Q(duration_seconds__lte=MAX_SESSION_DURATION_SECONDS),
+                name="monitoringsession_duration_range",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["patient", "recorded_at"]),
+            models.Index(fields=["pregnancy", "recorded_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.patient.full_name} · {self.duration_seconds}s"
+
+
+class MonitoringNote(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A clinical note, created only inside
+    ``services.create_combined_monitoring``. Usually attached to a
+    ``MonitoringSession``, but ``session`` is nullable: a note submitted
+    with no duration creates no session and stands alone. ``patient`` (and
+    ``pregnancy``, when known) are denormalized from the session for fast,
+    join-free reads when listing/editing notes directly. Hard-deleted;
+    deleting the parent session (if any) cascades to remove the note too.
+    """
+
+    patient = models.ForeignKey(
+        "patients.Patient",
+        on_delete=models.CASCADE,
+        related_name="monitoring_notes",
+    )
+    pregnancy = models.ForeignKey(
+        "patients.Pregnancy",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="monitoring_notes",
+    )
+    session = models.OneToOneField(
+        MonitoringSession,
+        on_delete=models.CASCADE,
+        related_name="note",
+        null=True,
+        blank=True,
+    )
+    note = models.TextField()
+    recorded_at = models.DateTimeField(default=timezone.now)
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="monitoring_notes_added",
+    )
+    tags = models.ManyToManyField(ClinicalTag, blank=True, related_name="notes")
+
+    # Outcome of a call attempt this note logs. At most one may be true -- a
+    # single call either reached the patient (two-way) or didn't and a
+    # voicemail was left instead. Both false is valid (e.g. no call involved).
+    left_voicemail = models.BooleanField(default=False)
+    two_way_communication = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-recorded_at"]
+        verbose_name = "Monitoring Note"
+        verbose_name_plural = "Monitoring Notes"
+        indexes = [
+            models.Index(fields=["patient", "recorded_at"]),
+            models.Index(fields=["pregnancy", "recorded_at"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(left_voicemail=True, two_way_communication=True),
+                name="monitoringnote_not_both_call_outcomes",
             ),
         ]
 
     def __str__(self) -> str:
-        if self.assigned_pregnancy:
-            return f"{self.serial_number} → {self.assigned_pregnancy.patient.full_name}"
-        return f"{self.serial_number} ({self.get_status_display()})"
-
-    @property
-    def is_assigned(self) -> bool:
-        return self.status == self.STATUS_ASSIGNED and self.assigned_pregnancy_id is not None
-
-
-class VitalReading(UUIDPrimaryKeyModel):
-    """One reading event, at one moment, for one pregnancy — wide format.
-
-    One row per check-in, not one row per measurement type: the band reports
-    blood pressure, heart rate, temperature, stress, and activity together at
-    the same moment, so splitting them across separate rows would only imply
-    an asynchrony that does not exist here.
-
-    ``hemoglobin`` and ``blood_glucose`` are the exception — they do not come
-    from the band. Hemoglobin arrives from a lab report roughly monthly and is
-    carried forward unchanged across many rows until the next test; blood
-    glucose may arrive on its own, faster schedule. Both are simply null on a
-    row where nothing new is known, same as any field can be.
-
-    Every vital is nullable for the same reason: a row records whatever was
-    actually known at that moment, never a guessed or carried-over value
-    presented as fresh — the categorisation and scoring layers already treat
-    a missing vital as "unknown", not as normal, and this must stay true here.
-
-    Temperature is stored in Fahrenheit throughout, matching the trained model
-    and every clinical category threshold — never Celsius.
-
-    Deliberately not TimeStamped or Deactivatable. A reading is an observation
-    of something that happened at ``recorded_at``; there is no meaningful
-    "updated" and it is never deleted. Corrections are new readings.
-
-    ``source`` is never inferred from ``device`` being set — a band can be
-    assigned to a pregnancy while a nurse still types a separate manual
-    measurement in by hand, so the two questions ("is a band assigned" and
-    "did these particular numbers come from it") are independent. The caller
-    declares it explicitly on every write.
-    """
-
-    SOURCE_DEVICE = "device"
-    SOURCE_MANUAL = "manual"
-    SOURCE_CHOICES = [
-        (SOURCE_DEVICE, "Device"),
-        (SOURCE_MANUAL, "Manual entry"),
-    ]
-
-    pregnancy = models.ForeignKey(
-        "patients.Pregnancy",
-        on_delete=models.PROTECT,
-        related_name="readings",
-    )
-
-    # The 9 vitals the risk model trains and predicts on. All nullable —
-    # a reading event does not have to carry every vital every time.
-    age = models.PositiveSmallIntegerField(null=True, blank=True)
-    systolic_bp = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-    diastolic_bp = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-    heart_rate = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-    body_temp_f = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-    hemoglobin = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-    blood_glucose = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-    stress_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-    phys_activity_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-
-    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, db_index=True)
-    recorded_at = models.DateTimeField(_("recorded at"), db_index=True)
-    device = models.ForeignKey(
-        "monitoring.Device",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="readings",
-    )
-    recorded_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="recorded_readings",
-        help_text="The staff member whose session submitted this reading.",
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-recorded_at"]
-        indexes = [
-            # Every clinical query is "this pregnancy, most recent first".
-            models.Index(fields=["pregnancy", "-recorded_at"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"Reading for {self.pregnancy_id} at {self.recorded_at:%Y-%m-%d %H:%M}"
-
-
-class RiskAssessment(UUIDPrimaryKeyModel):
-    """A judgement about one pregnancy at one moment.
-
-    Rows are written only when the level **changes**, so this is a history of
-    transitions rather than one row per reading — "she became high risk at
-    14:32" is the fact alerts and audits need, and a row per reading would be
-    millions of near-identical records.
-
-    ``risk_level`` is exactly the model's 3-class scale — Low/Medium/High —
-    and nothing else, including the emergency rules engine: a rule-detected
-    emergency escalates urgency (see ``flagged_for_review`` and the alert-tier
-    timing it drives), it never invents a 4th risk level the model cannot
-    itself produce.
-
-    ``confirmed_risk_level`` is a doctor's correction, kept separate from
-    ``risk_level`` rather than overwriting it — the original automated
-    judgement is never erased, even when it turns out to be wrong.
-    ``review_status`` names the three states of that process: unreviewed
-    (default, and the common permanent case for most assessments), confirmed
-    (a doctor agreed), or corrected (a doctor did not).
-    """
-
-    LEVEL_LOW = "low"
-    LEVEL_MEDIUM = "medium"
-    LEVEL_HIGH = "high"
-    LEVEL_CHOICES = [
-        (LEVEL_LOW, "Low"),
-        (LEVEL_MEDIUM, "Medium"),
-        (LEVEL_HIGH, "High"),
-    ]
-
-    REVIEW_UNREVIEWED = "unreviewed"
-    REVIEW_CONFIRMED = "confirmed"
-    REVIEW_CORRECTED = "corrected"
-    REVIEW_STATUS_CHOICES = [
-        (REVIEW_UNREVIEWED, "Unreviewed"),
-        (REVIEW_CONFIRMED, "Confirmed"),
-        (REVIEW_CORRECTED, "Corrected"),
-    ]
-
-    pregnancy = models.ForeignKey(
-        "patients.Pregnancy",
-        on_delete=models.PROTECT,
-        related_name="risk_assessments",
-    )
-    # The exact reading this judgement was computed from — lets a single
-    # query return the assessment and the vitals behind it together, instead
-    # of digging a reading_id out of `findings` and querying again. Nullable
-    # only because a stale-readings finding can fire with no reading at all.
-    reading = models.ForeignKey(
-        "monitoring.VitalReading",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="risk_assessments",
-    )
-    risk_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, db_index=True)
-    # What is actually acted on. Equal to risk_level until an escalation rule
-    # overrides it (e.g. a low-confidence or region-specific rule bumping a
-    # Medium up) — those rules read the trained model's confidence, so until
-    # that model lands this always equals risk_level. Kept separate from
-    # risk_level so the model's raw answer is never silently overwritten.
-    final_risk_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, db_index=True)
-
-    # The clinical label for each raw vital on the linked reading — "Stage 2",
-    # "Mild Anemia" — computed alongside risk_level, not a verdict on their
-    # own. Blank, never guessed, when the corresponding vital is null.
-    bp_category = models.CharField(max_length=32, blank=True)
-    heart_rate_category = models.CharField(max_length=32, blank=True)
-    temperature_category = models.CharField(max_length=32, blank=True)
-    glucose_category = models.CharField(max_length=32, blank=True)
-    hemoglobin_category = models.CharField(max_length=32, blank=True)
-
-    # Only the risk engine produces this table today; confidence being null is
-    # itself the signal that the row came from rules rather than a trained
-    # model, so no separate "source" column is needed to tell them apart.
-    confidence = models.DecimalField(max_digits=4, decimal_places=3, null=True, blank=True)
-
-    assessed_at = models.DateTimeField(auto_now_add=True, db_index=True)
-    # What the previous risk_level was, so a transition reads on its own.
-    previous_risk_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, blank=True)
-
-    # Set whenever this assessment was flagged for review — either the
-    # confidence-threshold check, or the Africa+Medium rule (once wired in).
-    # Separate from verified_at/by below: this records whether the flag was
-    # raised at all, not whether it was later reviewed. Generic on purpose —
-    # whoever ends up notified (doctor, nurse, care manager) depends on the
-    # alert-escalation tier, not on this field.
-    flagged_for_review = models.BooleanField(default=False)
-
-    # The doctor's real, confirmed answer — never overwrites risk_level.
-    confirmed_risk_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, blank=True)
-    # Set only together with confirmed_risk_level, by the same action — there
-    # is no "seen but not confirmed" state. review_status is derived from
-    # comparing confirmed_risk_level to final_risk_level at that moment.
-    review_status = models.CharField(
-        max_length=20,
-        choices=REVIEW_STATUS_CHOICES,
-        default=REVIEW_UNREVIEWED,
-        db_index=True,
-    )
-
-    verified_at = models.DateTimeField(null=True, blank=True)
-    verified_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="verified_assessments",
-    )
-
-    class Meta:
-        ordering = ["-assessed_at"]
-        indexes = [
-            models.Index(fields=["pregnancy", "-assessed_at"]),
-            models.Index(fields=["risk_level", "-assessed_at"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.pregnancy.patient.full_name} — {self.get_risk_level_display()}"
-
-    @property
-    def is_actionable(self) -> bool:
-        return self.final_risk_level != self.LEVEL_LOW
-
-    @property
-    def needs_review(self) -> bool:
-        """An unreviewed non-low assessment is one no doctor has confirmed or corrected."""
-        return self.is_actionable and self.review_status == self.REVIEW_UNREVIEWED
+        return f"{self.patient.full_name} · {self.recorded_at:%Y-%m-%d}"

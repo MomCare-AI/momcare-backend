@@ -82,8 +82,13 @@ class Command(BaseCommand):
         Assessments and alerts are derived from readings, so removing them
         costs nothing: the next re-score rebuilds both.
         """
-        from momcare_platform.core.alerts.models import Alert  # noqa: PLC0415
-        from momcare_platform.core.monitoring.models import RiskAssessment  # noqa: PLC0415
+        # Resolved via the app registry, not a static import: Alert and
+        # RiskAssessment live under modules.pregnancy, which core must never
+        # import statically (the `core must not import modules` contract).
+        from django.apps import apps as django_apps  # noqa: PLC0415
+
+        Alert = django_apps.get_model("alerts", "Alert")
+        RiskAssessment = django_apps.get_model("monitoring", "RiskAssessment")
 
         alerts = Alert.objects.count()
         assessments = RiskAssessment.objects.count()

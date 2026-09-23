@@ -23,8 +23,9 @@ from momcare_platform.core.users.models import User
 pytestmark = pytest.mark.django_db
 
 CHANGE = "/api/auth/password/change/"
-RESET = "/api/auth/password/reset/"
-CONFIRM = "/api/auth/password/reset/confirm/"
+FORGOT = "/api/auth/forgot-password/"
+VERIFY = "/api/auth/verify-reset-token/"
+RESET = "/api/auth/reset-password/"
 LOGIN = "/api/auth/login/"
 
 NEW = "A-Completely-New-Pass!2026"
@@ -152,12 +153,12 @@ def test_a_reset_link_arrives_and_sets_a_new_password(client, make_hospital):
     hospital = make_hospital("Reset Hospital")
     mail.outbox.clear()
 
-    asked = post(client, RESET, {"email": hospital.admin.email})
+    asked = post(client, FORGOT, {"email": hospital.admin.email})
     assert asked.status_code == 200
     assert len(mail.outbox) == 1
 
     uid, token = link_parts(mail.outbox[0])
-    done = post(client, CONFIRM, {"uid": uid, "token": token, "new_password": NEW})
+    done = post(client, RESET, {"uid": uid, "token": token, "new_password": NEW})
     assert done.status_code == 200, done.content
 
     hospital.admin.refresh_from_db()
@@ -173,8 +174,8 @@ def test_an_unknown_address_is_answered_exactly_like_a_known_one(client, make_ho
     hospital = make_hospital("Quiet Hospital")
     mail.outbox.clear()
 
-    known = post(client, RESET, {"email": hospital.admin.email})
-    unknown = post(client, RESET, {"email": "nobody@nowhere.test"})
+    known = post(client, FORGOT, {"email": hospital.admin.email})
+    unknown = post(client, FORGOT, {"email": "nobody@nowhere.test"})
 
     assert known.status_code == unknown.status_code == 200
     assert known.json() == unknown.json()
@@ -187,15 +188,15 @@ def test_a_reset_link_works_once(client, make_hospital):
     table of live tokens sitting in the database waiting to be stolen."""
     hospital = make_hospital("Once Hospital")
     mail.outbox.clear()
-    post(client, RESET, {"email": hospital.admin.email})
+    post(client, FORGOT, {"email": hospital.admin.email})
     uid, token = link_parts(mail.outbox[0])
 
-    first = post(client, CONFIRM, {"uid": uid, "token": token, "new_password": NEW})
+    first = post(client, RESET, {"uid": uid, "token": token, "new_password": NEW})
     assert first.status_code == 200
 
     second = post(
         client,
-        CONFIRM,
+        RESET,
         {"uid": uid, "token": token, "new_password": "Another-One!2026"},
     )
     assert second.status_code == 400
@@ -204,14 +205,41 @@ def test_a_reset_link_works_once(client, make_hospital):
     assert hospital.admin.check_password(NEW)
 
 
-def test_a_tampered_token_is_refused(client, make_hospital):
-    hospital = make_hospital("Tamper Hospital")
+def test_verify_reset_token_confirms_a_good_link_without_changing_anything(client, make_hospital):
+    hospital = make_hospital("Verify Hospital")
     mail.outbox.clear()
-    post(client, RESET, {"email": hospital.admin.email})
+    post(client, FORGOT, {"email": hospital.admin.email})
+    uid, token = link_parts(mail.outbox[0])
+
+    response = post(client, VERIFY, {"uid": uid, "token": token})
+
+    assert response.status_code == 200
+    assert response.json() == {"valid": True}
+    # The link still works afterward -- verifying must not consume it.
+    reset = post(client, RESET, {"uid": uid, "token": token, "new_password": NEW})
+    assert reset.status_code == 200
+
+
+def test_verify_reset_token_rejects_a_tampered_token(client, make_hospital):
+    hospital = make_hospital("Verify Tamper Hospital")
+    mail.outbox.clear()
+    post(client, FORGOT, {"email": hospital.admin.email})
     uid, token = link_parts(mail.outbox[0])
     broken = token[:-1] + ("a" if token[-1] != "a" else "b")
 
-    response = post(client, CONFIRM, {"uid": uid, "token": broken, "new_password": NEW})
+    response = post(client, VERIFY, {"uid": uid, "token": broken})
+
+    assert response.status_code == 400
+
+
+def test_a_tampered_token_is_refused(client, make_hospital):
+    hospital = make_hospital("Tamper Hospital")
+    mail.outbox.clear()
+    post(client, FORGOT, {"email": hospital.admin.email})
+    uid, token = link_parts(mail.outbox[0])
+    broken = token[:-1] + ("a" if token[-1] != "a" else "b")
+
+    response = post(client, RESET, {"uid": uid, "token": broken, "new_password": NEW})
 
     assert response.status_code == 400
     hospital.admin.refresh_from_db()
@@ -225,11 +253,11 @@ def test_a_reset_cannot_be_pointed_at_another_account(client, make_hospital):
     attacker = make_hospital("Attacker Hospital")
     mail.outbox.clear()
 
-    post(client, RESET, {"email": attacker.admin.email})
+    post(client, FORGOT, {"email": attacker.admin.email})
     _, token = link_parts(mail.outbox[0])
     victim_uid = urlsafe_base64_encode(force_bytes(victim.admin.pk))
 
-    response = post(client, CONFIRM, {"uid": victim_uid, "token": token, "new_password": NEW})
+    response = post(client, RESET, {"uid": victim_uid, "token": token, "new_password": NEW})
 
     assert response.status_code == 400
     victim.admin.refresh_from_db()
@@ -239,10 +267,10 @@ def test_a_reset_cannot_be_pointed_at_another_account(client, make_hospital):
 def test_a_weak_password_is_refused_on_reset_too(client, make_hospital):
     hospital = make_hospital("Weak Reset Hospital")
     mail.outbox.clear()
-    post(client, RESET, {"email": hospital.admin.email})
+    post(client, FORGOT, {"email": hospital.admin.email})
     uid, token = link_parts(mail.outbox[0])
 
-    response = post(client, CONFIRM, {"uid": uid, "token": token, "new_password": "password"})
+    response = post(client, RESET, {"uid": uid, "token": token, "new_password": "password"})
 
     assert response.status_code == 400
     hospital.admin.refresh_from_db()
@@ -255,7 +283,7 @@ def test_a_deactivated_account_gets_no_reset_link(client, make_hospital):
     User.objects.filter(pk=hospital.admin.pk).update(is_active=False)
     mail.outbox.clear()
 
-    response = post(client, RESET, {"email": hospital.admin.email})
+    response = post(client, FORGOT, {"email": hospital.admin.email})
 
     assert response.status_code == 200
     assert len(mail.outbox) == 0
@@ -266,8 +294,25 @@ def test_the_reset_email_names_no_detail_beyond_the_address(client, make_hospita
     somebody who does not hold the account."""
     hospital = make_hospital("Discreet Hospital")
     mail.outbox.clear()
-    post(client, RESET, {"email": hospital.admin.email})
+    post(client, FORGOT, {"email": hospital.admin.email})
 
     body = mail.outbox[0].body
     assert "Discreet Hospital" not in body
     assert "was not you" in body.lower()
+
+
+def test_frontend_url_has_exactly_one_source_of_truth():
+    """Guards a bug that shipped silently: ``FRONTEND_URL`` was defined twice
+    in base settings. The second definition defaulted to port 5173 — a Vite
+    default this project has never used — and quietly won, so the reset link
+    this file's own tests exercise above carried a link to a port nothing
+    runs on. A second ``FRONTEND_URL =`` line would win silently again."""
+    from pathlib import Path  # noqa: PLC0415
+
+    import config.settings.base as base_settings  # noqa: PLC0415
+
+    settings_file = Path(base_settings.__file__)
+    definitions = [
+        line for line in settings_file.read_text(encoding="utf-8").splitlines() if line.startswith("FRONTEND_URL")
+    ]
+    assert len(definitions) == 1, f"FRONTEND_URL defined {len(definitions)} times: {definitions}"

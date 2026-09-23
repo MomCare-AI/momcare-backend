@@ -112,9 +112,10 @@ uv run ruff check .                    # must be clean on files you touched
 uv run pytest momcare_platform/core -q # 347 tests, ~30s on a local database
 ```
 
-`DATABASE_URL` in `.env` must point at **local** Postgres. If it points at Neon,
-the suite takes ~53 minutes and produces failures that are network artefacts
-rather than bugs. This has happened; do not debug those failures, fix the URL.
+`DATABASE_URL` in `.env` must point at **local** Postgres. If it points at the
+production database (Railway-hosted, previously Neon), the suite takes ~53
+minutes and produces failures that are network artefacts rather than bugs.
+This has happened; do not debug those failures, fix the URL.
 
 Commit messages: a short imperative subject, then prose explaining why. Look at
 `git log` for the register — the existing messages are the specification.
@@ -124,9 +125,15 @@ Commit messages: a short imperative subject, then prose explaining why. Look at
 ## Current state, in one paragraph
 
 The platform is **live at https://momcare.solutions** — Vercel for the portal,
-Railway for the API at `api.momcare.solutions`, Neon for PostgreSQL, Resend for
-email over its HTTPS interface because the host blocks outbound SMTP. Alert
-escalation runs as a second Railway service on a five-minute cron. Seven
+Railway for the API at `api.momcare.solutions` **and now for PostgreSQL too**
+(moved off Neon — see `DEPLOY.md` for the migration and whether the restricted,
+non-bypassing `momcare_app`-style role was carried over to the new database,
+which needs re-verifying, not assumed), Resend for email over its HTTPS
+interface because the host blocks outbound SMTP. Alert escalation is meant to
+run as a second Railway service on a five-minute cron — **confirm this is
+still the case**: the second Railway service was reported as the database
+during this session, which leaves the escalation cron's current home unclear.
+Seven
 capabilities are complete and tested: hospital registration with a review gate,
 six roles, staff invitations, patients and pregnancy, vitals and devices, risk
 assessment, and alerts with a three-tier escalation ladder. Passwords can now be

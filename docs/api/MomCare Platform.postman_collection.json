@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "670df6e3-ed24-4883-8d15-19acfb51f114",
     "name": "MomCare Platform",
-    "description": "MomCare backend API: Auth (JWT), Organization (hospital settings, confidence threshold), Monitoring (readings, risk assessments, devices).\n\nSetup:\n1. Set `base_url` (default http://localhost:8000).\n2. Call Auth -> Login -- it auto-saves `access_token` (collection variable) used by every protected request below.\n3. The refresh token is an HttpOnly cookie set by Login; Refresh/Logout read it automatically (Postman keeps cookies per domain).\n4. Set `pregnancy_id` to a real pregnancy UUID (from the patients API) before running the Monitoring folder.\n\nConventions:\n- Every endpoint works WITH or WITHOUT a trailing slash.\n- All endpoints below require `Authorization: Bearer {{access_token}}` except Login.\n- IDs are UUID strings throughout -- never integers.\n- `source` on a reading is required on every POST: `\"device\"` or `\"manual\"`. It is never inferred -- a band can be assigned to a pregnancy while a nurse still enters a separate manual measurement by hand, so the two are independent facts the caller must declare.\n- Roles: platform_admin, hospital_admin, provider, nurse, care_manager, patient. Access is hospital-scoped via `request.user.organization`; a request against another hospital's pregnancy resolves to 404, never 403 (a 403 would confirm the record exists elsewhere).\n- Pagination envelope on list endpoints: `{count, page, page_size, total_pages, next, previous, results}`.",
+    "description": "MomCare backend API: Auth (JWT), Organization (onboarding a hospital, hospital settings, confidence threshold), Locations (a hospital's own sites -- create/update/deactivate/reactivate/move-patients, no platform-admin approval), Staff (onboarding a hospital's own team directly, no invite link), Monitoring (readings, risk assessments, devices).\n\nSetup:\n1. Set `base_url` (default http://localhost:8000).\n2. Call Auth -> Login -- it auto-saves `access_token` (collection variable) used by every protected request below.\n3. The refresh token is an HttpOnly cookie set by Login; Refresh/Logout read it automatically (Postman keeps cookies per domain).\n4. Set `pregnancy_id` to a real pregnancy UUID (from the patients API) before running the Monitoring folder.\n\nConventions:\n- Every endpoint works WITH or WITHOUT a trailing slash.\n- All endpoints below require `Authorization: Bearer {{access_token}}` except Login and Organization -> Onboard Organization.\n- IDs are UUID strings throughout -- never integers.\n- `source` on a reading is required on every POST: `\"device\"` or `\"manual\"`. It is never inferred -- a band can be assigned to a pregnancy while a nurse still enters a separate manual measurement by hand, so the two are independent facts the caller must declare.\n- Roles: platform_admin, hospital_admin, provider, nurse, care_manager, patient. Access is hospital-scoped via `request.user.organization`; a request against another hospital's pregnancy resolves to 404, never 403 (a 403 would confirm the record exists elsewhere).\n- Pagination envelope on list endpoints: `{count, page, page_size, total_pages, next, previous, results}`.\n- There is no self-registration for anyone except a hospital itself. Staff (hospital_admin, provider, nurse, care_manager) are onboarded directly by their hospital_admin or their own location's manager (see Staff -> Onboard Staff) -- there is no invite link or acceptance step; the new account's sign-in credentials are emailed to them and work immediately. Patients are enrolled by staff, never self-service.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -26,20 +26,38 @@
             }
           ],
           "request": {
-            "auth": { "type": "noauth" },
+            "auth": {
+              "type": "noauth"
+            },
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"yourpassword\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "raw": "{\n  \"email\": \"admin@sunrisematernity.test\",\n  \"password\": \"TempPass!2026\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/auth/login/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "login", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login",
+                ""
+              ]
             },
-            "description": "Email + password -> JWT access token. Returns `{ access }`; the refresh token is set as an HttpOnly cookie, not returned in the body. The test script auto-saves `access_token` for every other request in this collection.\n\nA hospital whose review status is not `approved`, or whose account is suspended, is refused sign-in here even with correct credentials."
+            "description": "Sign in with **email + password**. No auth required.\n\nEmail is deliberately the only accepted identifier. Phone sign-in was built and then removed: a phone number has no single global format, so the same number reaches the API as `+923001234567`, `0300 1234567` or `03001234567` depending on who typed it, and an exact-match lookup authenticates only the one spelling stored at signup. Matching them properly means normalising every number to E.164, which needs a country to interpret a bare national number against — a guess the platform cannot safely make. Email has one worldwide format and no such ambiguity.\n\n`User.phone` is still collected for staff and patients — it is contact information, not a credential.\n\n**Responses**\n- **200** — `access` token in the body, refresh token in an HttpOnly cookie.\n- **400** — email or password missing.\n- **401** — wrong password, unknown address, or a deactivated account. Byte-for-byte the same response in every case, so it cannot be used to discover who has an account here.\n- **403** — credentials were right, but the hospital is pending/rejected/suspended (`org_status` says which); or, for a self-registered patient specifically, her email is not yet confirmed (`requires_email_verification: true` — see Patient Signup > Verify Email)."
           },
           "response": []
         },
@@ -64,8 +82,15 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/auth/refresh/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "refresh", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh",
+                ""
+              ]
             },
             "description": "Reads the HttpOnly refresh cookie set by Login and issues a new access token. Re-reads the user's current role/hospital fresh each time, so a staff member moved to a different hospital does not keep acting as the old one until the refresh token itself expires."
           },
@@ -78,8 +103,15 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/auth/logout/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "logout", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout",
+                ""
+              ]
             },
             "description": "Blacklists the current refresh token and clears the cookie."
           },
@@ -92,10 +124,180 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/auth/me/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "me", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me",
+                ""
+              ]
             },
-            "description": "The signed-in user's own identity and role."
+            "description": "The signed-in user's own identity and role.\n\nCarries `requires_password_reset`. It is `true` for an invited staff member who has not yet chosen a password — send them to the set-password screen rather than the portal."
+          },
+          "response": []
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"current_password\": \"yourpassword\",\n  \"new_password\": \"A-Completely-New-Pass!2026\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/password/change/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "password",
+                "change",
+                ""
+              ]
+            },
+            "description": "Change your own password while signed in -- MomCare's own addition beyond Neuro_RPM's auth surface (Neuro_RPM has no equivalent; every password change there goes through the forgot-password email link, even when signed in).\n\nPermissions: IsAuthenticated.\n\nRequired: `current_password` (the account's real current password -- an access token proves the session was authenticated at some point, not that whoever is holding the device right now owns it), `new_password` (must differ from the current one, Django's validators).\n\nRevokes every outstanding refresh token for this account on success -- signing in again is required afterward, on every device."
+          },
+          "response": []
+        },
+        {
+          "name": "Forgot Password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Dev convenience only: the real link only exists in the emailed body.",
+                  "// If your local EMAIL_BACKEND is console/locmem, copy the uid/token pair",
+                  "// out of the server log or test outbox by hand for Verify/Reset below."
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/forgot-password/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "forgot-password",
+                ""
+              ]
+            },
+            "description": "Step 1 of the password-reset flow. Names match Neuro_RPM's own auth endpoints exactly (forgot-password -> verify-reset-token -> reset-password), not an arbitrary MomCare scheme.\n\nPermissions: AllowAny.\n\nRequired: `email`.\n\nAlways answers 200 with the same generic message whether or not the address belongs to an account -- anything else turns this into a way to discover who works at which hospital, and for a clinical system that list is worth protecting. A deactivated account gets no email at all (deactivation is how access is withdrawn; a reset link would hand it back), but the response still looks identical from the outside."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify Reset Token",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"uid\": \"{{reset_uid}}\",\n  \"token\": \"{{reset_token}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/verify-reset-token/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "verify-reset-token",
+                ""
+              ]
+            },
+            "description": "Step 1.5 (optional, additive) -- lets the frontend confirm a reset link is still good *before* showing the new-password form, instead of only finding out after it's filled in and submitted.\n\nPermissions: AllowAny.\n\nRequired: `uid`, `token` -- both come from the emailed reset link. Purely read-only: never changes the password, never revokes sessions. Reset Password below still re-validates the token itself regardless of what this said (the link could expire in the gap between the two calls), so this is a UX layer on top, not a second source of truth."
+          },
+          "response": []
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"uid\": \"{{reset_uid}}\",\n  \"token\": \"{{reset_token}}\",\n  \"new_password\": \"A-Completely-New-Pass!2026\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/reset-password/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "reset-password",
+                ""
+              ]
+            },
+            "description": "Step 2 -- sets a new password using the emailed link.\n\nPermissions: AllowAny.\n\nRequired: `uid`, `token` (from the emailed link), `new_password` (Django's validators). The token is Django's own reset token: signed rather than stored, derived from the user's current password hash, so it stops working the moment it's used or the password changes any other way -- single-use without a table of live tokens sitting in the database waiting to be stolen.\n\nRevokes every outstanding refresh token for the account on success, same as Change Password."
           },
           "response": []
         }
@@ -105,16 +307,96 @@
       "name": "Organization",
       "item": [
         {
+          "name": "Onboard Organization",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Ahmed\",\n  \"last_name\": \"Khan\",\n  \"email\": \"ahmed@sunrisematernity.test\",\n  \"password\": \"BrandNewPass!2026\",\n  \"phone\": \"03001234567\",\n  \"gender\": \"male\",\n\n  \"org_name\": \"Sunrise Maternity Hospital\",\n  \"license_number\": \"LIC-2026-04521\",\n  \"org_email\": \"info@sunrisematernity.test\",\n  \"org_phone\": \"0511111111\",\n\n  \"address_line1\": \"22 Blue Area\",\n  \"address_line2\": \"\",\n  \"city\": \"Islamabad\",\n  \"state\": \"ICT\",\n  \"postal_code\": \"44000\",\n  \"country\": \"Pakistan\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/organization/onboard/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "organization",
+                "onboard",
+                ""
+              ]
+            },
+            "description": "The one and only self-service entry point on the whole platform. Creates the hospital's owning `hospital_admin` user and the hospital itself, together, in one atomic request -- there is no separate \"sign up\" step and no way to create a bare user with no organization.\n\nPermissions: AllowAny -- no Authorization header required, no authentication_classes set.\n\nRequired: `first_name`, `last_name`, `email`, `password` (min 8 chars), `org_name`, `license_number`, `org_email`, `org_phone`, `address_line1`, `city`, `state`, `postal_code`, `country`.\nOptional: `phone`, `gender`, `address_line2`.\n\n`license_number` is the evidence a platform admin checks before approving -- an application with nothing to verify against isn't one a reviewer can act on. There is no upload path for a license image at onboarding yet (`Organization.license_image` exists as a column but is deliberately not wired into this endpoint or into Update My Organization below -- that upload flow is future work).\n\nThe organization always starts `status: \"pending\"` -- this is not settable -- and nobody at that hospital can sign in until a platform admin approves it in Django admin (see Auth -> Login's own note on the review gate). Returns 201 with `{ detail, status, organization_name, email }` -- a receipt, not a token; no access/refresh is issued here.\n\nStaff (hospital_admin included, for anyone other than the founder) are never created this way -- they're onboarded directly by their own hospital's hospital_admin or location manager (see Staff -> Onboard Staff; no invite link, credentials are emailed immediately) and only ever see a login page. Patients are enrolled by staff, never self-service either."
+          },
+          "response": []
+        },
+        {
           "name": "Get My Organization",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/organization/me/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "organization", "me", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "organization",
+                "me",
+                ""
+              ]
             },
-            "description": "The signed-in user's own hospital. Includes both `confidence_threshold` (this hospital's own override, or null if it has never set one) and `effective_confidence_threshold` (the number actually used for scoring -- this hospital's override if set, otherwise the platform default). Also includes `region`, derived from `country` and never independently settable."
+            "description": "The signed-in user's own hospital -- scoped by `request.user.organization`, never by an id in the URL, so there is no tenant identifier a caller could tamper with to read another hospital.\n\nPermissions: IsAuthenticated (any role in the hospital). 404 for a platform_admin -- they have no organization and work through Django admin instead.\n\nIncludes both `confidence_threshold` (this hospital's own override, or null if it has never set one) and `effective_confidence_threshold` (the number actually used for scoring -- this hospital's override if set, otherwise the platform default). Also includes `region`, derived from `country` and never independently settable, and the live counts `staff_count`/`patient_count`/`location_count`."
+          },
+          "response": []
+        },
+        {
+          "name": "Update My Organization",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"license_number\": \"LIC-2026-04521-A\",\n  \"phone\": \"0512223333\",\n  \"email\": \"new-contact@sunrisematernity.test\",\n  \"city\": \"Lahore\",\n  \"timezone\": \"Asia/Karachi\",\n  \"date_format\": \"DD-MM-YYYY\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/organization/me/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "organization",
+                "me",
+                ""
+              ]
+            },
+            "description": "Update the hospital's own profile. All fields optional (partial update).\n\nPermissions: IsAuthenticated + hospital_admin only (a 403 for any other role, checked explicitly in the view).\n\nWritable: `name`, `license_number`, `phone`, `email`, `address_line1`, `address_line2`, `city`, `state`, `postal_code`, `country`, `timezone` (IANA zone name -- invalid returns 400, not 500), `date_format` (one of `DD-MM-YYYY` / `MM-DD-YYYY` / `YYYY-MM-DD`), `established_date` (nullable ISO date).\n\nCorrecting `country` moves `region` with it live on the very next GET -- region is derived, never stored, so there is no stale copy to fix separately.\n\nRead-only (present in the response, silently ignored if sent): `id`, `license_image` (the column exists but its upload path is deliberately not wired into this endpoint yet), `status`, `status_display`, `reviewed_at`, `region`, `region_display`, `owner_name`, `staff_count`, `patient_count`, `location_count`, `confidence_threshold`, `effective_confidence_threshold`, `created_at`. The review state can only be changed by a platform admin in Django admin; the confidence threshold has its own endpoint below."
           },
           "response": []
         },
@@ -122,40 +404,1685 @@
           "name": "Update Confidence Threshold",
           "request": {
             "method": "PATCH",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"confidence_threshold\": 0.80\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/organization/me/confidence-threshold/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "organization", "me", "confidence-threshold", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "organization",
+                "me",
+                "confidence-threshold",
+                ""
+              ]
             },
-            "description": "hospital_admin only. Sets this hospital's own model-confidence threshold (0.000-1.000) -- an assessment scoring below it is flagged for a doctor's review, regardless of risk level. Persisted to the database on the Organization row (`confidence_threshold`); it is a real column, not computed.\n\nSend `{\"confidence_threshold\": null}` to clear this hospital's override and revert to following the platform default (`MOMCARE_DEFAULT_CONFIDENCE_THRESHOLD`, 70%) live -- including any future change to that default."
+            "description": "A separate, single-purpose endpoint rather than folded into Update My Organization -- this is a clinical-safety setting, not a profile detail.\n\nPermissions: IsAuthenticated + hospital_admin only.\n\nWritable: `confidence_threshold` (0.000-1.000, 3 decimal places). Sets this hospital's own model-confidence threshold -- an assessment scoring below it is flagged for a doctor's review, regardless of risk level. Persisted to the database on the Organization row; it is a real column, not computed.\n\nSend `{\"confidence_threshold\": null}` to clear this hospital's override and revert to following the platform default (`MOMCARE_DEFAULT_CONFIDENCE_THRESHOLD`, 80%) live -- including any future change to that default."
+          },
+          "response": []
+        },
+        {
+          "name": "Request Deactivation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"We are merging with another facility.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/organization/me/deactivation-request/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "organization",
+                "me",
+                "deactivation-request",
+                ""
+              ]
+            },
+            "description": "The in-app alternative to contacting support directly to ask MomCare to close the hospital's account -- both exist side by side; this is not a replacement for calling/emailing. Creates the request only -- it never deactivates anything by itself. A platform admin reviews and decides in Django admin (the platform-admin API is deferred -- see CLAUDE.md).\n\nPermissions: IsAuthenticated + hospital_admin only.\n\nWritable: `reason` (optional free text).\n\nReturns 400, not a duplicate row, while this hospital already has a request pending review."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Deactivation Request Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/organization/me/deactivation-request/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "organization",
+                "me",
+                "deactivation-request",
+                ""
+              ]
+            },
+            "description": "The hospital's own most recent deactivation request, whatever its status -- `pending` / `approved` / `dismissed`, with the platform admin's `review_note` once decided.\n\nPermissions: IsAuthenticated + hospital_admin only.\n\n404 if this hospital has never made one."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Audit Log",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/organization/me/audit-log/?action=&resource=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "organization",
+                "me",
+                "audit-log",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "action",
+                  "value": "",
+                  "description": "Optional: READ, CREATE, UPDATE, or DELETE"
+                },
+                {
+                  "key": "resource",
+                  "value": "",
+                  "description": "Optional: e.g. patients, alerts, pregnancies"
+                }
+              ]
+            },
+            "description": "**This hospital's own PHI-access trail** — who looked at what, when. `hospital_admin` only.\n\nEvery request to `/api/patients`, `/api/pregnancies`, or `/api/alerts` writes one row automatically (see `AuditLogMiddleware`) — this endpoint is the only way to read that trail back. It is a HIPAA-style compliance record, not a general activity feed: read-only everywhere, nothing here is ever created, edited, or deleted through the API.\n\nScoped through the caller's own hospital — there is no way to see another hospital's entries, and an entry whose user account has since been deleted is invisible to every hospital (it cannot be attributed to one).\n\nAlways newest-first; no free-text `?ordering=`. Narrow with `?action=` (READ/CREATE/UPDATE/DELETE) and/or `?resource=` (patients/alerts/pregnancies).\n\n**Responses**\n- **200** — paginated `{count, page, page_size, total_pages, next, previous, results}`.\n- **403** — caller is not this hospital's admin.\n- **404** — caller has no hospital (e.g. a platform admin — use Django admin instead)."
+          },
+          "response": []
+        },
+        {
+          "name": "List Notifications",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/organization/me/notifications/?is_read=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "organization",
+                "me",
+                "notifications",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "is_read",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "The bell icon's feed -- \"something needs your attention,\" newest first. Currently the only producer is a new patient join request (see Patient Requests -> Requests From Patients), but `notification_type` is a string code so a second producer is a new value here, not a schema change.\n\nPermissions: IsAuthenticated + any hospital-side role -- same visibility as the request queue these notifications point at, not admin-only.\n\nOptional `is_read=true`/`false` narrows the list. The response always carries a top-level `unread_count` -- the true unread total, computed independently of whatever filter is applied, so the badge number stays correct even while viewing a filtered slice.\n\nNo email, no push. This is the entire notification mechanism -- purely something the portal shows when staff are logged in and looking."
+          },
+          "response": []
+        },
+        {
+          "name": "Mark Notification Read",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/organization/me/notifications/{{notification_id}}/mark-read/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "organization",
+                "me",
+                "notifications",
+                "{{notification_id}}",
+                "mark-read",
+                ""
+              ]
+            },
+            "description": "Mark one notification as seen -- clears it off the unread count. Idempotent: marking an already-read notification again just returns it unchanged, the `read_at` timestamp is not moved.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's notification id resolves to 404, never 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           },
           "response": []
         }
       ]
     },
     {
-      "name": "Monitoring — Readings & Risk",
+      "name": "Locations",
+      "item": [
+        {
+          "name": "List Locations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/locations/?is_active=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "is_active",
+                  "value": "true",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Every site this hospital has -- active or not, own branch or main. Scoped by `request.user.organization`, the same direct-FK pattern as `Device`.\n\nPermissions: IsAuthenticated + any hospital staff (read-only for everyone; write access varies per action below -- see each request's own description).\n\nOptional query param: `is_active` (`true`/`false`) to filter.\n\nPagination envelope: `{count, page, page_size, total_pages, next, previous, results}`. Another hospital's locations never appear here -- there is no way to ask for them by id either; see Get Location Detail's 404 note."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Location",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"North Wing\",\n  \"address_line1\": \"9 North Road\",\n  \"city\": \"Lahore\",\n  \"state\": \"Punjab\",\n  \"postal_code\": \"54000\",\n  \"country\": \"Pakistan\",\n  \"timezone\": \"Asia/Karachi\",\n  \"location_manager\": \"{{location_manager_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/locations/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                ""
+              ]
+            },
+            "description": "Add another site under this hospital. Immediate effect -- no platform-admin approval anywhere in this app, unlike organization onboarding; a location is entirely internal to one hospital.\n\nPermissions: IsAuthenticated + hospital_admin only (403 for any other role).\n\nRequired: `name` (unique within this hospital, not globally -- two different hospitals can each have a \"Main Branch\"), `location_manager` (a staff id from this same hospital, any non-patient role -- compulsory on every location, including the auto-created default one, because something in this system always needs someone accountable for it).\nOptional: `address_line1`, `address_line2`, `city`, `state`, `postal_code`, `country`, `timezone`, `phone`, `email`, `date_format`.\n\n`location_manager` must resolve to a staff member already in this hospital -- another hospital's staff id, or a patient's user id, both return 400 on the `location_manager` field, not a silent cross-tenant assignment."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Location Detail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/locations/{{location_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                "{{location_id}}",
+                ""
+              ]
+            },
+            "description": "One location's full profile, including `effective_date_format` (this location's own override, falling back to its organization's -- never a raw stored default) and `active_patient_count`.\n\nPermissions: IsAuthenticated + any hospital staff.\n\nAnother hospital's location id resolves to 404, never 403 -- scoping happens before the lookup, so a mismatched id simply doesn't exist as far as this request is concerned."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Location",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"0599998888\",\n  \"city\": \"Lahore\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/locations/{{location_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                "{{location_id}}",
+                ""
+              ]
+            },
+            "description": "Update a location's own profile. All fields optional (partial update).\n\nPermissions: IsAuthenticated + hospital_admin OR this location's own `location_manager` -- mirrors Neuro_RPM's Admin | LocationAdmin write-access split, adapted to MomCare's compulsory per-location manager (that FK is the designation; there's no separate flag). Any other staff role gets 403, even if they manage a *different* location at this hospital.\n\nWritable: `name`, `address_line1`, `address_line2`, `city`, `state`, `postal_code`, `country`, `timezone`, `phone`, `email`, `date_format`, and `location_manager` -- optional here (unlike on create), so omitting it leaves the current manager untouched rather than clearing it. The current manager can hand the role to a successor themselves; sending it re-validates against the same same-hospital, non-patient-role rule as create either way.\n\nRead-only: `id`, `is_active`, `deactivated_at`, `deactivation_reason`, `active_patient_count`, `effective_date_format`, `created_at`, `updated_at`. Deactivation/reactivation go through their own endpoints below, not this one."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Assignment Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/locations/{{location_id}}/assignment-status/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                "{{location_id}}",
+                "assignment-status",
+                ""
+              ]
+            },
+            "description": "Whether this location can be deactivated right now, and why not if not -- so the frontend never has to guess or attempt-and-fail.\n\nPermissions: IsAuthenticated + any hospital staff.\n\nReturns `{ has_active_patients, active_patient_count, message }`. A non-zero `active_patient_count` is the only thing standing between this location and deactivation -- move those patients first (see Move Patients below)."
+          },
+          "response": []
+        },
+        {
+          "name": "List Patients at Location",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/locations/{{location_id}}/patients/?is_active=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                "{{location_id}}",
+                "patients",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "is_active",
+                  "value": "true",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Sub-resource: every patient at this one site, not the hospital's whole roster. Same lean list shape and same active-pregnancy prefetch as the main Patients -> List endpoint, so the two never drift apart.\n\nPermissions: IsAuthenticated + any hospital staff.\n\nOptional query param: `is_active` (`true`/`false`) to filter. Pagination envelope: `{count, page, page_size, total_pages, next, previous, results}`."
+          },
+          "response": []
+        },
+        {
+          "name": "Move Patients",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target_location_id\": \"{{target_location_id}}\",\n  \"move_all\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/locations/{{location_id}}/move-patients/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                "{{location_id}}",
+                "move-patients",
+                ""
+              ]
+            },
+            "description": "The necessary companion to Deactivate's guard -- a location with active patients can't be deactivated until they're moved somewhere else in the same hospital.\n\nPermissions: IsAuthenticated + hospital_admin OR the *source* location's own manager -- without this exception, a manager who can deactivate their own location could still get stuck needing hospital_admin just to clear it first.\n\nWritable: `target_location_id` (required, a different active location in this same hospital), and either `move_all: true` (every active patient currently at the source) or `patient_ids: [...]` (a specific list -- 400 if any id isn't actually assigned to the source location). Moving to the same location, or to a location outside this hospital, both return 400."
+          },
+          "response": []
+        },
+        {
+          "name": "Deactivate Location",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Closing this branch.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/locations/{{location_id}}/deactivate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                "{{location_id}}",
+                "deactivate",
+                ""
+              ]
+            },
+            "description": "Deactivate -- never delete. Immediate effect, no platform-admin approval, unlike organization deactivation which is request-and-review only.\n\nPermissions: IsAuthenticated + hospital_admin OR this location's own `location_manager` (same split as Update Location above). A staff member who manages a *different* location gets 403.\n\nWritable: `reason` (optional free text).\n\nBlocked with 400 while `active_patient_count` is non-zero -- unlike organization deactivation, a location has somewhere else in the same hospital to send its patients, so that guard exists here and nowhere upstream. Check Get Assignment Status first, or use Move Patients, to clear it."
+          },
+          "response": []
+        },
+        {
+          "name": "Reactivate Location",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/locations/{{location_id}}/reactivate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                "{{location_id}}",
+                "reactivate",
+                ""
+              ]
+            },
+            "description": "Restore a previously deactivated location -- clears `deactivated_at`/`deactivated_by`/`deactivation_reason` and flips `is_active` back to true.\n\nPermissions: IsAuthenticated + hospital_admin only -- deliberately NOT extended to the location's own (former) manager, unlike Update/Deactivate/Move Patients above. Resurrecting a closed site is a hospital-level call; closing one operationally is not. Matches Neuro_RPM's own Admin-only create/reactivate split."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Location",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/locations/{{location_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "locations",
+                "{{location_id}}",
+                ""
+              ]
+            },
+            "description": "Hard-delete -- mirrors Neuro_RPM's own guard exactly (its own `DELETE /api/locations/{id}/` refuses the same way). Never the normal path in this system (everywhere else, deactivate is the end state); this exists only for a location created by mistake that never should have existed.\n\nPermissions: IsAuthenticated + hospital_admin only -- same as Create/Reactivate, never extended to the location's own manager.\n\nBlocked with 400 while `is_active` is true -- deactivate first. Also blocked with 400 (not a raw 500) if any patient, active or not, was ever assigned here: `Patient.location` is a protected reference and patients are never hard-deleted either, so that reference outlives a patient's own deactivation. Returns 204 on success."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Staff",
+      "item": [
+        {
+          "name": "List Staff",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/staff/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                ""
+              ]
+            },
+            "description": "The signed-in user's own hospital team. Not paginated -- a hospital's roster is small enough to return in one shot.\n\nPermissions: IsAuthenticated + any hospital-side role (read-only for everyone; onboarding below is restricted).\n\nEach row's `location_ids` are the sites this person is assigned to (`User.locations`) -- currently just a tag recorded at onboarding time; it does not yet restrict what that person can see elsewhere (Patients/Monitoring/Alerts querysets are still organization-scoped only)."
+          },
+          "response": []
+        },
+        {
+          "name": "Invite Staff",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"nadia.nurse@sunrisematernity.test\",\n  \"first_name\": \"Nadia\",\n  \"last_name\": \"Nurse\",\n  \"phone\": \"+923001234567\",\n  \"role_code\": \"nurse\",\n  \"locations\": [\n    \"{{location_id}}\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/staff/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                ""
+              ]
+            },
+            "description": "Create a staff account and email them an invitation to activate it.\n\nPermissions: IsAuthenticated, and either hospital_admin (any location) or a location's own manager (only into location(s) they themselves manage). A staff member who manages no location gets 403.\n\n**No password is accepted.** The account is created with an UNUSABLE password and cannot be signed into at all; MomCare emails a one-time link and the staff member chooses their own password. Nobody — not even the admin who created the account — ever knows it. That is what makes \"this clinician acknowledged the alert\" provable rather than merely recorded.\n\nRequired: `email` (globally unique — 400 if registered anywhere on the platform), `role_code` (`hospital_admin`/`provider`/`nurse`/`care_manager`, never `platform_admin` or `patient`).\nOptional: `first_name`, `last_name`.\n`locations`: required (at least one) for provider/nurse/care_manager; optional for hospital_admin. A non-admin caller may only list locations they manage.\n\n**The activation flow**\n1. This call → account created, `has_activated: false`, invitation emailed.\n2. Staff clicks the link → frontend calls `Auth > Verify Reset Token` to check it is still valid.\n3. They choose a password → `Auth > Reset Password` with the `uid`/`token` from the link. This clears `requires_password_reset` and they can sign in.\n\nThe link is single-use by construction: the token is derived partly from the password hash, so setting a password invalidates it. If it expires, they use `Auth > Forgot Password` for a fresh one — no admin involvement needed.\n\nReturns 201. `has_activated` on the staff row stays `false` until step 3.\n\n**`phone` is optional contact information, not a credential.** Sign-in is by email only (see Auth > Login). It is stored so the hospital can reach a clinician about an alert away from the portal. It is UNIQUE platform-wide, so a number already held by another account — at any hospital — returns **400**, not 500. Omit it or send `\"\"` and it is stored as NULL."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Staff Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/staff/{{staff_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                "{{staff_id}}",
+                ""
+              ]
+            },
+            "description": "One staff member's profile, including credentialing fields and `location_ids`.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's staff id resolves to 404, never 403."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Staff Profile — Self-Service",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"qualifications\": \"MBBS, FCPS (Gynae & Obs)\",\n  \"specialty\": \"Obstetrics\",\n  \"registration_number\": \"12345-P\",\n  \"registration_authority\": \"PMDC\",\n  \"practicing_since\": \"2015-06-01\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/staff/{{staff_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                "{{staff_id}}",
+                ""
+              ]
+            },
+            "description": "A staff member updating their own credentialing profile -- self-reported, not verified against any registry.\n\nPermissions: IsAuthenticated + the staff member themselves (calling this on their own `staff_id`). A different, non-managing clinician gets 403.\n\nWritable (this path only): `photo`, `qualifications`, `specialty`, `registration_number`, `registration_authority`, `practicing_since`. `role_code` and `locations` sent here are silently ignored, not escalated -- see Update Staff (Admin/Manager) below for who can actually change those."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Staff Profile — Admin/Manager",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role_code\": \"care_manager\",\n  \"locations\": [\n    \"{{location_id}}\"\n  ],\n  \"phone\": \"+923001234567\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/staff/{{staff_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                "{{staff_id}}",
+                ""
+              ]
+            },
+            "description": "Hitting the exact same URL as Update Staff Profile (Self-Service) above, but as hospital_admin or a manager of (at least one of) this staff member's locations -- the server picks the wider serializer automatically based on who's calling, same endpoint either way.\n\nPermissions: IsAuthenticated + hospital_admin (any staff at the hospital) or a manager of one of this person's locations.\n\nWritable: everything the self-service path allows, plus `email`, `first_name`, `last_name`, `phone`, `role_code`, and `locations`. All fields optional (omit one to leave it untouched).\n\nSame escalation guard as onboarding: a non-admin caller can never set `role_code` to `hospital_admin`, and may only assign `locations` they themselves manage -- both return 400, not a silent no-op.\n\n**`password` is not settable here.** An admin can change someone's role, locations and credentialing details, but never their password — see Invite Staff. A staff member who is locked out uses `Auth > Forgot Password` themselves.\n\n**`phone` is optional contact information, not a credential.** Sign-in is by email only (see Auth > Login). It is stored so the hospital can reach a clinician about an alert away from the portal. It is UNIQUE platform-wide, so a number already held by another account — at any hospital — returns **400**, not 500. Omit it or send `\"\"` and it is stored as NULL."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Staff Assignment Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/staff/{{staff_id}}/assignment-status/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                "{{staff_id}}",
+                "assignment-status",
+                ""
+              ]
+            },
+            "description": "Whether this staff member can be deactivated right now, and why not if not -- the same \"don't make the frontend guess and fail\" pattern Locations already uses.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nReturns `{ has_active_patients, active_patient_count, message }`. The count is this person's real active caseload: patients where they hold any of the three care-team slots on an active pregnancy -- `Pregnancy.provider` (the accountable lead), `Pregnancy.nurse` or `Pregnancy.care_manager`. Counted as a set, so one person holding two slots on the same pregnancy counts once."
+          },
+          "response": []
+        },
+        {
+          "name": "Deactivate Staff",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Left the team.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/staff/{{staff_id}}/deactivate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                "{{staff_id}}",
+                "deactivate",
+                ""
+              ]
+            },
+            "description": "Deactivate -- never delete. hospital_admin or a manager of (at least one of) this staff member's locations, same split as Update above.\n\nPermissions: IsAuthenticated + hospital_admin or a manager of this staff member.\n\nWritable: `reason` (optional free text).\n\nBlocked with 400 while the real active-caseload count (see Get Staff Assignment Status) is non-zero -- reassign those patients first."
+          },
+          "response": []
+        },
+        {
+          "name": "Reactivate Staff",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/staff/{{staff_id}}/reactivate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                "{{staff_id}}",
+                "reactivate",
+                ""
+              ]
+            },
+            "description": "Restore a previously deactivated staff member.\n\nPermissions: IsAuthenticated + hospital_admin or a manager of this staff member -- unlike Locations' own Reactivate Location (hospital_admin-only there), Staff reactivate is not admin-restricted, matching Neuro_RPM's own `StaffViewSet` exactly: only its hard-delete is Admin-only, reactivate is not."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Staff",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/staff/{{staff_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                "{{staff_id}}",
+                ""
+              ]
+            },
+            "description": "Hard-delete -- mirrors Neuro_RPM's own `StaffViewSet.destroy()` exactly, including what it actually deletes: the underlying `User` account outright (cascading the `Staff` employment record with it), not just the employment record on its own.\n\nPermissions: IsAuthenticated + hospital_admin only -- never extended to a manager, same as Neuro_RPM's own Admin-only `destroy`.\n\nBlocked with 400 while `is_active` is true -- deactivate first. Also blocked with 400 (not a raw 500) if anything with a protected reference to this person still exists -- clinical notes they authored, pregnancies they led, alerts they handled are all kept forever even after their own deactivation. Returns 204 on success."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Secondary Providers",
+      "item": [
+        {
+          "name": "List Secondary Providers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/secondary-providers/?search=&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "secondary-providers",
+                ""
+              ]
+            },
+            "description": "An EXTERNAL clinician referenced on a patient's record — the doctor at the rural clinic who referred her in and stays involved, or a specialist she also sees elsewhere.\n\n**Not platform staff**: no login, no role, no permissions, never appears in /api/staff/. Do not confuse with:\n- **Staff** (/api/staff/) — your own employees, who log in and hold care-team slots.\n- **Patient.emergency_contact_*** — her own husband or mother, stored on HER row because it is personal to her.\n\nThis is a table of its own precisely because ONE such clinician is shared across MANY patients: change their phone number once, not once per patient. `patient_count` on each row shows how many patients currently reference them.\n\nScoped to your hospital — `organization` is taken from your token, never the request body, and another hospital's referral list is invisible (404, never 403).\n\nPermissions to READ: IsAuthenticated + any hospital-side role — a nurse needs the referring doctor's number to make a call.\n\n`search` matches name, email or phone. Standard pagination envelope."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Secondary Provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/secondary-providers/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "secondary-providers",
+                ""
+              ]
+            },
+            "description": "Add an external clinician to your hospital's referral list.\n\nPermissions to WRITE: IsAuthenticated + **hospital_admin or care_manager** only. A nurse or provider gets 403 — curating the referral list is administrative work, not a clinical judgement made mid-shift. (Same Admin|CareManager split the reference platform uses.)\n\nRequired: `name`. Optional: `email`, `phone`, `affiliation`.\n\n`organization` is NEVER read from the body — sending another hospital's id is ignored and the record still lands in yours.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Dr. Ahmed Khan\",\n  \"email\": \"ahmed@ruralclinic.test\",\n  \"phone\": \"03005551234\",\n  \"affiliation\": \"Rural Health Centre, Kahuta\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Secondary Provider",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/secondary-providers/{{secondary_provider_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "secondary-providers",
+                "{{secondary_provider_id}}",
+                ""
+              ]
+            },
+            "description": "One external clinician, including `patient_count` — how many of your patients currently reference them.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nAnother hospital's record returns 404, never 403."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Secondary Provider",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/secondary-providers/{{secondary_provider_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "secondary-providers",
+                "{{secondary_provider_id}}",
+                ""
+              ]
+            },
+            "description": "Correct the details. Partial update — send only what changes.\n\nPermissions: hospital_admin or care_manager only.\n\nThis is the payoff of the shared-record design: one edit updates what every patient referencing this clinician sees.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"03005559999\",\n  \"affiliation\": \"District HQ Hospital, Rawalpindi\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Secondary Provider",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/secondary-providers/{{secondary_provider_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "secondary-providers",
+                "{{secondary_provider_id}}",
+                ""
+              ]
+            },
+            "description": "Remove a clinician from the referral list. Returns 204.\n\nPermissions: hospital_admin or care_manager only.\n\nA REAL delete, unlike Patient or Staff — this is a contact-list entry, not a clinical record. Patients referencing it keep their own record and simply lose the link (`on_delete=SET_NULL`), so nothing clinical is destroyed and the delete is never blocked."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Patient Signup",
+      "item": [
+        {
+          "name": "Sign Up",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/patient/register/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "patient",
+                "register",
+                ""
+              ]
+            },
+            "description": "A woman signing herself up from the mobile app. **No auth required.**\n\nCreates an account and nothing else — **no tokens yet**. Her account has no organization and there is no Patient record; that only happens once a hospital approves a later join request.\n\nRequired: `email` (globally unique among *verified* accounts — see below), `password` (min 8, Django validators), `first_name`. Optional: `last_name`, `phone`.\n\n**201 does not mean she's signed in.** A six-digit code is emailed to her; she must confirm it at **Verify Email** before she can sign in at all — `LoginView` refuses an unverified patient outright. This is deliberately the *one* signup path on this platform that gets this check: hospital owners are identity-checked by a human reviewer, and staff are invited to a specific address by an admin — neither needs an OTP on top of that.\n\n**Retrying is safe.** If she abandons this attempt (lost the code, let it expire, mistyped something) and signs up again with the *same* email before verifying, this endpoint quietly replaces the old unverified attempt rather than saying \"email taken\" — an abandoned first try can never permanently lock her out of her own address. Once verified, that same email is locked for good.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ayesha@example.test\",\n  \"password\": \"HerOwnPick!2026\",\n  \"first_name\": \"Ayesha\",\n  \"last_name\": \"Bibi\",\n  \"phone\": \"03001234567\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Verify Email",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const data = pm.response.json();",
+                  "  if (data.access) { pm.collectionVariables.set('access_token', data.access); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/patient/verify-email/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "patient",
+                "verify-email",
+                ""
+              ]
+            },
+            "description": "The second half of signup. **No auth required** — she has no token yet; this is what produces her first one.\n\nSubmit the six-digit code emailed to her along with `Sign Up`. On success, sets `is_email_verified=True` and returns real tokens — she's finally signed in.\n\n**400 for every failure case** — wrong code, expired (15 minutes), already used, or exhausted (5 wrong attempts invalidates the code entirely, even to the right one afterward) — all the same generic message. Which one it was is not information worth handing to whoever is submitting codes, same reasoning as `Login`'s wrong-password-vs-unknown-email answer.\n\nIf the code expired or never arrived, use **Resend Verification Code** for a fresh one.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ayesha@example.test\",\n  \"code\": \"123456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Resend Verification Code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/patient/resend-verification/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "patient",
+                "resend-verification",
+                ""
+              ]
+            },
+            "description": "A fresh code, if the first one expired or never arrived. **No auth required.**\n\n**Always answers 200 with the same generic message**, whether or not that email has a pending signup — confirming \"yes, someone started signing up with this address\" is itself information a stranger should not get from this endpoint. Same enumeration reasoning as `Forgot Password`.\n\nIssuing a new code invalidates any earlier one for that account — at most one code is ever live at a time.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ayesha@example.test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Browse Hospitals",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/hospitals/?search=&city=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "hospitals",
+                ""
+              ]
+            },
+            "description": "The hospitals she can ask to join.\n\nPermissions: any authenticated user.\n\nOnly **approved and active** hospitals appear — one still under review is not hers to discover. Returns public fields only (name, city, country, phone): never patient counts, licences or staff.\n\n`search` matches name or city; `city` filters exactly. Deliberately a searchable list, NOT distance-sorted — real 'hospitals near me' needs coordinates the Location model does not carry, and inventing them would be worse than a city filter that is honest about what it is."
+          },
+          "response": []
+        },
+        {
+          "name": "Send Request to Hospital",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/my-requests/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "my-requests",
+                ""
+              ]
+            },
+            "description": "Send her details to a hospital and ask to be taken on.\n\nPermissions: IsAuthenticated + **IsPatient**.\n\n`draft` is what she reports about herself. Deliberately a SUBSET of hospital-side onboarding — no `location`, no `organization`, no care team, no MRN. Every one of those is a hospital's decision and she has no hospital yet.\n\nThe draft is validated NOW (a bad one is a 400 immediately) and **re-validated at approval** before anything is created from it.\n\n**409** if she already has a request waiting with this hospital. **404** if the hospital does not exist or is not approved — the same response either way.\n\nStill no Patient record at this point.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organization\": \"{{organization_id}}\",\n  \"draft\": {\n    \"first_name\": \"Ayesha\",\n    \"last_name\": \"Bibi\",\n    \"phone\": \"03001234567\",\n    \"cnic\": \"61101-7654321-0\",\n    \"blood_group\": \"O+\",\n    \"consent_date\": \"2026-02-10\",\n    \"lmp\": \"2026-02-01\",\n    \"gravida\": 2,\n    \"para\": 1,\n    \"previous_c_section\": \"yes\",\n    \"chronic_hypertension\": \"no\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "My Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/my-requests/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "my-requests",
+                ""
+              ]
+            },
+            "description": "Every request she has sent, with its status and the hospital's decision note.\n\nPermissions: IsAuthenticated + IsPatient.\n\nShe has no organization, so Postgres RLS — correctly fail-closed — would show her nothing. This endpoint runs inside `bypass_rls()` with an explicit `user=request.user` filter instead: the filter, not the policy, is what keeps her to her own rows here.\n\nOnce approved, `patient_id` points at her new clinical record.\n\nStatuses: `pending`, `approved`, `rejected`, and `withdrawn` — the last meaning she was accepted elsewhere while this one was still open."
+          },
+          "response": []
+        },
+        {
+          "name": "Withdraw My Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"Applying to a hospital closer to home.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/my-requests/{{patient_request_id}}/withdraw/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "my-requests",
+                "{{patient_request_id}}",
+                "withdraw",
+                ""
+              ]
+            },
+            "description": "**The patient takes back a request she has not had answered yet.** Her own token, not the hospital's.\n\nOnly works while the request is still `pending`:\n\n- **200** — withdrawn. The slot is released, so she can apply to that same hospital again (the one-pending-request-per-hospital rule counts only pending ones).\n- **404** — not her request. Scoped to her own rows *before* the lookup, so another woman's request is 'not found' rather than found-and-refused.\n- **409** — already `approved`, `rejected`, or `withdrawn`. Approval created a real Patient row and a care relationship; undoing that is a discharge the hospital performs, not a POST from the phone. Withdrawing a rejection would rewrite the hospital's record of a decision it actually made.\n- **403** — hospital staff calling it. Withdraw is hers alone; a hospital declining someone is a *rejection*, recorded with who decided it.\n\n**There is deliberately no edit endpoint.** The `draft` is what staff read when deciding, so it must not change under them — otherwise they could approve details they never saw. Withdraw and send a new request instead."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Patient Requests",
+      "item": [
+        {
+          "name": "Requests From Patients",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patient-requests/?status=pending",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patient-requests",
+                ""
+              ]
+            },
+            "description": "Women asking to join YOUR hospital.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nScoped on the request's own `organization` column — another hospital's queue is invisible. Filter with `status=pending|approved|rejected`.\n\nEach row carries her `draft` plus `applicant_email` / `applicant_name`."
+          },
+          "response": []
+        },
+        {
+          "name": "Approve Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patient-requests/{{patient_request_id}}/approve/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patient-requests",
+                "{{patient_request_id}}",
+                "approve",
+                ""
+              ]
+            },
+            "description": "Accept her, and create her clinical record.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n**This is not a second creation path.** Approval re-validates her draft and then calls the same `onboard_patient()` a walk-in goes through, so a self-registered patient and a walk-in are the same kind of record. It also links her login to the new Patient (`patient.user`), so she can see her own record in the app.\n\nIf she reported an LMP or EDD, a pregnancy is opened with her obstetric history carried across.\n\n**409** if the request was already decided. **404** if it belongs to another hospital.\n\nReturns the decided request plus the full new patient record.\n\n**If she asked several hospitals**, the first to approve gets her. Her other pending requests are then marked `withdrawn` automatically — not `rejected`, because those hospitals never said no.\n\nA second hospital approving afterwards gets **409** ('already accepted by another hospital'), not a crash: one login belongs to one clinical record.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"Verified by phone.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reject Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patient-requests/{{patient_request_id}}/reject/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patient-requests",
+                "{{patient_request_id}}",
+                "reject",
+                ""
+              ]
+            },
+            "description": "Decline the request.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nHer account and her draft both survive — she can send the same details to a different hospital. No Patient record is created.\n\n`note` is optional and shown to her on her own requests list.\n\n**409** if already decided.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"Outside our catchment area.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Patients",
+      "item": [
+        {
+          "name": "List / Search Patients",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/?search=&assigned_to=&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                ""
+              ]
+            },
+            "description": "This hospital's patients only -- scoped through `location__organization`, so another hospital's patient is never in the list.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`search` matches first name, last name, full name, phone, CNIC or MRN (case-insensitive, server-side).\n\n`assigned_to=me` narrows to the caller's own caseload: a provider sees pregnancies where they hold the `provider` slot, a nurse the `nurse` slot, a care_manager the `care_manager` slot. For a hospital_admin it returns an honest EMPTY list -- 'my patients' is not a concept that applies to them, and silently returning everyone under that label would be wrong.\n\nEach row carries the current risk level so the deteriorating patient can be sorted to the top rather than buried alphabetically. Standard pagination envelope: {count, page, page_size, total_pages, next, previous, results}."
+          },
+          "response": []
+        },
+        {
+          "name": "Onboard Patient",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                ""
+              ]
+            },
+            "description": "Create a patient and, optionally, her current pregnancy — ONE atomic transaction (patients/services.py::onboard_patient). If any part fails, no patient row is created.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`location` and `organization` are NEVER accepted from the client -- both are resolved server-side from the caller's own hospital, so onboarding cannot place a patient in another tenant.\n\nRequired: `first_name`. Everything else optional.\n\n`cnic` is UNIQUE PER HOSPITAL (not globally -- the same woman may legitimately hold a record at two hospitals). A duplicate within one hospital returns 400 with 'A patient with this CNIC is already registered at this hospital.' Blank CNIC is stored as NULL, so any number of CNIC-less patients coexist fine. `phone` is deliberately NOT unique -- rural households share one number.\n\n`pregnancy.provider` / `.nurse` / `.care_manager` are the care team, one of each at a time. Each is validated three ways: the staff member must belong to YOUR hospital (another hospital's clinician fails as 'does not exist', never confirming they exist elsewhere), their actual role must match the slot (a nurse cannot fill `provider`), and they must not already be at `max_patients` capacity. All three return 400 under `pregnancy`.\n\n`consent_date` is when she agreed to be monitored — a single optional date, not an event log. A hospital recording consent on paper leaves it blank rather than inventing one.\n\nThe seven obstetric-history answers (`previous_c_section`, `previous_preeclampsia`, `previous_gestational_diabetes`, `previous_preterm_birth`, `chronic_hypertension`, `diabetes`, `multiple_pregnancy`) are plain fields ON the pregnancy. Each is `yes`/`no`/`unknown` and defaults to `unknown` — deliberately three-state, because \"not asked\" is clinically different from \"no\", and a boolean would silently turn an unknown into a negative. Note the risk model does not currently read them.\n\n`pregnancy` requires at least one of `lmp` or `edd` -- without one, gestational age cannot be derived and no reading can be interpreted.\n\n`program_enrollments` is optional and explicit; today the only valid `program_code` is `rpm` (displayed as 'Maternal Monitoring'). Omitting it opens no enrollment.\n\n`mrn` is SUPPLIED BY YOU, never generated. Hospitals arrive with their own numbering (paper files, lab slips, an older system), and a number this platform invented would become a second competing identifier for the same woman. It is optional -- leave it out and the patient simply has none (stored as NULL, so any number of MRN-less patients coexist). Uniqueness is GLOBAL and case-insensitive (unlike CNIC, which is per-hospital): a duplicate returns 400 on the `mrn` field with 'A patient with this MRN already exists.'\n\nReturns 201 with the full patient detail, including `current_pregnancy` and `consents`.\n\nThere is no separate 'program enrollment' step: MomCare runs one programme, so a patient's enrol-to-discharge episode IS her pregnancy. Open a new one through 'Open New Pregnancy'; close it by setting its `status` and `outcome_date`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mrn\": \"AC-2026-0042\",\n  \"first_name\": \"Ayesha\",\n  \"last_name\": \"Bibi\",\n  \"date_of_birth\": \"1998-04-12\",\n  \"phone\": \"03001234567\",\n  \"cnic\": \"61101-1234567-8\",\n  \"blood_group\": \"O+\",\n  \"emergency_contact_name\": \"Imran Bibi\",\n  \"emergency_contact_phone\": \"03007654321\",\n  \"emergency_contact_relation\": \"husband\",\n  \"emergency_contact_email\": \"imran@example.test\",\n  \"pregnancy\": {\n    \"lmp\": \"2026-02-01\",\n    \"gravida\": 2,\n    \"para\": 1,\n    \"provider\": \"{{provider_staff_id}}\",\n    \"nurse\": \"{{nurse_staff_id}}\",\n    \"care_manager\": \"{{care_manager_staff_id}}\",\n    \"previous_c_section\": \"yes\",\n    \"previous_preeclampsia\": \"no\",\n    \"chronic_hypertension\": \"unknown\"\n  },\n  \"consent_date\": \"2026-02-10\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Patient",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                ""
+              ]
+            },
+            "description": "Full clinical record: identity, emergency contact, `current_pregnancy` (with its care team and risk factors), full `consents` history, and `program_enrollments`.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nA patient belonging to another hospital returns 404, never 403 -- a 403 would confirm the record exists somewhere else."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Patient",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                ""
+              ]
+            },
+            "description": "Correct the patient's own details (name, DOB, phone, CNIC, blood group, emergency contact, consent_date). Partial update -- send only what changes.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`location` and `organization` are read-only (tenant placement is never client-supplied). The pregnancy and its care team are edited through the pregnancy endpoints, not here.\n\n`secondary_provider` links her to an external clinician from your referral list (see the Secondary Providers folder). The full details come back as `secondary_provider_detail` on any patient read.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"03009998888\",\n  \"emergency_contact_email\": \"newcontact@example.test\",\n  \"consent_date\": \"2026-02-10\",\n  \"secondary_provider\": \"{{secondary_provider_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Pregnancies",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/pregnancies/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "pregnancies",
+                ""
+              ]
+            },
+            "description": "This patient's full pregnancy history, newest first -- each with its care team and risk factors.\n\nPermissions: IsAuthenticated + any hospital-side role."
+          },
+          "response": []
+        },
+        {
+          "name": "Open New Pregnancy",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/pregnancies/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "pregnancies",
+                ""
+              ]
+            },
+            "description": "Open a new pregnancy episode for an existing patient (she came back pregnant again).\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nRequires at least `lmp` or `edd`. EDD is derived from LMP (Naegele's rule) when not supplied.\n\n400 if she already has an ACTIVE pregnancy -- at most one at a time, enforced by a database constraint too, because 'which pregnancy is this reading for?' must always be answerable. Close the current one first (set its `status`).\n\nThe same care-team validation as onboarding applies to `provider`/`nurse`/`care_manager`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lmp\": \"2026-03-15\",\n  \"gravida\": 3,\n  \"para\": 2,\n  \"provider\": \"{{provider_staff_id}}\",\n  \"previous_c_section\": \"yes\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Pregnancy",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/pregnancies/{{pregnancy_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                ""
+              ]
+            },
+            "description": "One pregnancy: dating (LMP/EDD/source), gravida/para, live-derived gestational age, care team (provider/nurse/care_manager + their names and whether the provider is still active), status and risk factors.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`gestational_age_*` is derived from EDD on every read and NEVER stored -- a stored value would be wrong the next day."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Pregnancy / Reassign Care Team",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/pregnancies/{{pregnancy_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                ""
+              ]
+            },
+            "description": "Correct the dating, close the episode (`status` + `outcome_date`), or change the care team. THIS is how a clinician is reassigned -- there is no separate care-team endpoint.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nCare-team fields get the same three checks as at onboarding (same hospital, role matches the slot, not over capacity). Re-sending the SAME staff member who is already in that slot is not treated as a new assignment, so saving an unrelated field never trips a capacity check nobody asked for. Send `null` to unassign.\n\nNo DELETE -- a pregnancy is historical clinical fact, corrected rather than removed (405).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nurse\": \"{{nurse_staff_id}}\",\n  \"status\": \"active\",\n  \"notes\": \"Reassigned nurse.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Worklist",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/worklist/?assigned_to=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "worklist",
+                ""
+              ]
+            },
+            "description": "Administrative and care-continuity GAPS — cases where something procedural is missing, independent of whether today's vitals look bad.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nFlags active pregnancies with: no reading in 7+ days, no obstetric risk history ever answered, or no lead clinician (including one who has since been deactivated -- an assignment to someone who has left is as good as no assignment once alerts start routing).\n\nRows with the MOST gaps sort first. The two day-thresholds are administrative defaults, not clinically validated.\n\n`assigned_to=me` narrows to the caller's own caseload, same semantics as the patient list."
+          },
+          "response": []
+        },
+        {
+          "name": "Deactivate Patient",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/deactivate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "deactivate",
+                ""
+              ]
+            },
+            "description": "Deactivate a patient - never delete. Clinical records are kept.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nHer clinical record survives intact — consent history, pregnancies and notes are all still readable. Deactivation is reversible; deletion is not offered at all.\n\n`reason` is optional and stored on the record alongside who deactivated her and when.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Moved out of the catchment area\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reactivate Patient",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/reactivate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "reactivate",
+                ""
+              ]
+            },
+            "description": "Undo a deactivation.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nClears `deactivated_at`, `deactivated_by` and `deactivation_reason`, and puts the patient back in the active roster.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Alerts",
+      "item": [
+        {
+          "name": "List Alerts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/alerts/?status=&assigned_to=&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "alerts",
+                ""
+              ]
+            },
+            "description": "This hospital's alerts, newest first.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`assigned_to=me` follows CARE-TEAM ASSIGNMENT, not location: a nurse legitimately needs to see an alert for a patient outside her usual ward if she is on that patient's care team. A hospital_admin gets an honest empty list for that filter.\n\nAlerts are raised inside the request that recorded the triggering reading, not by a scheduler - a dangerous value escalates immediately."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Alert",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/alerts/{{alert_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "alerts",
+                "{{alert_id}}",
+                ""
+              ]
+            },
+            "description": "One alert with its full `events` trail - raised, notified, worsened, acknowledged, resolved, each with its tier and timestamp.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`AlertEvent` is append-only: escalation that isn't written down is escalation that never happened."
+          },
+          "response": []
+        },
+        {
+          "name": "Acknowledge Alert",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/alerts/{{alert_id}}/acknowledge/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "alerts",
+                "{{alert_id}}",
+                "acknowledge",
+                ""
+              ]
+            },
+            "description": "Record that a named clinician has SEEN this. Stops the escalation clock.\n\nPermissions: IsAuthenticated + **IsClinician** (provider/nurse/care_manager). A hospital_admin is deliberately excluded: the escalation ladder climbs TOWARDS the administrator, so letting them acknowledge would let the ladder be stopped by the person it was climbing to, with nobody having looked at the patient - and the record would say it was answered.\n\nIf the patient then worsens, the acknowledgement is cleared automatically: a clinician who accepted 'medium' has not accepted 'high'.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Resolve Alert",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/alerts/{{alert_id}}/resolve/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "alerts",
+                "{{alert_id}}",
+                "resolve",
+                ""
+              ]
+            },
+            "description": "Close the alert episode. Separate from acknowledging on purpose - seeing an alert and deciding it is over are two different clinical judgements.\n\nPermissions: IsAuthenticated + **IsClinician** (same reasoning as acknowledge).\n\nAn alert the patient recovered from is closed automatically by the system with `resolution=recovered` and no `resolved_by` - nobody is credited with a decision they didn't make.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resolution\": \"handled\",\n  \"note\": \"Reviewed, BP settled after rest.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Readings & Risk",
       "item": [
         {
           "name": "Record a Reading — Device",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"source\": \"device\",\n  \"systolic_bp\": 118,\n  \"diastolic_bp\": 76,\n  \"heart_rate\": 82,\n  \"body_temp_f\": 98.2,\n  \"blood_glucose\": 92,\n  \"stress_score\": 3,\n  \"phys_activity_score\": 6\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "pregnancies", "{{pregnancy_id}}", "readings", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ]
             },
             "description": "Records one reading event and scores it immediately in the same request: momcare_model.predict() runs against the pregnancy's latest reading right after this save, so the response already reflects whether risk changed.\n\nEvery vital is optional -- at least one must be present, or there is nothing to record. `age` is separate from the 9 vitals used for scoring identity purposes. `hemoglobin` usually will not be present here: it comes from a monthly lab report, not a band.\n\n`source` is required: `\"device\"` if these numbers came from the wearable's own transmission, `\"manual\"` if a staff member typed them in by hand -- even if a band happens to be assigned to this pregnancy at the same time, since the two facts are independent.\n\nResponse adds `risk_changed` (bool) and `risk_level` (the new `final_risk_level`, or null if the risk level did not transition) on top of the saved reading."
           },
@@ -165,16 +2092,33 @@
           "name": "Record a Reading — Manual",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"source\": \"manual\",\n  \"systolic_bp\": 168,\n  \"diastolic_bp\": 112,\n  \"heart_rate\": 130,\n  \"body_temp_f\": 103.0,\n  \"hemoglobin\": 6.0,\n  \"blood_glucose\": 250,\n  \"stress_score\": 9,\n  \"phys_activity_score\": 1\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "pregnancies", "{{pregnancy_id}}", "readings", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ]
             },
             "description": "Same endpoint as the device example, with `source: \"manual\"` -- a nurse with a cuff and a thermometer entering numbers by hand. These particular vitals are deliberately dangerous (Hypertensive Crisis / Tachycardia / Severe Anemia / Diabetes) to demonstrate a High-risk transition and the alert it raises."
           },
@@ -187,10 +2131,22 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?since=",
-              "host": ["{{base_url}}"],
-              "path": ["api", "pregnancies", "{{pregnancy_id}}", "readings", ""],
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ],
               "query": [
-                { "key": "since", "value": "", "description": "Optional ISO datetime -- only readings recorded at or after this moment." }
+                {
+                  "key": "since",
+                  "value": "",
+                  "description": "Optional ISO datetime -- only readings recorded at or after this moment."
+                }
               ]
             },
             "description": "Paginated, newest first."
@@ -204,8 +2160,17 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/latest/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "pregnancies", "{{pregnancy_id}}", "readings", "latest", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                "latest",
+                ""
+              ]
             },
             "description": "The single most recent reading event, or `{\"reading\": null, \"total_count\": 0}` when there isn't one yet -- deliberately never a fabricated normal-looking value."
           },
@@ -218,8 +2183,16 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/risk/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "pregnancies", "{{pregnancy_id}}", "risk", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "risk",
+                ""
+              ]
             },
             "description": "`{ current, history }` -- a record of level *transitions*, not one row per reading. Each assessment carries: `risk_level` (the trained model's raw answer) and `final_risk_level` (what is actually acted on -- these differ only when the Africa+Medium->High rule fires); the 5 clinical categories (bp_category, heart_rate_category, temperature_category, glucose_category, hemoglobin_category); `confidence` (the model's own certainty, 0-1); `flagged_for_review` (true when confidence fell below this hospital's effective_confidence_threshold); the doctor-review fields (`review_status`, `confirmed_risk_level`, `verified_by_name`, `verified_at`); and the exact `reading` this judgement was computed from, nested inline.\n\nNote: the threshold value itself is not included here by design -- fetch it separately from Organization > Get My Organization if you need to show confidence and the threshold side by side."
           },
@@ -232,8 +2205,16 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/risk/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "pregnancies", "{{pregnancy_id}}", "risk", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "risk",
+                ""
+              ]
             },
             "description": "Re-runs scoring against the latest reading without waiting for a new one -- useful after correcting a reading. Returns the new assessment (201) if the level changed, or `{\"detail\": \"No change in risk level.\", \"current\": ...}` (200) if it did not."
           },
@@ -243,16 +2224,35 @@
           "name": "Verify Risk Assessment",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"confirmed_risk_level\": \"high\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/risk/{{assessment_id}}/verify/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "pregnancies", "{{pregnancy_id}}", "risk", "{{assessment_id}}", "verify", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "risk",
+                "{{assessment_id}}",
+                "verify",
+                ""
+              ]
             },
             "description": "Clinicians only (provider, nurse, care_manager) -- a hospital_admin cannot review a clinical assessment. `confirmed_risk_level` is required and must be one of low/medium/high. `review_status` is derived, not chosen: `confirmed` when it matches `final_risk_level`, `corrected` when it does not. The original `risk_level`/`final_risk_level` are never overwritten by a correction."
           },
@@ -270,8 +2270,14 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/devices/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "devices", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                ""
+              ]
             }
           },
           "response": []
@@ -280,16 +2286,31 @@
           "name": "Register a Device",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"serial_number\": \"BAND-0001\",\n  \"acquisition\": \"loaned\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/devices/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "devices", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                ""
+              ]
             },
             "description": "Adds one unit to this hospital's stock, unassigned. `acquisition` is one of sold / loaned / subsidised."
           },
@@ -299,16 +2320,33 @@
           "name": "Assign Device to Pregnancy",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"acquisition\": \"loaned\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/device/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "pregnancies", "{{pregnancy_id}}", "device", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "device",
+                ""
+              ]
             },
             "description": "Puts a band on a wrist. A pregnancy may wear at most one device at a time; a device may be worn by at most one pregnancy."
           },
@@ -321,10 +2359,578 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/device/",
-              "host": ["{{base_url}}"],
-              "path": ["api", "pregnancies", "{{pregnancy_id}}", "device", ""]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "device",
+                ""
+              ]
             },
             "description": "Takes the band back. Readings already collected are never touched -- they are observations of things that already happened."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Clinical Monitoring",
+      "item": [
+        {
+          "name": "List Clinical Tags",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/clinical-tags/?location_id=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "clinical-tags",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Tags visible to the caller: this hospital's org-level tags, plus whichever locations they can see into -- every location for hospital_admin, only their own assigned location(s) for provider/nurse/care_manager. Optional `location_id` narrows to one location's own tags.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nClinicalTag is scoped to exactly one of `organization` (hospital-wide) or `location` (one branch only) -- never both, never neither. A new Location automatically gets its own copy of every org-level tag the moment it's created (see Locations -> Create Location); after that the two sides are fully independent."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Clinical Tag — Org-Level",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/clinical-tags/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "clinical-tags",
+                ""
+              ]
+            },
+            "description": "Create a hospital-wide tag, visible from every one of this hospital's locations.\n\nPermissions: IsAuthenticated + hospital_admin only -- a tag is shared configuration used across every note that references it, so adding one directly is a deliberate admin action. (An ad-hoc tag typed inline while writing a note is still auto-created on the fly -- see Log Contact below -- this endpoint is for curating the catalogue itself.)\n\nExactly one of `organization`/`location` is required, and it must be your own hospital -- naming another tenant's id returns 400, not a leaked confirmation that it exists. `color` is optional, must be a hex code like `#RRGGBB` when given.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"High Risk\",\n  \"organization\": \"{{organization_id}}\",\n  \"color\": \"#ff4d4f\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Clinical Tag — Location-Level",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/clinical-tags/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "clinical-tags",
+                ""
+              ]
+            },
+            "description": "Create a tag visible only at one specific location/branch, not the rest of the hospital.\n\nPermissions: IsAuthenticated + hospital_admin only. `location` must belong to your own hospital -- another tenant's location id returns 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"NICU Referral\",\n  \"location\": \"{{location_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Clinical Tag",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/clinical-tags/{{tag_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "clinical-tags",
+                "{{tag_id}}",
+                ""
+              ]
+            },
+            "description": "A single tag by id, within what the caller can see (their hospital's org-level tags, or whichever locations they can see into).\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's tag resolves to 404, never 403."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Clinical Tag",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/clinical-tags/{{tag_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "clinical-tags",
+                "{{tag_id}}",
+                ""
+              ]
+            },
+            "description": "Rename and/or recolor a tag. Renaming it here changes what every note already carrying it displays -- it does not fork into a new tag.\n\nPermissions: IsAuthenticated + hospital_admin only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"High Risk \\u2014 Renamed\",\n  \"color\": \"#c41d1d\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Clinical Tag",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/clinical-tags/{{tag_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "clinical-tags",
+                "{{tag_id}}",
+                ""
+              ]
+            },
+            "description": "Remove a tag from the catalogue -- it is also removed from every note currently carrying it (a plain M2M row deletion, the notes themselves are untouched).\n\nPermissions: IsAuthenticated + hospital_admin only."
+          },
+          "response": []
+        },
+        {
+          "name": "List Monitoring Feed (Combined)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/?year=&month=&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "year",
+                  "value": ""
+                },
+                {
+                  "key": "month",
+                  "value": ""
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "This patient's clinical contact history as one merged, chronological feed -- every MonitoringSession (with its linked note, if any) and every standalone note (session=None) -- **scoped to one calendar month**, newest first.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin/provider/nurse/care_manager). A patient's own account cannot read this -- it names staff and clinical detail, the same PHI boundary as the patient record itself.\n\nEach row is `{session, note}` -- either half may be null: a duration-only contact has `note: null`, a standalone note has `session: null`.\n\n`year`/`month` (both optional) pick which calendar month to view -- defaults to the current month in the patient's location timezone. The response carries a top-level `totals: {total_seconds, total_formatted}` block for that same month (summed across MonitoringSession.duration_seconds only -- notes carry no duration), plus the echoed `year`/`month` so the client can trust the server's interpretation. 400 if `month` is outside 1-12 or either value isn't an integer."
+          },
+          "response": []
+        },
+        {
+          "name": "Log Contact — Duration Only",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                ""
+              ]
+            },
+            "description": "Log time spent on this patient with no note attached -- creates a MonitoringSession, `note` in the response is null.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`duration_seconds` must be 1-86400 (24 hours). `recorded_at` is optional -- omit it to use now, or backdate a retroactive entry (rejected if in the future). `pregnancy` is filled in automatically from the patient's current active pregnancy -- there is no field for it in this request; if she has none yet (or is between two), the session is still created, just with no pregnancy attached.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"duration_seconds\": 600,\n  \"recorded_at\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Log Contact — Note Only",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                ""
+              ]
+            },
+            "description": "Log a note with no duration -- creates a standalone MonitoringNote, `session` in the response is null.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nAt least one of `duration_seconds`/`note` is required on every call to this endpoint -- an empty payload is rejected with 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"Called to check on nausea; advised hydration and small frequent meals.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Log Contact — Duration + Note + Tags",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                ""
+              ]
+            },
+            "description": "The full shape: a session and a note created together, atomically, with the note linked to the session.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`tags` entries are get-or-create: pass `id` to attach an existing tag exactly as-is (its name/color are never touched by attaching it), or `name` (+ optional `color`) to create one on the fly -- a new ad-hoc tag is created at the *location* level (the patient's own branch), not hospital-wide, on the reasoning that a quick tag typed mid-note is local by default; a shared hospital-wide tag is a deliberate admin action (see Create Clinical Tag above). Matching on name is case-insensitive.\n\n`left_voicemail`/`two_way_communication`: at most one may be true, and both require a non-empty `note` -- a call outcome with nothing said makes no sense.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"duration_seconds\": 420,\n  \"note\": \"Discussed medication adherence and scheduled a follow-up call.\",\n  \"tags\": [\n    {\n      \"name\": \"Follow Up\",\n      \"color\": \"#00a86b\"\n    },\n    {\n      \"id\": \"{{tag_id}}\"\n    }\n  ],\n  \"left_voicemail\": false,\n  \"two_way_communication\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Sessions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/sessions/?year=&month=&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                "sessions",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "year",
+                  "value": ""
+                },
+                {
+                  "key": "month",
+                  "value": ""
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "This patient's sessions for one calendar month, no note pairing -- \"how much time has been logged.\"\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`year`/`month` (both optional) pick which calendar month -- defaults to the current month in the patient's location timezone. The response carries a top-level `totals: {total_seconds, total_formatted}` block for that same month, plus the echoed `year`/`month`. 400 if `month` is outside 1-12 or either value isn't an integer."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Session",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-sessions/{{session_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-sessions",
+                "{{session_id}}",
+                ""
+              ]
+            },
+            "description": "A single session by id -- flat, not nested under its patient, the same way `/alerts/<id>/` is flat even though an Alert hangs off a pregnancy.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's session resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Session",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-sessions/{{session_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-sessions",
+                "{{session_id}}",
+                ""
+              ]
+            },
+            "description": "Correct a session's duration or backdate its `recorded_at`.\n\nPermissions: IsAuthenticated + any hospital-side role for the request to reach the view, then **owner or hospital_admin** at the object level -- only the staff member who logged this session, or a hospital admin, may edit it. Anyone else gets 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"duration_seconds\": 900\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Session",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-sessions/{{session_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-sessions",
+                "{{session_id}}",
+                ""
+              ]
+            },
+            "description": "Remove a session. If it has a linked note, the note is deleted too (a real mistake, not two separate corrections) -- deleting a note on its own never touches its session.\n\nPermissions: owner or hospital_admin, same as Update Session."
+          },
+          "response": []
+        },
+        {
+          "name": "List Notes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/notes/?search=&tag_id=&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                "notes",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": ""
+                },
+                {
+                  "key": "tag_id",
+                  "value": ""
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "This patient's notes only, searchable -- used to look back through her clinical contact history.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`search` matches note text, tag names, or the author's name. `tag_id` narrows to notes carrying one specific tag."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Note",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-notes/{{note_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-notes",
+                "{{note_id}}",
+                ""
+              ]
+            },
+            "description": "A single note by id -- flat, same reasoning as sessions above.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's note resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Note",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-notes/{{note_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-notes",
+                "{{note_id}}",
+                ""
+              ]
+            },
+            "description": "Correct a note's text, replace its tag set, or update its call-outcome flags.\n\nPermissions: owner or hospital_admin at the object level, same as Update Session.\n\n`tags_input` (write-only) *replaces* the note's whole tag set with the resolved result of this list -- same get-or-create semantics as `tags` on Log Contact. Omit it entirely to leave the existing tags untouched; send `[]` to clear them. `note` cannot be blank.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"Corrected: reports mild swelling, not severe.\",\n  \"tags_input\": [\n    {\n      \"name\": \"Watch Closely\"\n    }\n  ],\n  \"left_voicemail\": false,\n  \"two_way_communication\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Note",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-notes/{{note_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-notes",
+                "{{note_id}}",
+                ""
+              ]
+            },
+            "description": "Remove a note. Its linked session (if any) is untouched -- only deleting the session cascades to the note, not the other way around.\n\nPermissions: owner or hospital_admin, same as Update Session."
           },
           "response": []
         }
@@ -333,13 +2939,106 @@
   ],
   "auth": {
     "type": "bearer",
-    "bearer": [{ "key": "token", "value": "{{access_token}}", "type": "string" }]
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
   },
   "variable": [
-    { "key": "base_url", "value": "http://localhost:8000" },
-    { "key": "access_token", "value": "" },
-    { "key": "pregnancy_id", "value": "" },
-    { "key": "assessment_id", "value": "" },
-    { "key": "device_id", "value": "" }
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "pregnancy_id",
+      "value": ""
+    },
+    {
+      "key": "assessment_id",
+      "value": ""
+    },
+    {
+      "key": "device_id",
+      "value": ""
+    },
+    {
+      "key": "location_id",
+      "value": ""
+    },
+    {
+      "key": "target_location_id",
+      "value": ""
+    },
+    {
+      "key": "location_manager_id",
+      "value": ""
+    },
+    {
+      "key": "staff_id",
+      "value": ""
+    },
+    {
+      "key": "reset_uid",
+      "value": ""
+    },
+    {
+      "key": "reset_token",
+      "value": ""
+    },
+    {
+      "key": "patient_id",
+      "value": ""
+    },
+    {
+      "key": "provider_staff_id",
+      "value": ""
+    },
+    {
+      "key": "nurse_staff_id",
+      "value": ""
+    },
+    {
+      "key": "care_manager_staff_id",
+      "value": ""
+    },
+    {
+      "key": "alert_id",
+      "value": ""
+    },
+    {
+      "key": "secondary_provider_id",
+      "value": ""
+    },
+    {
+      "key": "patient_request_id",
+      "value": ""
+    },
+    {
+      "key": "organization_id",
+      "value": ""
+    },
+    {
+      "key": "tag_id",
+      "value": ""
+    },
+    {
+      "key": "session_id",
+      "value": ""
+    },
+    {
+      "key": "note_id",
+      "value": ""
+    },
+    {
+      "key": "notification_id",
+      "value": ""
+    }
   ]
 }

@@ -1,6 +1,7 @@
 from typing import ClassVar
 
 from django.conf import settings
+from django.contrib.auth import authenticate
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.decorators import method_decorator
 from django.utils.encoding import force_bytes
@@ -16,14 +17,16 @@ from rest_framework_simplejwt.settings import api_settings as simplejwt_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from momcare_platform.core.common.jwt_auth import issue_tokens_for
-from momcare_platform.core.common.mail import send_application_received, send_password_reset
+from momcare_platform.core.common.mail import send_application_received, send_email_otp, send_password_reset
 from momcare_platform.core.common.rls import bypass_rls
 from momcare_platform.core.users.api.serializers import (
+    ForgotPasswordSerializer,
     PasswordChangeSerializer,
-    PasswordResetConfirmSerializer,
-    PasswordResetRequestSerializer,
+    PatientRegisterSerializer,
     RegisterSerializer,
+    ResetPasswordSerializer,
     UserMeSerializer,
+    VerifyResetTokenSerializer,
 )
 from momcare_platform.core.users.models import User
 
@@ -137,14 +140,23 @@ class RegisterView(APIView):
 
 @method_decorator(csrf_exempt, name="dispatch")
 class LoginView(APIView):
-    """Email + password → JWT access token (refresh in HttpOnly cookie)."""
+    """Email + password → JWT access token (refresh in HttpOnly cookie).
+
+    Email is deliberately the *only* accepted identifier. A phone number was
+    tried and removed: it has no single global format, so the same number
+    reaches us as "+923001234567", "0300 1234567" or "03001234567" depending
+    on who typed it, and an exact-match lookup authenticates only the one
+    spelling used at signup. Matching them properly means normalising every
+    number to E.164, which needs a country to interpret a bare national
+    number against — a guess this platform has no good way to make for a
+    hospital it has never seen. Email has one worldwide format and no such
+    ambiguity.
+    """
 
     authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
     permission_classes = [AllowAny]
 
     def post(self, request):
-        from django.contrib.auth import authenticate
-
         email = request.data.get("email", "").lower().strip()
         password = request.data.get("password", "")
 
@@ -157,8 +169,14 @@ class LoginView(APIView):
         # Nobody's hospital is known until a credential match says who they
         # are — this lookup is inherently cross-tenant, the same way finding
         # anyone by email always is before their identity is established.
+        #
+        # authenticate() rather than a manual lookup: Django's ModelBackend
+        # already hashes the password against a dummy when no user matches,
+        # so an unknown address costs the same time as a wrong password and
+        # cannot be used to enumerate who has an account here.
         with bypass_rls():
             user = authenticate(request, username=email, password=password)
+
         if user is None:
             return Response(
                 {"detail": "Invalid credentials."},
@@ -168,6 +186,19 @@ class LoginView(APIView):
         if not user.is_active:
             return Response(
                 {"detail": "Account is inactive."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Patient-only: self-registration is the one signup path where
+        # nothing else ever confirmed she owns this address (contrast staff,
+        # invited to a specific address by an admin; hospital owners,
+        # verified by a human reviewer). Scoped to ROLE_PATIENT deliberately
+        # — is_email_verified is never set for any other role, so gating
+        # every login on it here would lock out every hospital account that
+        # has ever existed.
+        if user.role_code == settings.ROLE_PATIENT and not user.is_email_verified:
+            return Response(
+                {"detail": "Confirm your email before signing in.", "requires_email_verification": True},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -321,7 +352,7 @@ class PasswordChangeView(APIView):
 
 
 @method_decorator(csrf_exempt, name="dispatch")
-class PasswordResetRequestView(APIView):
+class ForgotPasswordView(APIView):
     """Ask for a reset link by email.
 
     Always answers the same way, whether or not the address belongs to an
@@ -334,7 +365,7 @@ class PasswordResetRequestView(APIView):
     throttle_scope = "auth_sensitive"
 
     def post(self, request):
-        serializer = PasswordResetRequestSerializer(data=request.data)
+        serializer = ForgotPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"]
 
@@ -362,7 +393,7 @@ class PasswordResetRequestView(APIView):
 
 
 @method_decorator(csrf_exempt, name="dispatch")
-class PasswordResetConfirmView(APIView):
+class ResetPasswordView(APIView):
     """Set a new password using the emailed link."""
 
     permission_classes = [AllowAny]
@@ -375,12 +406,18 @@ class PasswordResetConfirmView(APIView):
         # write below is to that same not-yet-scoped row, so it stays in the
         # same bypass rather than falling out of context between the two.
         with bypass_rls():
-            serializer = PasswordResetConfirmSerializer(data=request.data)
+            serializer = ResetPasswordSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
 
             user = serializer.validated_data["user"]
             user.set_password(serializer.validated_data["new_password"])
-            user.save(update_fields=["password"])
+            # Clears the not-yet-activated flag an invited staff account is
+            # created with. This endpoint is where a staff invitation is
+            # completed as well as where a forgotten password is reset — both
+            # end with the person having chosen a password themselves, which
+            # is exactly what the flag tracks.
+            user.requires_password_reset = False
+            user.save(update_fields=["password", "requires_password_reset"])
 
         # Whoever forced the reset may already hold a session. Changing the
         # password invalidates the token that produced this link, but not the
@@ -391,3 +428,144 @@ class PasswordResetConfirmView(APIView):
             {"detail": "Your password has been set. You can now sign in."},
             status=status.HTTP_200_OK,
         )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class VerifyResetTokenView(APIView):
+    """Lets the frontend check a reset link is still valid before showing the
+    new-password form, instead of only finding out after the visitor fills it
+    in and submits. Purely read-only — never changes the password, never
+    revokes sessions. ResetPasswordView remains the only endpoint that
+    actually resets anything, and re-validates the token itself regardless of
+    what this one said (the link could still expire in the gap between the
+    two calls) — this is a UX improvement layered on top, not a second source
+    of truth.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
+    throttle_scope = "auth_sensitive"
+
+    def post(self, request):
+        with bypass_rls():
+            serializer = VerifyResetTokenSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+        return Response({"valid": True}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PatientRegisterView(APIView):
+    """A woman signing herself up from the mobile app.
+
+    Creates an account and nothing else — no tokens yet. She has no hospital,
+    so there is no Patient record either; that is created only when a
+    hospital approves her join request, through the same onboarding a
+    walk-in goes through.
+
+    No tokens are issued here on purpose: nothing yet proves she owns the
+    email address she typed in. ``PatientRegisterSerializer.create()`` sends
+    a one-time code to it (``EmailVerificationCode``); she must confirm it
+    at ``VerifyPatientEmailView`` before signing in at all — see that view
+    and ``LoginView``'s own docstring for the gate on the other end.
+
+    Open to anyone, and throttled like the other credential endpoints: this
+    one creates accounts.
+    """
+
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
+    permission_classes = [AllowAny]
+    throttle_scope = "auth_sensitive"
+
+    def post(self, request):
+        serializer = PatientRegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+
+        return Response(
+            {
+                "detail": "Almost done — enter the code we emailed you to finish creating your account.",
+                "email": user.email,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class VerifyPatientEmailView(APIView):
+    """The second half of patient self-registration: confirm the code sent
+    to her email, and only now receive real sign-in tokens.
+
+    Identified by email + code, not a session — she has no token yet, this
+    is what produces her first one. Deliberately the same generic failure
+    message for "wrong code", "expired code", "too many attempts" and
+    "no such pending account": which one it was is not information worth
+    handing to whoever is submitting codes, the same reasoning ``LoginView``
+    already applies to a wrong password vs. an unknown email.
+    """
+
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
+    permission_classes = [AllowAny]
+    throttle_scope = "auth_sensitive"
+
+    def post(self, request):
+        from momcare_platform.core.users.models import EmailVerificationCode
+
+        email = (request.data.get("email") or "").strip().lower()
+        code = (request.data.get("code") or "").strip()
+        if not email or not code:
+            return Response(
+                {"detail": "Email and code are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with bypass_rls():
+            user = User.objects.filter(email__iexact=email, is_email_verified=False).first()
+            valid = user is not None and EmailVerificationCode.verify(user, code)
+
+            if not valid:
+                return Response(
+                    {"detail": "That code is invalid, expired, or has been used too many times."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            user.is_email_verified = True
+            user.save(update_fields=["is_email_verified", "updated_at"])
+
+        refresh = issue_tokens_for(user)
+        response = Response(
+            {
+                "detail": "Email confirmed. Choose a hospital to request care from.",
+                "access": str(refresh.access_token),
+                "user": UserMeSerializer(user).data,
+            },
+        )
+        _set_refresh_cookie(response, str(refresh))
+        return response
+
+
+class ResendPatientVerificationView(APIView):
+    """A fresh code, if the first one expired or never arrived.
+
+    Always answers the same way regardless of whether the email matches a
+    real pending account — the same enumeration concern as ``ForgotPassword
+    View``: confirming "yes, someone started signing up with this address"
+    is itself information a stranger should not get from this endpoint.
+    """
+
+    authentication_classes: ClassVar[list[type[BaseAuthentication]]] = []
+    permission_classes = [AllowAny]
+    throttle_scope = "auth_sensitive"
+
+    def post(self, request):
+        from momcare_platform.core.users.models import EmailVerificationCode
+
+        email = (request.data.get("email") or "").strip().lower()
+        if not email:
+            return Response({"detail": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with bypass_rls():
+            user = User.objects.filter(email__iexact=email, is_email_verified=False).first()
+            if user is not None:
+                _, code = EmailVerificationCode.issue(user)
+                send_email_otp(user, code)
+
+        return Response({"detail": "If that email has a pending signup, a new code has been sent."})

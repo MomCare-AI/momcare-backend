@@ -27,7 +27,7 @@ allows ``current_setting('app.rls_bypass', true) = 'on'``:
 
   - ``escalate_alerts`` sweeps every open alert across every hospital every
     five minutes; that is the feature, not a bug to route around.
-  - ``seed_demo`` and other management commands run before any request
+  - ``demo_setup`` and other management commands run before any request
     exists, so there is no per-request organization to scope to.
   - Django admin, reached by a platform_admin whose own organization_id is
     NULL, is the one place a human is meant to see across tenants.

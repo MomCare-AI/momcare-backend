@@ -53,3 +53,10 @@ class Location(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStampedMode
     @property
     def active_patient_count(self) -> int:
         return self.patients.filter(is_active=True).count()
+
+    @property
+    def effective_date_format(self) -> str:
+        """This location's own override, falling back to its organization's —
+        same "always read through this, never the raw column" rule as
+        ``Organization.effective_confidence_threshold``."""
+        return self.date_format or self.organization.date_format

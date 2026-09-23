@@ -68,11 +68,20 @@ LOCAL_APPS = [
     "momcare_platform.core.locations",
     "momcare_platform.core.staff",
     "momcare_platform.core.patients",
+    # Clinical contact logging -- MonitoringSession/MonitoringNote/ClinicalTag.
+    # app_label is "clinical_notes", not "monitoring": that label already
+    # belongs to modules.pregnancy.vitals (kept from its own former home in
+    # core/), so this app -- which now holds what core/monitoring's *name*
+    # implies -- needed a different one. See its own apps.py.
     "momcare_platform.core.monitoring",
-    "momcare_platform.core.alerts",
-    # No feature modules yet — the first one (momcare_platform.modules.<name>)
-    # gets added here once it exists, following the Section 6 self-registration
-    # pattern from the blueprint.
+    # The first feature module. Devices/readings/risk/alerts moved here from
+    # core.monitoring/core.alerts on 2026-09-16 — core/monitoring never held
+    # what its name implies (see CLAUDE.md's "structural divergence" section);
+    # this frees that name for MonitoringSession/MonitoringNote. App labels
+    # ("monitoring", "alerts") are unchanged from their former core/ home, so
+    # this is a path move, not a schema migration — see each app's apps.py.
+    "momcare_platform.modules.pregnancy.vitals",
+    "momcare_platform.modules.pregnancy.alerts",
 ]
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 

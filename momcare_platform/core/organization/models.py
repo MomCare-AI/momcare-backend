@@ -31,10 +31,8 @@ class FileBlob(UUIDPrimaryKeyModel, TimeStampedModel):
     Lives here rather than in ``core.common``: that package holds no
     models of its own (shared base classes, permissions, scoping — see its
     own package docstring), and this is a genuine table needing a genuine
-    migration. ``Organization`` already carries two of the three fields
-    that use it (``license_document``, ``building_photo``); ``Staff.photo``
-    reaches across to this same table the same way ``Organization``
-    already reaches into ``staff.models`` for a property, below.
+    migration. ``Staff.photo`` reaches across to this table the same way
+    ``Organization`` reaches into ``staff.models`` for a property, below.
     """
 
     name = models.CharField(max_length=255, unique=True, db_index=True)
@@ -44,20 +42,6 @@ class FileBlob(UUIDPrimaryKeyModel, TimeStampedModel):
 
     def __str__(self) -> str:
         return self.name
-
-
-# Facilities in Pakistan are licensed provincially, not federally (PMDC registers
-# individual practitioners, not establishments). Recording the issuing body tells
-# the reviewer which public register to search for a given licence number.
-LICENSE_AUTHORITY_CHOICES = [
-    ("phc", "Punjab Healthcare Commission (PHC)"),
-    ("shcc", "Sindh Healthcare Commission (SHCC)"),
-    ("kphcc", "KP Healthcare Commission"),
-    ("bhcc", "Balochistan Healthcare Commission"),
-    ("ihra", "Islamabad Healthcare Regulatory Authority (IHRA)"),
-    ("ajk_gb", "AJK / Gilgit-Baltistan health department"),
-    ("other", "Other / not listed"),
-]
 
 
 class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStampedModel):
@@ -103,20 +87,6 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
         blank=True,
         help_text="What the reviewer actually checked — registry consulted, date, callback outcome.",
     )
-    license_no = models.CharField(max_length=100, blank=True)
-    license_authority = models.CharField(
-        max_length=20,
-        choices=LICENSE_AUTHORITY_CHOICES,
-        blank=True,
-        help_text="Which regulator issued the licence — tells the reviewer whose register to search.",
-    )
-    license_document = models.FileField(
-        upload_to="licenses/%Y/%m/",
-        storage=DatabaseStorage(),
-        blank=True,
-        null=True,
-        help_text="Scan of the licence certificate, for the reviewer to inspect.",
-    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -125,12 +95,17 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
         blank=True,
     )
     logo = models.URLField(max_length=500, blank=True)
-    building_photo = models.FileField(
-        upload_to="organizations/%Y/%m/",
+    # Evidence a platform admin checks before approving the application —
+    # collected at onboarding (see RegisterSerializer). The number is
+    # required and writable there; the image is a schema-only column for
+    # now (blank=True) — its upload path is deliberately deferred, not
+    # wired into onboarding or the profile endpoint yet.
+    license_number = models.CharField(max_length=100, blank=True)
+    license_image = models.FileField(
+        upload_to="organization/licenses/%Y/%m/",
         storage=DatabaseStorage(),
         blank=True,
         null=True,
-        help_text="A photo of the hospital or office building, shown on its profile.",
     )
     timezone = TimeZoneField(default="UTC")
     phone = models.CharField(max_length=20, blank=True)
@@ -325,3 +300,126 @@ class AuditLog(UUIDPrimaryKeyModel):
 
     def __str__(self) -> str:
         return f"{self.action} {self.resource}/{self.resource_id} at {self.timestamp}"
+
+
+class OrganizationDeactivationRequest(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A hospital's own ask to close its account — the in-app alternative to
+    contacting support directly, existing alongside it rather than replacing
+    it. Deliberately a real, reviewable record (mirroring the shape of
+    ``Organization``'s own review fields) rather than a bare boolean flag on
+    ``Organization``: a platform admin needs to see *why*, and the row is
+    what a future "platform admin" surface actually reviews and acts on.
+
+    Approving one calls ``services.deactivate_organization()`` — the same
+    function a platform admin's own manual deactivation already calls, so
+    there is one behaviour to reason about regardless of which path reached
+    it, not two.
+    """
+
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_DISMISSED = "dismissed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_DISMISSED, "Dismissed"),
+    ]
+
+    organization = models.ForeignKey(
+        "organization.Organization",
+        on_delete=models.CASCADE,
+        related_name="deactivation_requests",
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="The hospital_admin who asked for this.",
+    )
+    reason = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="The platform admin who approved or dismissed this.",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            # One live ask per hospital at a time — a second request while one
+            # is already pending would just be the same question asked twice.
+            models.UniqueConstraint(
+                fields=["organization"],
+                condition=models.Q(status="pending"),
+                name="one_pending_deactivation_request_per_organization",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.organization.name} — {self.get_status_display()}"
+
+
+class Notification(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A short-lived heads-up for hospital staff -- "something needs your
+    attention," not a compliance record (that's ``AuditLog``) and not an
+    email (deliberately none -- see ``organization.signals`` and the alert-
+    email removal this project already went through once).
+
+    ``notification_type`` is a plain string code rather than a table per
+    event kind: the first and, as of this writing, only producer is a new
+    ``PatientJoinRequest``, but the type column exists so a second producer
+    is a new value here, not a schema change -- same reasoning as
+    ``AuditLog.action``.
+    """
+
+    TYPE_PATIENT_JOIN_REQUEST = "patient_join_request"
+    TYPE_CHOICES = [
+        (TYPE_PATIENT_JOIN_REQUEST, "Patient join request"),
+    ]
+
+    organization = models.ForeignKey(
+        "organization.Organization",
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+    notification_type = models.CharField(max_length=50, choices=TYPE_CHOICES, db_index=True)
+    message = models.CharField(max_length=255)
+    # The id of whatever triggered this (e.g. a PatientJoinRequest) so the
+    # frontend can deep-link to it. Deliberately not a real ForeignKey: the
+    # target model differs per notification_type, and a notification must
+    # survive its target being deleted (a withdrawn/decided join request is
+    # still worth having been told about).
+    related_object_id = models.UUIDField(null=True, blank=True)
+    is_read = models.BooleanField(default=False, db_index=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["organization", "is_read", "-created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.organization.name} — {self.message}"
+
+    def mark_read(self) -> None:
+        if self.is_read:
+            return
+        from django.utils import timezone
+
+        self.is_read = True
+        self.read_at = timezone.now()
+        self.save(update_fields=["is_read", "read_at", "updated_at"])

@@ -25,6 +25,7 @@ REGISTRATION = {
     "email": "owner@sunrise.test",
     "password": "BrandNewPass!2026",
     "org_name": "Sunrise Maternity",
+    "license_number": "LIC-0001",
     "org_email": "info@sunrise.test",
     "org_phone": "0511111111",
     "address_line1": "22 Blue Area",
@@ -32,15 +33,13 @@ REGISTRATION = {
     "state": "ICT",
     "postal_code": "44000",
     "country": "Pakistan",
-    "license_no": "IHRA-2026-115",
-    "license_authority": "ihra",
 }
 
 
 def _register(client, **overrides):
     payload = {**REGISTRATION, **overrides}
     response = client.post(
-        "/api/auth/register/",
+        "/api/organization/onboard/",
         data=json.dumps(payload),
         content_type="application/json",
     )
