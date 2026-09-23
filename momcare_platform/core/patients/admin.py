@@ -1,31 +1,15 @@
 from django.contrib import admin
 
-from momcare_platform.core.patients.models import (
-    CareTeamMembership,
-    ClinicalNote,
-    Consent,
-    Patient,
-    Pregnancy,
-    PregnancyRiskFactors,
-)
+from momcare_platform.core.patients.models import Patient, Pregnancy
 
 
 class PregnancyInline(admin.TabularInline):
     model = Pregnancy
     extra = 0
-    fields = ["status", "lmp", "edd", "edd_source", "gravida", "para", "assigned_staff"]
+    fields = ["status", "lmp", "edd", "edd_source", "gravida", "para", "provider", "nurse", "care_manager"]
     show_change_link = True
     # Historical clinical fact — correctable, never removable.
     can_delete = False
-
-
-class ConsentInline(admin.TabularInline):
-    model = Consent
-    extra = 0
-    fields = ["status", "version", "method", "recorded_by", "recorded_at"]
-    readonly_fields = ["recorded_at"]
-    can_delete = False
-    ordering = ["-recorded_at"]
 
 
 @admin.register(Patient)
@@ -34,15 +18,23 @@ class PatientAdmin(admin.ModelAdmin):
     list_filter = ["is_active", "blood_group", "location__organization"]
     search_fields = ["mrn", "first_name", "last_name", "phone", "cnic"]
     readonly_fields = ["mrn", "created_at", "updated_at"]
-    inlines = [PregnancyInline, ConsentInline]
+    inlines = [PregnancyInline]
     fieldsets = (
         ("Identity", {"fields": ("mrn", "first_name", "last_name", "date_of_birth", "gender")}),
         ("Contact", {"fields": ("phone", "cnic", "blood_group")}),
         (
             "Emergency contact",
-            {"fields": ("emergency_contact_name", "emergency_contact_phone", "emergency_contact_relation")},
+            {
+                "fields": (
+                    "emergency_contact_name",
+                    "emergency_contact_phone",
+                    "emergency_contact_relation",
+                    "emergency_contact_email",
+                ),
+            },
         ),
-        ("Placement", {"fields": ("location", "user")}),
+        ("Consent", {"fields": ("consent_date",)}),
+        ("Placement", {"fields": ("location", "organization", "user")}),
         ("Status", {"fields": ("is_active", "deactivated_at", "deactivation_reason")}),
         ("Timestamps", {"fields": ("created_at", "updated_at")}),
     )
@@ -62,73 +54,10 @@ class PatientAdmin(admin.ModelAdmin):
 
 @admin.register(Pregnancy)
 class PregnancyAdmin(admin.ModelAdmin):
-    list_display = ["patient", "status", "gestational_age_display", "edd", "edd_source", "assigned_staff"]
-    list_filter = ["status", "edd_source"]
+    list_display = ["patient", "status", "gestational_age_display", "edd", "edd_source", "provider"]
+    list_filter = ["status", "edd_source", *Pregnancy.FACTOR_FIELDS]
     search_fields = ["patient__mrn", "patient__first_name", "patient__last_name"]
     readonly_fields = ["gestational_age_display", "created_at", "updated_at"]
 
     def has_delete_permission(self, request, obj=None):
         return False
-
-
-@admin.register(PregnancyRiskFactors)
-class PregnancyRiskFactorsAdmin(admin.ModelAdmin):
-    list_display = ["pregnancy", *PregnancyRiskFactors.FACTOR_FIELDS]
-    # django-stubs' list_filter type is broader than plain list[str] and lists
-    # are invariant, so a dynamically-built list of field names never matches
-    # structurally even though it's valid at runtime.
-    list_filter = PregnancyRiskFactors.FACTOR_FIELDS  # type: ignore[assignment]
-    search_fields = ["pregnancy__patient__mrn", "pregnancy__patient__last_name"]
-
-
-@admin.register(Consent)
-class ConsentAdmin(admin.ModelAdmin):
-    list_display = ["patient", "status", "version", "method", "recorded_by", "recorded_at"]
-    list_filter = ["status", "method", "version"]
-    search_fields = ["patient__mrn", "patient__last_name"]
-    readonly_fields = ["patient", "status", "version", "method", "recorded_by", "recorded_at", "note"]
-
-    def has_add_permission(self, request):
-        # Consent is recorded through the API, where the acting user is captured.
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        # Append-only: what was agreed, and when, must survive intact.
-        return False
-
-
-@admin.register(ClinicalNote)
-class ClinicalNoteAdmin(admin.ModelAdmin):
-    list_display = ["pregnancy", "author", "created_at"]
-    search_fields = ["pregnancy__patient__mrn", "pregnancy__patient__last_name", "body"]
-    readonly_fields = ["pregnancy", "author", "body", "created_at", "updated_at"]
-
-    def has_add_permission(self, request):
-        # Notes are written through the API, where the acting clinician is captured.
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        # Append-only: a correction is a new note, never an edit to an old one.
-        return False
-
-
-@admin.register(CareTeamMembership)
-class CareTeamMembershipAdmin(admin.ModelAdmin):
-    """Manual test surface ahead of the real API (Phase 2 of the dashboard
-    master plan). Not the intended long-term assignment workflow — a
-    hospital_admin/care_manager will do this from the portal once it exists.
-    """
-
-    list_display = ["pregnancy", "staff", "role", "is_active", "started_at", "ended_at"]
-    list_filter = ["role", "is_active"]
-    search_fields = ["pregnancy__patient__mrn", "pregnancy__patient__last_name", "staff__employee_id"]
-    readonly_fields = ["started_at", "created_by", "ended_by", "created_at", "updated_at"]
-
-    def has_delete_permission(self, request, obj=None):
-        # History must survive — end a membership instead of deleting it.
-        return False
-
-    def save_model(self, request, obj, form, change):
-        if not change:
-            obj.created_by = request.user
-        super().save_model(request, obj, form, change)

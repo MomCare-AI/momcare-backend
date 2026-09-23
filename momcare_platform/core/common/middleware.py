@@ -1,7 +1,7 @@
 """AuditLogMiddleware — HIPAA-essential PHI access logging.
 
 Records one ``AuditLog`` row per request to a PHI-touching endpoint
-(``/api/patients``, ``/api/alerts``, ``/api/attention`` — extend
+(``/api/patients``, ``/api/alerts``, ``/api/pregnancies`` — extend
 ``_PHI_PREFIXES`` as feature modules add their own PHI-bearing endpoints). Writes are synchronous (a single cheap
 insert) and best-effort — logging must never break a request.
 
@@ -30,9 +30,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Path prefixes considered PHI-touching.
-# Alerts and the attention queue carry patient names and clinical findings, so
-# reading them is access to PHI exactly as reading the record is.
-_PHI_PREFIXES = ("/api/patients", "/api/alerts", "/api/attention")
+# Alerts and readings carry patient names and clinical findings, so reading
+# them is access to PHI exactly as reading the record is.
+_PHI_PREFIXES = ("/api/patients", "/api/alerts", "/api/pregnancies")
 
 _METHOD_TO_ACTION = {
     "GET": "READ",

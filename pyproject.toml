@@ -118,18 +118,25 @@ source_modules = [ "momcare_platform.core" ]
 forbidden_modules = [ "momcare_platform.modules" ]
 
 [[tool.importlinter.contracts]]
-name = "project wiring must not hard-import modules"
-type = "forbidden"
-source_modules = [ "config.api_router" ]
-forbidden_modules = [ "momcare_platform.modules" ]
-
-[[tool.importlinter.contracts]]
 name = "momcare_model stays framework-free"
 type = "forbidden"
 source_modules = [ "momcare_model" ]
 forbidden_modules = [ "momcare_platform", "django" ]
 
+# REMOVED 2026-09-16: "project wiring must not hard-import modules"
+# (config.api_router -/-> momcare_platform.modules). It existed to force
+# module routes through the ProgramSpec self-registration in
+# core/common/programs.py — but that registry stayed unused by deliberate
+# choice (see CLAUDE.md's "structural divergence" section), so once
+# devices/vitals/alerts moved into modules/pregnancy/, api_router needed to
+# import their views directly to mount routes at all. Keeping the contract
+# would have forced reviving the registry indirection purely to satisfy a
+# linter rule, for a pattern already rejected on its own merits. The "core
+# must not import modules" contract below is the one that still matters —
+# it's what keeps patients/organization resolving vitals/alerts models via
+# apps.get_model() instead of a static import, and it's unaffected by this.
+#
 # NOTE: an "independence" contract listing individual feature-module packages
 # (like Neuro_RPM's "programs are independent" contract) gets added here once
-# the first module exists under momcare_platform/modules/ — there's nothing to
-# check independence between yet.
+# a second module exists under momcare_platform/modules/ — there's only one
+# (pregnancy) to check independence between yet.

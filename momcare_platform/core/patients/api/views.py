@@ -8,7 +8,6 @@ identifier a caller could tamper with to reach another hospital's patients.
 
 from datetime import timedelta
 
-from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import OuterRef, Prefetch, Q, Subquery, Value
 from django.db.models.functions import Concat
@@ -19,27 +18,30 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from momcare_platform.core.common.pagination import DefaultPagination
-from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
+from momcare_platform.core.common.permissions import IsHospitalStaff, IsPatient
+from momcare_platform.core.common.rls import bypass_rls
 from momcare_platform.core.common.scoping import (
     OrganizationScopedQuerysetMixin,
     scope_to_assigned_staff,
 )
 from momcare_platform.core.patients.api.serializers import (
-    CareTeamMembershipCreateSerializer,
-    CareTeamMembershipSerializer,
-    ClinicalNoteCreateSerializer,
-    ClinicalNoteSerializer,
-    ConsentInputSerializer,
-    ConsentSerializer,
     PatientCreateSerializer,
     PatientDetailSerializer,
+    PatientDraftSerializer,
+    PatientJoinRequestSerializer,
     PatientListSerializer,
     PregnancySerializer,
     PregnancyWriteSerializer,
     WorklistPatientSerializer,
 )
-from momcare_platform.core.patients.models import CareTeamMembership, ClinicalNote, Consent, Patient, Pregnancy
-from momcare_platform.core.patients.services import EnrolmentError, create_pregnancy, enrol_patient
+from momcare_platform.core.patients.models import Patient, PatientJoinRequest, Pregnancy
+from momcare_platform.core.patients.services import (
+    OnboardingError,
+    create_pregnancy,
+    deactivate_patient,
+    onboard_patient,
+    reactivate_patient,
+)
 
 NO_HOSPITAL = {"detail": "This account is not attached to a hospital."}
 
@@ -70,7 +72,10 @@ class PatientScopedView(OrganizationScopedQuerysetMixin, APIView):
         # A malformed UUID raises ValidationError; that is a bad identifier, not
         # a server fault, so it reads as "not found" like any other miss.
         try:
-            return self.patients().select_related("location", "user").get(pk=patient_id), None
+            return (
+                self.patients().select_related("location", "user").get(pk=patient_id),
+                None,
+            )
         except Patient.DoesNotExist, DjangoValidationError, ValueError:
             return None, Response({"detail": "Patient not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -83,10 +88,17 @@ def _active_pregnancy_prefetch() -> Prefetch:
     latest assessment through the related manager would cost twenty more. Both
     collapse into one prefetch with a correlated subquery.
 
-    Imported inside the function: monitoring already imports patients, so a
-    module-level import the other way would close the cycle.
+    Resolved via the app registry, not a static import: ``RiskAssessment``
+    lives in ``modules.pregnancy.vitals``, a module `core` must never import
+    (the `core must not import modules` import-linter contract) — the same
+    pattern Neuro_RPM uses for its own core-to-module model lookups (e.g.
+    ``CarePlan``, resolved via ``apps.get_model`` for the identical reason).
+    A runtime lookup isn't a Python import statement, so the contract's
+    static analysis never sees it.
     """
-    from momcare_platform.core.monitoring.models import RiskAssessment
+    from django.apps import apps as django_apps  # noqa: PLC0415
+
+    RiskAssessment = django_apps.get_model("monitoring", "RiskAssessment")
 
     latest = RiskAssessment.objects.filter(pregnancy=OuterRef("pk")).order_by("-assessed_at")
 
@@ -151,22 +163,19 @@ class PatientListCreateView(PatientScopedView):
         if error:
             return error
 
-        # Context carries the request so the nested assigned_staff field can
+        # Context carries the request so the nested care-team fields can
         # narrow its queryset to this hospital's own clinicians.
         serializer = PatientCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        patient_data, pregnancy_data, risk_factors, consent = serializer.split()
+        patient_data, pregnancy_data = serializer.split()
 
         try:
-            patient = enrol_patient(
+            patient = onboard_patient(
                 organization=org,
-                recorded_by=request.user,
                 patient_data=patient_data,
                 pregnancy_data=pregnancy_data,
-                risk_factor_data=risk_factors,
-                consent=consent,
             )
-        except EnrolmentError as exc:
+        except OnboardingError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(PatientDetailSerializer(patient).data, status=status.HTTP_201_CREATED)
@@ -194,28 +203,27 @@ class PatientWorklistView(PatientScopedView):
     organization_lookup = "patient__location__organization"
 
     NO_READING_AFTER = timedelta(days=7)
-    NO_NOTE_AFTER = timedelta(days=30)
 
     def get(self, request):
         _, error = self.hospital_or_error(request)
         if error:
             return error
 
-        # Function-local: monitoring already imports patients, so a
-        # module-level import the other way would close the cycle (same
-        # reasoning as _active_pregnancy_prefetch above).
-        from momcare_platform.core.monitoring.models import VitalReading
+        # Resolved via the app registry, not a static import — same reason
+        # as _active_pregnancy_prefetch above: VitalReading lives in
+        # modules.pregnancy.vitals, which core must never import statically.
+        from django.apps import apps as django_apps  # noqa: PLC0415
+
+        VitalReading = django_apps.get_model("monitoring", "VitalReading")
 
         pregnancies = self.scope_to_organization(
             Pregnancy.objects.filter(status=Pregnancy.STATUS_ACTIVE),
-        ).select_related("patient", "assigned_staff__user", "risk_factors")
+        ).select_related("patient", "provider__user")
         pregnancies = scope_to_assigned_staff(pregnancies, request, path_prefix="")
 
         latest_reading = VitalReading.objects.filter(pregnancy=OuterRef("pk")).order_by("-recorded_at")
-        latest_note = ClinicalNote.objects.filter(pregnancy=OuterRef("pk")).order_by("-created_at")
         pregnancies = pregnancies.annotate(
             latest_reading_at=Subquery(latest_reading.values("recorded_at")[:1]),
-            latest_note_at=Subquery(latest_note.values("created_at")[:1]),
         )
 
         now = timezone.now()
@@ -262,30 +270,7 @@ class PatientWorklistView(PatientScopedView):
                 },
             )
 
-        note_gap = self._days_since(pregnancy.latest_note_at, now)
-        if note_gap is None or note_gap >= self.NO_NOTE_AFTER.days:
-            reasons.append(
-                {
-                    "code": "no_recent_note",
-                    "detail": (
-                        f"No clinical note in {note_gap} days."
-                        if note_gap is not None
-                        else "No clinical note has ever been logged."
-                    ),
-                    "days": note_gap,
-                },
-            )
-
-        risk_factors = getattr(pregnancy, "risk_factors", None)
-        if risk_factors is None:
-            reasons.append(
-                {
-                    "code": "no_risk_history",
-                    "detail": "No obstetric risk history has been recorded.",
-                    "days": None,
-                },
-            )
-        elif len(risk_factors.unanswered_factors) == len(risk_factors.FACTOR_FIELDS):
+        if len(pregnancy.unanswered_factors) == len(Pregnancy.FACTOR_FIELDS):
             reasons.append(
                 {
                     "code": "no_risk_history",
@@ -343,7 +328,11 @@ class PregnancyListCreateView(PatientScopedView):
         if missing:
             return missing
 
-        pregnancies = patient.pregnancies.select_related("risk_factors", "assigned_staff__user")
+        pregnancies = patient.pregnancies.select_related(
+            "provider__user",
+            "nurse__user",
+            "care_manager__user",
+        )
         return Response(PregnancySerializer(pregnancies, many=True).data)
 
     def post(self, request, patient_id):
@@ -357,11 +346,10 @@ class PregnancyListCreateView(PatientScopedView):
         serializer = PregnancyWriteSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = dict(serializer.validated_data)
-        risk_factors = data.pop("risk_factors", None)
 
         try:
-            pregnancy = create_pregnancy(patient=patient, data=data, risk_factor_data=risk_factors)
-        except EnrolmentError as exc:
+            pregnancy = create_pregnancy(patient=patient, data=data)
+        except OnboardingError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(PregnancySerializer(pregnancy).data, status=status.HTTP_201_CREATED)
@@ -373,7 +361,7 @@ class PregnancyDetailView(PatientScopedView):
 
     def _get(self, patient, pregnancy_id):
         try:
-            return patient.pregnancies.select_related("risk_factors").get(pk=pregnancy_id), None
+            return patient.pregnancies.get(pk=pregnancy_id), None
         except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
             return None, Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -409,67 +397,8 @@ class PregnancyDetailView(PatientScopedView):
         return Response(PregnancySerializer(serializer.instance).data)
 
 
-class PregnancyNotesView(PatientScopedView):
-    """A pregnancy's clinical notes — append-only, newest first.
-
-    Anyone on the hospital's staff can read them (an admin may need one for a
-    liability review, same reasoning as alert visibility), but only a
-    clinician can write one: this is a clinical judgement, not an admin task,
-    the same split already drawn for acknowledging alerts and risk.
-    """
-
-    def get_permissions(self):
-        if self.request.method == "POST":
-            return [IsAuthenticated(), IsClinician()]
-        return [IsAuthenticated(), IsHospitalStaff()]
-
-    def get(self, request, patient_id, pregnancy_id):
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-        patient, missing = self.get_patient_or_404(patient_id)
-        if missing:
-            return missing
-        try:
-            pregnancy = patient.pregnancies.get(pk=pregnancy_id)
-        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
-            return Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        notes = pregnancy.clinical_notes.select_related("author__user")
-        return Response(ClinicalNoteSerializer(notes, many=True).data)
-
-    def post(self, request, patient_id, pregnancy_id):
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-        patient, missing = self.get_patient_or_404(patient_id)
-        if missing:
-            return missing
-        try:
-            pregnancy = patient.pregnancies.get(pk=pregnancy_id)
-        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
-            return Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        # A clinician always has a Staff record - IsClinician already
-        # confirmed the role, and every clinical role is invited as staff.
-        author = request.user.staff
-
-        serializer = ClinicalNoteCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        note = ClinicalNote.objects.create(
-            pregnancy=pregnancy,
-            author=author,
-            **serializer.validated_data,
-        )
-        return Response(ClinicalNoteSerializer(note).data, status=status.HTTP_201_CREATED)
-
-
-class PatientConsentView(PatientScopedView):
-    """Record a further consent event — a withdrawal, or a re-grant.
-
-    Append-only: earlier records are never altered, so the history of what was
-    agreed and when survives intact.
-    """
+class PatientDeactivateView(PatientScopedView):
+    """Deactivate a patient — never delete. Clinical records survive."""
 
     def post(self, request, patient_id):
         _, error = self.hospital_or_error(request)
@@ -479,150 +408,349 @@ class PatientConsentView(PatientScopedView):
         if missing:
             return missing
 
-        serializer = ConsentInputSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        consent = Consent.objects.create(
-            patient=patient,
-            recorded_by=request.user,
-            **serializer.validated_data,
+        deactivate_patient(patient, by=request.user, reason=request.data.get("reason", ""))
+        return Response(PatientDetailSerializer(patient).data)
+
+
+class PatientReactivateView(PatientScopedView):
+    """Undo a deactivation."""
+
+    def post(self, request, patient_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+
+        reactivate_patient(patient)
+        return Response(PatientDetailSerializer(patient).data)
+
+
+class PatientSelfView(APIView):
+    """Base for the endpoints a self-registered woman calls herself.
+
+    She has no organization, so her token carries no ``org_id`` claim and
+    Postgres RLS — correctly fail-closed — would show her nothing at all.
+    These views therefore run inside ``bypass_rls()`` and filter on
+    ``user=request.user`` instead. The filter is doing the security work
+    here, not the policy, which is why every queryset below is written
+    against her own rows explicitly.
+    """
+
+    permission_classes = [IsAuthenticated, IsPatient]
+
+    def my_requests(self, request):
+        return PatientJoinRequest.objects.filter(user=request.user).select_related("organization", "patient")
+
+
+class HospitalDirectoryView(APIView):
+    """The hospitals a woman can ask to join.
+
+    Only approved, active ones: an application still under review is not
+    something she should be able to send herself to.
+
+    Deliberately a searchable list rather than distance-sorted. Real
+    "hospitals near me" needs coordinates the Location model does not carry,
+    and inventing them would be worse than a city filter that is honest
+    about what it is.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from momcare_platform.core.organization.models import Organization
+
+        # Cross-tenant by design and by necessity: she belongs to no hospital,
+        # and the whole point is to show her the ones she could join. Only
+        # public-facing fields are returned — never counts, licences or staff.
+        with bypass_rls():
+            hospitals = Organization.objects.filter(
+                status=Organization.STATUS_APPROVED,
+                is_active=True,
+            )
+            search = request.query_params.get("search", "").strip()
+            if search:
+                hospitals = hospitals.filter(Q(name__icontains=search) | Q(city__icontains=search))
+            city = request.query_params.get("city", "").strip()
+            if city:
+                hospitals = hospitals.filter(city__iexact=city)
+
+            rows = [
+                {
+                    "id": str(h.id),
+                    "name": h.name,
+                    "city": h.city,
+                    "country": h.country,
+                    "phone": h.phone,
+                }
+                for h in hospitals.order_by("name", "id")[:200]
+            ]
+        return Response({"count": len(rows), "results": rows})
+
+
+class PatientJoinRequestView(PatientSelfView):
+    """Ask a hospital to take her on, and see what she has already asked."""
+
+    def get(self, request):
+        with bypass_rls():
+            data = PatientJoinRequestSerializer(self.my_requests(request), many=True).data
+        return Response({"count": len(data), "results": data})
+
+    def post(self, request):
+        from momcare_platform.core.organization.models import Organization
+
+        draft = PatientDraftSerializer(data=request.data.get("draft") or {})
+        draft.is_valid(raise_exception=True)
+
+        organization_id = request.data.get("organization")
+        if not organization_id:
+            return Response(
+                {"organization": ["Choose a hospital to send this to."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with bypass_rls():
+            try:
+                hospital = Organization.objects.filter(
+                    pk=organization_id,
+                    status=Organization.STATUS_APPROVED,
+                    is_active=True,
+                ).first()
+            except DjangoValidationError, ValueError:
+                hospital = None
+            if hospital is None:
+                # The same 404 whether the id is wrong or the hospital is not
+                # approved — a rejected application is not hers to discover.
+                return Response({"detail": "Hospital not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            already_waiting = (
+                self.my_requests(request)
+                .filter(organization=hospital, status=PatientJoinRequest.STATUS_PENDING)
+                .exists()
+            )
+            if already_waiting:
+                return Response(
+                    {"detail": "You already have a request waiting with this hospital."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            join_request = PatientJoinRequest.objects.create(
+                user=request.user,
+                organization=hospital,
+                # Store the raw submitted JSON, not validated_data — dates come
+                # back as date objects, which JSONField cannot hold. It has
+                # already passed validation above, and is re-validated at
+                # approval time before anything is created from it.
+                draft=request.data.get("draft") or {},
+            )
+            body = PatientJoinRequestSerializer(join_request).data
+        return Response(body, status=status.HTTP_201_CREATED)
+
+
+class JoinRequestWithdrawView(PatientSelfView):
+    """She takes back a request she has not had answered yet.
+
+    Only her own, and only while still pending: once a hospital has approved
+    it there is a real ``Patient`` row and a care relationship, which is not
+    something a POST from the phone should unpick — she would have to ask the
+    hospital to discharge her. Withdrawing a rejected request would also
+    quietly rewrite the hospital's record of a decision it made.
+
+    Deliberately no edit endpoint alongside this. The ``draft`` is the thing
+    the hospital reads when deciding; letting her rewrite it after submitting
+    means staff could approve details they never saw. Withdraw and send a new
+    one — same outcome, and the hospital always acts on what it was shown.
+    """
+
+    def post(self, request, request_id):
+        with bypass_rls():
+            try:
+                join_request = self.my_requests(request).filter(pk=request_id).first()
+            except DjangoValidationError, ValueError:
+                join_request = None
+
+            # Scoped to her own rows before the lookup, so another woman's
+            # request is "not found" rather than found and refused.
+            if join_request is None:
+                return Response({"detail": "Request not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if join_request.status != PatientJoinRequest.STATUS_PENDING:
+                return Response(
+                    {
+                        "detail": (
+                            f"This request was already {join_request.get_status_display().lower()} "
+                            "and can no longer be withdrawn."
+                        ),
+                        "status": join_request.status,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            join_request.status = PatientJoinRequest.STATUS_WITHDRAWN
+            join_request.decided_at = timezone.now()
+            join_request.decision_note = request.data.get("note", "")
+            join_request.save(update_fields=["status", "decided_at", "decision_note", "updated_at"])
+
+            return Response(PatientJoinRequestSerializer(join_request).data)
+
+
+class JoinRequestBaseView(PatientScopedView):
+    """Scoping shared by the hospital's queue and its approve/reject actions.
+
+    Deliberately a sibling base rather than the decision view subclassing the
+    queue view: their URLs pass different kwargs (``request_id``/``decision``
+    vs none), so inheriting the queue's ``get`` made ``GET`` on
+    ``/patient-requests/<id>/approve/`` raise TypeError and return 500 instead
+    of a clean 405.
+    """
+
+    organization_lookup = "organization"
+
+    def requests(self):
+        return self.scope_to_organization(PatientJoinRequest.objects.all()).select_related("user", "organization")
+
+
+class JoinRequestReviewView(JoinRequestBaseView):
+    """The hospital's side: who is asking to join.
+
+    Scoped through the request's own ``organization`` column, so one hospital
+    never sees another's queue.
+    """
+
+    def get(self, request):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+
+        queryset = self.requests()
+        state = request.query_params.get("status", "").strip()
+        if state:
+            queryset = queryset.filter(status=state)
+
+        rows = [
+            {
+                **PatientJoinRequestSerializer(r).data,
+                "applicant_email": r.user.email,
+                "applicant_name": r.user.get_full_name(),
+            }
+            for r in queryset.order_by("-created_at")
+        ]
+        return Response({"count": len(rows), "results": rows})
+
+
+class JoinRequestDecisionView(JoinRequestBaseView):
+    """Approve or reject one request."""
+
+    def get_request_or_404(self, request_id):
+        try:
+            return self.requests().get(pk=request_id), None
+        except PatientJoinRequest.DoesNotExist, DjangoValidationError, ValueError:
+            return None, Response({"detail": "Request not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    def _decide(self, join_request, request, *, new_status, patient=None):
+        join_request.status = new_status
+        join_request.patient = patient
+        join_request.decision_note = request.data.get("note", "")
+        join_request.decided_at = timezone.now()
+        join_request.decided_by = request.user
+        join_request.save(
+            update_fields=["status", "patient", "decision_note", "decided_at", "decided_by", "updated_at"],
         )
-        return Response(ConsentSerializer(consent).data, status=status.HTTP_201_CREATED)
 
-
-def _can_manage_care_team(user, pregnancy) -> bool:
-    """hospital_admin always can, org/location-wide. A care_manager can only
-    when they hold an active ``care_manager`` membership on *this specific*
-    pregnancy — never org-wide, and never inherited from any other case.
-
-    Deliberately permissive on one point, decided explicitly rather than
-    guessed at: a qualifying care_manager can add *another* care_manager to
-    the same pregnancy, who then gets the same pregnancy-scoped authority.
-    That is delegation within a case, not organization-wide escalation — the
-    new member still can't touch any pregnancy they aren't themselves an
-    active member of, which is exactly what this function checks on every
-    call, not just at the moment they were added.
-    """
-    if user.role_code == settings.ROLE_HOSPITAL_ADMIN:
-        return True
-    if user.role_code != settings.ROLE_CARE_MANAGER:
-        return False
-    staff = getattr(user, "staff", None)
-    if staff is None:
-        return False
-    return CareTeamMembership.objects.filter(
-        pregnancy=pregnancy,
-        staff=staff,
-        role=CareTeamMembership.ROLE_CARE_MANAGER,
-        is_active=True,
-    ).exists()
-
-
-class CareTeamMembershipListCreateView(PatientScopedView):
-    """A pregnancy's care team — supporting members alongside its one lead
-    clinician (``Pregnancy.assigned_staff``, untouched, read and written
-    through the pregnancy endpoints exactly as before).
-
-    Write access: hospital_admin, or a care_manager with an active
-    membership on this specific pregnancy — see ``_can_manage_care_team``.
-    Provider and nurse are read-only here, same as everyone else who isn't
-    hospital staff at all is refused entirely by ``IsHospitalStaff``.
-    """
-
-    def _get_pregnancy(self, patient, pregnancy_id):
-        try:
-            return patient.pregnancies.get(pk=pregnancy_id), None
-        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
-            return None, Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    def get(self, request, patient_id, pregnancy_id):
-        _, error = self.hospital_or_error(request)
+    def post(self, request, request_id, decision):
+        org, error = self.hospital_or_error(request)
         if error:
             return error
-        patient, missing = self.get_patient_or_404(patient_id)
+        join_request, missing = self.get_request_or_404(request_id)
         if missing:
             return missing
-        pregnancy, gone = self._get_pregnancy(patient, pregnancy_id)
-        if gone:
-            return gone
-
-        memberships = pregnancy.care_team_memberships.select_related("staff__user").order_by("-started_at")
-        return Response(CareTeamMembershipSerializer(memberships, many=True).data)
-
-    def post(self, request, patient_id, pregnancy_id):
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-        patient, missing = self.get_patient_or_404(patient_id)
-        if missing:
-            return missing
-        pregnancy, gone = self._get_pregnancy(patient, pregnancy_id)
-        if gone:
-            return gone
-
-        if not _can_manage_care_team(request.user, pregnancy):
+        if not join_request.is_pending:
+            # 409, not 404: the request WAS found. It has simply already been
+            # decided, and saying so is more useful than a second meaning for
+            # "not found".
             return Response(
-                {"detail": "You do not have permission to manage this pregnancy's care team."},
-                status=status.HTTP_403_FORBIDDEN,
+                {"detail": f"This request was already {join_request.status}."},
+                status=status.HTTP_409_CONFLICT,
             )
 
-        serializer = CareTeamMembershipCreateSerializer(data=request.data, context={"request": request})
-        serializer.is_valid(raise_exception=True)
+        if decision == PatientJoinRequest.STATUS_REJECTED:
+            self._decide(join_request, request, new_status=PatientJoinRequest.STATUS_REJECTED)
+            # Her account and draft survive — she can ask a different hospital.
+            return Response(PatientJoinRequestSerializer(join_request).data)
 
-        try:
-            membership = CareTeamMembership.objects.create(
-                pregnancy=pregnancy,
-                created_by=request.user,
-                **serializer.validated_data,
-            )
-        except DjangoValidationError as exc:
-            # The model's own clean()/save() guard (an already-deactivated
-            # staff member can't be newly assigned) - surfaced the same way
-            # DRF surfaces any other field error, not as a 500.
-            return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response(CareTeamMembershipSerializer(membership).data, status=status.HTTP_201_CREATED)
-
-
-class CareTeamMembershipEndView(PatientScopedView):
-    """End a membership — never delete it. Same authority boundary as
-    creating one; see ``_can_manage_care_team`` and
-    CareTeamMembershipListCreateView's docstring.
-
-    Includes the case where the membership being ended is the acting
-    care_manager's own: ending it is allowed (self-removal), and takes
-    effect immediately — the very next write request against this
-    pregnancy re-checks ``_can_manage_care_team`` from scratch and finds
-    nothing, since authorization is never cached, only ever read fresh
-    from the row this same request just changed.
-    """
-
-    def post(self, request, patient_id, pregnancy_id, membership_id):
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-        patient, missing = self.get_patient_or_404(patient_id)
-        if missing:
-            return missing
-
-        try:
-            pregnancy = patient.pregnancies.get(pk=pregnancy_id)
-        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
-            return Response({"detail": "Pregnancy not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        if not _can_manage_care_team(request.user, pregnancy):
+        # She may have asked several hospitals at once; the first to approve
+        # gets her. Patient.user is a one-to-one, so a second approval would
+        # otherwise hit an IntegrityError and surface as a 500 — 409 says the
+        # true thing instead: the request is fine, her situation has changed.
+        #
+        # bypass_rls for the same reason as the withdrawal below: the record
+        # that already claims her belongs to a DIFFERENT hospital, so a scoped
+        # read cannot see it. Without this the guard would never fire in
+        # production and the 500 would come straight back — and no test could
+        # show it, because local and test databases bypass RLS anyway.
+        with bypass_rls():
+            already = Patient.objects.filter(user=join_request.user).first()
+        if already is not None:
             return Response(
-                {"detail": "You do not have permission to manage this pregnancy's care team."},
-                status=status.HTTP_403_FORBIDDEN,
+                {
+                    "detail": (
+                        "This applicant has already been accepted by another hospital and is under their care."
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
             )
+
+        # Approval re-validates her draft through the same serializer that
+        # accepted it, then creates the record through the same
+        # onboard_patient() a walk-in uses. One creation path, so a
+        # self-registered patient and a walk-in are the same kind of record.
+        draft = PatientDraftSerializer(data=join_request.draft or {})
+        if not draft.is_valid():
+            return Response(
+                {"detail": "This applicant's details are no longer valid.", "errors": draft.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        patient_data, pregnancy_data = draft.split()
 
         try:
-            membership = CareTeamMembership.objects.get(
-                pk=membership_id,
-                pregnancy__patient=patient,
-                pregnancy_id=pregnancy_id,
+            patient = onboard_patient(
+                organization=org,
+                patient_data=patient_data,
+                pregnancy_data=pregnancy_data,
             )
-        except CareTeamMembership.DoesNotExist, DjangoValidationError, ValueError:
-            return Response({"detail": "Care team membership not found."}, status=status.HTTP_404_NOT_FOUND)
+        except OnboardingError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        membership.end(by=request.user)
-        return Response(CareTeamMembershipSerializer(membership).data)
+        # Link her login to the clinical record now that one exists.
+        patient.user = join_request.user
+        patient.save(update_fields=["user", "updated_at"])
+
+        self._decide(join_request, request, new_status=PatientJoinRequest.STATUS_APPROVED, patient=patient)
+
+        # Close her remaining open requests. WITHDRAWN, not REJECTED — those
+        # hospitals never said no, and a record claiming they did would be a
+        # lie about a decision nobody made.
+        #
+        # bypass_rls is required, not incidental: these rows belong to OTHER
+        # hospitals, and this session is scoped to this one, so the fail-closed
+        # policy would match zero rows and silently withdraw nothing. Local and
+        # test databases use a BYPASSRLS role, so no test can catch that —
+        # it would only ever have shown up in production, as her other requests
+        # staying pending forever against a woman already under someone's care.
+        with bypass_rls():
+            PatientJoinRequest.objects.filter(
+                user=join_request.user,
+                status=PatientJoinRequest.STATUS_PENDING,
+            ).exclude(pk=join_request.pk).update(
+                status=PatientJoinRequest.STATUS_WITHDRAWN,
+                decided_at=timezone.now(),
+                decision_note="Withdrawn automatically — she was accepted by another hospital.",
+            )
+
+        return Response(
+            {
+                **PatientJoinRequestSerializer(join_request).data,
+                "patient": PatientDetailSerializer(patient).data,
+            },
+        )

@@ -1,13 +1,17 @@
+from datetime import timedelta
 from typing import ClassVar
 
+from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.db import models
 from django.db.models.functions import Lower
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from timezone_field import TimeZoneField
 
 from momcare_platform.core.common.languages import SUPPORTED_LANGUAGES
-from momcare_platform.core.common.models import AddressMixin, UUIDPrimaryKeyModel
+from momcare_platform.core.common.models import AddressMixin, TimeStampedModel, UUIDPrimaryKeyModel
 from momcare_platform.core.users.managers import UserManager
 
 
@@ -147,3 +151,82 @@ class User(UUIDPrimaryKeyModel, AbstractBaseUser, PermissionsMixin, AddressMixin
     @property
     def role_code(self) -> str | None:
         return self.role.code if self.role else None
+
+
+class EmailVerificationCode(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A one-time code proving a self-registered patient controls the email
+    address she signed up with.
+
+    Only patient self-registration uses this — hospital owners and staff are
+    identity-checked a stronger way (a human reviewer calling the licence
+    number; a set-password link only the invited address can open). See
+    ``PatientRegisterView`` and ``LoginView``'s own docstrings for how this
+    gate fits into each.
+
+    ``code_hash`` is never the plaintext code — hashed with the same
+    machinery as a real password (``make_password``/``check_password``),
+    the same discipline this codebase already applies to real passwords.
+    A six-digit code is naturally low-entropy even hashed; ``max_attempts``
+    and a short ``expires_at`` window are what actually make brute-forcing
+    impractical, backed by the same ``auth_sensitive`` request throttle
+    (5/min) already applied to every other credential-adjacent endpoint.
+
+    At most one *live* (unconsumed, unexpired) code exists per user at a
+    time — requesting a new one (register-again-while-unverified, or an
+    explicit resend) invalidates any earlier code for that user first, so
+    "which code is current" is never ambiguous.
+    """
+
+    MAX_ATTEMPTS = 5
+    LIFETIME_MINUTES = 15
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="email_verification_codes",
+    )
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "consumed_at"])]
+
+    @classmethod
+    def issue(cls, user) -> tuple["EmailVerificationCode", str]:  # noqa: UP037 — no `from __future__ import annotations` in this file; unquoting raises NameError, the class isn't bound to its name yet while this signature evaluates
+        """Invalidate this user's previous live code (if any) and issue a
+        fresh one. Returns the row and the plaintext code — the only place
+        the plaintext ever exists outside the email itself; nothing else
+        may read it back, since only the hash is stored."""
+        import secrets
+
+        cls.objects.filter(user=user, consumed_at__isnull=True).update(consumed_at=timezone.now())
+        code = "".join(secrets.choice("0123456789") for _ in range(6))
+        row = cls.objects.create(
+            user=user,
+            code_hash=make_password(code),
+            expires_at=timezone.now() + timedelta(minutes=cls.LIFETIME_MINUTES),
+        )
+        return row, code
+
+    @classmethod
+    def verify(cls, user, submitted_code: str) -> bool:
+        """Check ``submitted_code`` against this user's current live code.
+
+        A wrong guess still counts against ``attempts`` even though nothing
+        is consumed — otherwise the attempt cap could be bypassed by simply
+        never letting a guess "count". Once ``MAX_ATTEMPTS`` is reached the
+        code is exhausted regardless of correctness, and she must request a
+        resend (a fresh code, a fresh attempt budget).
+        """
+        row = cls.objects.filter(user=user, consumed_at__isnull=True).order_by("-created_at").first()
+        if row is None or row.expires_at < timezone.now() or row.attempts >= cls.MAX_ATTEMPTS:
+            return False
+
+        row.attempts += 1
+        correct = check_password(submitted_code, row.code_hash)
+        if correct or row.attempts >= cls.MAX_ATTEMPTS:
+            row.consumed_at = timezone.now()
+        row.save(update_fields=["attempts", "consumed_at"])
+        return correct

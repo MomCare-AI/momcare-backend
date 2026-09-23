@@ -73,13 +73,14 @@ def test_approval_unlocks_a_previously_pending_hospital(client, make_hospital):
 def test_registration_issues_no_token(client):
     """Registration returns an application receipt, never credentials."""
     response = client.post(
-        "/api/auth/register/",
+        "/api/organization/onboard/",
         data={
             "first_name": "Bilal",
             "last_name": "Ahmed",
             "email": "owner@newhospital.test",
             "password": "BrandNewPass!2026",
             "org_name": "New Hospital",
+            "license_number": "LIC-0001",
             "org_email": "info@newhospital.test",
             "org_phone": "0511111111",
             "address_line1": "1 Test Road",
@@ -96,6 +97,34 @@ def test_registration_issues_no_token(client):
     assert body["status"] == Organization.STATUS_PENDING
     assert "access" not in body
     assert "refresh_token" not in response.cookies
+
+
+def test_registration_requires_a_license_number(client):
+    """A platform admin reviewing the application needs something to check
+    it against -- an application with nothing to verify isn't one they can
+    actually act on."""
+    response = client.post(
+        "/api/organization/onboard/",
+        data={
+            "first_name": "Bilal",
+            "last_name": "Ahmed",
+            "email": "owner@unlicensed.test",
+            "password": "BrandNewPass!2026",
+            "org_name": "Unlicensed Hospital",
+            "org_email": "info@unlicensed.test",
+            "org_phone": "0511111111",
+            "address_line1": "1 Test Road",
+            "city": "Islamabad",
+            "state": "ICT",
+            "postal_code": "44000",
+            "country": "Pakistan",
+        },
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert "license_number" in response.json()
+    assert not Organization.objects.filter(name="Unlicensed Hospital").exists()
 
 
 # -- The refresh cookie --------------------------------------------------------

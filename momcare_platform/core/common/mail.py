@@ -45,22 +45,42 @@ def send_application_received(user, organization) -> bool:
 
     Also serves as a reachability check: if this never arrives, the applicant
     knows to correct their address before the approval notice is sent to it.
+
+    Echoes back exactly what was submitted (address, phone, org email) —
+    deliberately, so a typo made in the registration form is visible to the
+    applicant in writing, not discovered later when the wrong number gets
+    called during review. No timeframe is promised for the decision, and no
+    tracking id/status-check exists here on purpose: a status check already
+    exists for free (trying to sign in returns the current review state),
+    and a second, unauthenticated one would be a real, if small,
+    information-disclosure surface for no real gain over that.
     """
+    address_line = organization.address_line1
+    if organization.address_line2:
+        address_line += f", {organization.address_line2}"
+    address = (
+        f"{address_line}\n{organization.city}, {organization.state} {organization.postal_code}\n{organization.country}"
+    )
+
     return _send(
         subject=f"MomCare: we received your application for {organization.name}",
         body=(
             f"Hello {user.first_name or 'there'},\n\n"
             f"Thank you for registering {organization.name} on MomCare.\n\n"
+            "What you submitted\n"
+            "-------------------\n"
+            f"Organization: {organization.name}\n"
+            f"Address: {address}\n"
+            f"Organization phone: {organization.phone}\n"
+            f"Organization email: {organization.email}\n"
+            f"Sign-in email: {user.email}\n\n"
             "What happens next\n"
             "-----------------\n"
-            "A platform administrator will verify your hospital against the register of "
-            "the authority that issued your licence, and may telephone you on a number "
-            "published by that authority to confirm your role.\n\n"
+            "A platform administrator will verify your hospital before granting access.\n\n"
             "You will not be able to sign in until that review is complete. We will "
             "email you as soon as a decision is made.\n\n"
-            f"Licence submitted: {organization.license_no or 'not provided'}\n"
-            f"Sign-in email: {user.email}\n\n"
-            f"If you did not register this hospital, please contact {SUPPORT_EMAIL}.\n\n"
+            f"If any of the details above are wrong, or if you did not register this "
+            f"hospital, please contact {SUPPORT_EMAIL}.\n\n"
             "— The MomCare team"
         ),
         to=user.email,
@@ -73,9 +93,10 @@ def send_application_approved(user, organization) -> bool:
         body=(
             f"Hello {user.first_name or 'there'},\n\n"
             f"{organization.name} has been approved. You can now sign in with "
-            f"{user.email} and begin inviting your clinical team.\n\n"
-            "Doctors, nurses and care managers do not register themselves — you invite "
-            "them from Doctors & Staff, and each person sets their own password.\n\n"
+            f"{user.email} and begin onboarding your clinical team.\n\n"
+            "Doctors, nurses and care managers do not register themselves — you onboard "
+            "them from Doctors & Staff, and each new account's sign-in details are "
+            "emailed to them directly.\n\n"
             "— The MomCare team"
         ),
         to=user.email,
@@ -99,24 +120,40 @@ def send_application_rejected(user, organization, note: str = "") -> bool:
     )
 
 
-def send_staff_invitation(invite, accept_url: str) -> bool:
-    """Emailing the invite is optional — an admin may equally send the link over
-    WhatsApp or hand it over in person, which is often how it works in practice."""
-    inviter = invite.invited_by.get_full_name() if invite.invited_by else "A hospital administrator"
+def send_staff_invitation(user, invite_url: str, organization) -> bool:
+    """The invitation that activates a newly-created staff account.
+
+    Carries a one-time LINK, never a password. The account already exists —
+    role and locations are assigned — but its password is unusable, so it
+    cannot be signed into until the person follows this link and chooses one
+    themselves.
+
+    That is the point: nobody, including the hospital admin who created the
+    account, ever knows the password. A plain-text password would sit in an
+    inbox indefinitely and would mean an admin could sign in as a clinician —
+    which would make "this nurse acknowledged the alert" unprovable.
+
+    The link stops working once used: Django's token generator derives the
+    token partly from the current password hash, so setting a password
+    invalidates it.
+    """
     return _send(
-        subject=f"You've been invited to join {invite.organization.name} on MomCare",
+        subject=f"Activate your MomCare account for {organization.name}",
         body=(
-            f"Hello {invite.first_name or 'there'},\n\n"
-            f"{inviter} has invited you to join {invite.organization.name} on MomCare "
-            f"as {invite.role.name}.\n\n"
-            "Open the link below to set your own password and finish joining:\n\n"
-            f"{accept_url}\n\n"
-            "This link works once and expires on "
-            f"{invite.expires_at.strftime('%d %B %Y')}.\n\n"
-            f"If you were not expecting this, you can ignore it or contact {SUPPORT_EMAIL}.\n\n"
+            f"Hello {user.first_name or 'there'},\n\n"
+            f"An account has been created for you on MomCare, for {organization.name}, "
+            f"as {user.role.name}.\n\n"
+            "To finish setting it up, choose your own password here:\n\n"
+            f"{invite_url}\n\n"
+            "The link can only be used once, and expires after a few days. If it has "
+            'expired by the time you get to it, use "Forgot password" on the sign-in '
+            f"screen with this address ({user.email}) and you will be sent a fresh one.\n\n"
+            "Nobody at MomCare — including your hospital administrator — can see your "
+            "password once you set it.\n\n"
+            f"If you were not expecting this account, contact {SUPPORT_EMAIL}.\n\n"
             "— The MomCare team"
         ),
-        to=invite.email,
+        to=user.email,
     )
 
 
@@ -140,6 +177,26 @@ def send_password_reset(user, reset_url: str) -> bool:
             "If this was not you, no action is needed — your password has not "
             "changed and this link can be ignored. If you receive these "
             f"repeatedly, contact {SUPPORT_EMAIL}.\n\n"
+            "— The MomCare team"
+        ),
+        to=user.email,
+    )
+
+
+def send_email_otp(user, code: str) -> bool:
+    """The six-digit code that proves a self-registered patient controls the
+    address she signed up with. See ``core.users.models.EmailVerificationCode``
+    for how the code itself is generated, hashed and expired."""
+    return _send(
+        subject="Confirm your MomCare account",
+        body=(
+            f"Hello {user.first_name or 'there'},\n\n"
+            "Use this code to confirm your email address and finish creating "
+            "your MomCare account:\n\n"
+            f"    {code}\n\n"
+            "It expires in 15 minutes. If you did not try to create an "
+            f"account, no action is needed — contact {SUPPORT_EMAIL} if you "
+            "receive these repeatedly.\n\n"
             "— The MomCare team"
         ),
         to=user.email,

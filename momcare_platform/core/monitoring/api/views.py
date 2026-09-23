@@ -1,10 +1,16 @@
-"""Monitoring endpoints — readings and devices.
+"""Clinical contact logging endpoints -- monitoring sessions, notes, and the
+tag catalogue they draw from.
 
-Everything here hangs off a pregnancy that is resolved through the caller's own
-hospital, so a reading can never be filed against another tenant's patient.
+Sessions/notes hang off a Patient (see models.py's own docstring for why,
+not Pregnancy alone), reached through the caller's own hospital so another
+tenant's patient can never be found this way. ClinicalTag hangs off either
+an Organization or one of its Locations -- see ``visible_clinical_tags``.
 """
 
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -12,35 +18,51 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from momcare_platform.core.common.pagination import DefaultPagination
-from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
-from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
+from momcare_platform.core.common.permissions import IsHospitalStaff, user_role_code
+from momcare_platform.core.common.scoping import (
+    OrganizationScopedQuerysetMixin,
+    sees_all_locations_in_org,
+    user_location_ids,
+)
+from momcare_platform.core.monitoring.api.permissions import IsOwnerOrHospitalAdmin
 from momcare_platform.core.monitoring.api.serializers import (
-    AttentionPatientSerializer,
-    DeviceAssignSerializer,
-    DeviceSerializer,
-    RiskAssessmentSerializer,
-    VitalReadingCreateSerializer,
-    VitalReadingSerializer,
+    ClinicalTagSerializer,
+    CombinedMonitoringSerializer,
+    MonitoringNoteSerializer,
+    MonitoringSessionSerializer,
 )
-from momcare_platform.core.monitoring.models import Device, RiskAssessment, VitalReading
+from momcare_platform.core.monitoring.models import ClinicalTag, MonitoringNote, MonitoringSession
 from momcare_platform.core.monitoring.services import (
-    MonitoringError,
-    assign_device,
-    current_risk,
-    latest_readings,
-    reassess_risk,
-    unassign_device,
+    create_combined_monitoring,
+    monitoring_period_totals,
+    month_bounds,
 )
-from momcare_platform.core.patients.models import Pregnancy
+from momcare_platform.core.patients.models import Patient
 
 NO_HOSPITAL = {"detail": "This account is not attached to a hospital."}
 
 
+def visible_clinical_tags(request, org):
+    """Tags this caller may see: their hospital's org-level tags, plus
+    whichever locations they can see into -- every location for an admin,
+    only their own assigned ones for a location-scoped role. Shared shape
+    with ``services._tag_scope``, but that one is single-location (a note
+    is filed at exactly one location); this one spans however many
+    locations the caller themself can see.
+    """
+    qs = ClinicalTag.objects.filter(organization=org, location__isnull=True)
+    if sees_all_locations_in_org(request.user):
+        qs = qs | ClinicalTag.objects.filter(location__organization=org)
+    else:
+        qs = qs | ClinicalTag.objects.filter(location_id__in=user_location_ids(request.user))
+    return qs.distinct()
+
+
 class MonitoringView(OrganizationScopedQuerysetMixin, APIView):
-    """Base for monitoring endpoints, scoped to the caller's hospital."""
+    """Base for patient-scoped monitoring endpoints."""
 
     permission_classes = [IsAuthenticated, IsHospitalStaff]
-    organization_lookup = "patient__location__organization"
+    organization_lookup = "organization"
 
     def hospital_or_error(self, request):
         org = request.user.organization
@@ -48,349 +70,440 @@ class MonitoringView(OrganizationScopedQuerysetMixin, APIView):
             return None, Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
         return org, None
 
-    def get_pregnancy_or_404(self, pregnancy_id):
-        """Scope first, then look up, so another hospital's pregnancy resolves
-        to nothing rather than being found and refused."""
+    def get_patient_or_404(self, patient_id):
+        """Scope first, then look up, so another hospital's patient
+        resolves to nothing rather than being found and refused."""
         try:
-            pregnancy = (
-                self.scope_to_organization(Pregnancy.objects.all())
-                .select_related("patient", "patient__location")
-                .get(pk=pregnancy_id)
+            patient = self.scope_to_organization(Patient.objects.select_related("location")).get(pk=patient_id)
+        except Patient.DoesNotExist, DjangoValidationError, ValueError:
+            return None, Response({"detail": "Patient not found."}, status=status.HTTP_404_NOT_FOUND)
+        return patient, None
+
+    def resolve_month_range(self, request, patient):
+        """``?year=&month=`` -- defaults to the current month in the
+        patient's location timezone, same as Neuro_RPM's own
+        month-totals endpoints. Returns ``(start, end, year, month, None)``
+        on success, or ``(None, None, None, None, error_response)``.
+        """
+        now_local = timezone.localtime(timezone.now(), timezone=patient.location.timezone)
+        try:
+            year = int(request.query_params.get("year", now_local.year))
+            month = int(request.query_params.get("month", now_local.month))
+        except ValueError:
+            error = Response({"detail": "year and month must be integers."}, status=status.HTTP_400_BAD_REQUEST)
+            return None, None, None, None, error
+        if not 1 <= month <= 12:
+            error = Response({"detail": "month must be between 1 and 12."}, status=status.HTTP_400_BAD_REQUEST)
+            return None, None, None, None, error
+        start, end = month_bounds(year=year, month=month, tzinfo=patient.location.timezone)
+        return start, end, year, month, None
+
+
+class PatientMonitoringView(MonitoringView):
+    """A patient's monitoring feed: sessions and notes merged into one
+    chronological timeline, and creating a new contact (session, note, or
+    both) atomically.
+    """
+
+    def _combined_entries(self, patient, *, start=None, end=None):
+        sessions = patient.monitoring_sessions.select_related("added_by", "pregnancy").prefetch_related("note__tags")
+        standalone_notes = (
+            patient.monitoring_notes.filter(session__isnull=True)
+            .select_related("added_by", "pregnancy")
+            .prefetch_related("tags")
+        )
+        if start is not None and end is not None:
+            sessions = sessions.filter(recorded_at__gte=start, recorded_at__lte=end)
+            standalone_notes = standalone_notes.filter(recorded_at__gte=start, recorded_at__lte=end)
+
+        entries = []
+        for session in sessions:
+            note = getattr(session, "note", None)
+            entries.append(
+                {
+                    "recorded_at": session.recorded_at,
+                    "session": MonitoringSessionSerializer(session).data,
+                    "note": MonitoringNoteSerializer(note).data if note else None,
+                },
             )
-        except Pregnancy.DoesNotExist, DjangoValidationError, ValueError:
-            return None, Response(
-                {"detail": "Pregnancy not found."},
-                status=status.HTTP_404_NOT_FOUND,
+        for note in standalone_notes:
+            entries.append(
+                {
+                    "recorded_at": note.recorded_at,
+                    "session": None,
+                    "note": MonitoringNoteSerializer(note).data,
+                },
             )
-        return pregnancy, None
+        entries.sort(key=lambda entry: entry["recorded_at"], reverse=True)
+        return entries
 
-
-class ReadingListCreateView(MonitoringView):
-    """A pregnancy's readings, and recording a new one."""
-
-    def get(self, request, pregnancy_id):
+    def get(self, request, patient_id):
+        """Scoped to one calendar month -- defaults to the current one in
+        the patient's location timezone, ``?year=&month=`` to browse
+        another -- with a ``totals`` block for that same month. Same shape
+        as Neuro_RPM's combined endpoint, minus the per-program split
+        MomCare has no use for.
+        """
         _, error = self.hospital_or_error(request)
         if error:
             return error
-        pregnancy, missing = self.get_pregnancy_or_404(pregnancy_id)
+        patient, missing = self.get_patient_or_404(patient_id)
         if missing:
             return missing
 
-        readings = pregnancy.readings.all()
+        start, end, year, month, error = self.resolve_month_range(request, patient)
+        if error:
+            return error
 
-        since = request.query_params.get("since")
-        if since:
-            readings = readings.filter(recorded_at__gte=since)
+        entries = self._combined_entries(patient, start=start, end=end)
+        totals = monitoring_period_totals(patient=patient, start=start, end=end)
 
         paginator = DefaultPagination()
-        page = paginator.paginate_queryset(readings.order_by("-recorded_at", "id"), request, view=self)
-        return paginator.get_paginated_response(VitalReadingSerializer(page, many=True).data)
+        page = paginator.paginate_queryset(entries, request, view=self)
+        body = paginator.get_paginated_response(page)
+        body.data["totals"] = totals
+        body.data["year"] = year
+        body.data["month"] = month
+        return body
 
-    def post(self, request, pregnancy_id):
+    def post(self, request, patient_id):
         _, error = self.hospital_or_error(request)
         if error:
             return error
-        pregnancy, missing = self.get_pregnancy_or_404(pregnancy_id)
+        patient, missing = self.get_patient_or_404(patient_id)
         if missing:
             return missing
 
-        if not pregnancy.is_active:
-            return Response(
-                {"detail": "Readings can only be recorded against an active pregnancy."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        serializer = VitalReadingCreateSerializer(data=request.data)
+        serializer = CombinedMonitoringSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        reading = VitalReading.objects.create(
-            pregnancy=pregnancy,
-            age=data.get("age"),
-            systolic_bp=data.get("systolic_bp"),
-            diastolic_bp=data.get("diastolic_bp"),
-            heart_rate=data.get("heart_rate"),
-            body_temp_f=data.get("body_temp_f"),
-            hemoglobin=data.get("hemoglobin"),
-            blood_glucose=data.get("blood_glucose"),
-            stress_score=data.get("stress_score"),
-            phys_activity_score=data.get("phys_activity_score"),
-            source=data["source"],
+        session, note = create_combined_monitoring(
+            patient=patient,
+            duration_seconds=data.get("duration_seconds"),
             recorded_at=data.get("recorded_at") or timezone.now(),
-            device=pregnancy.devices.filter(status=Device.STATUS_ASSIGNED).first(),
-            recorded_by=request.user,
+            added_by=request.user,
+            note_text=data.get("note", ""),
+            tags=data.get("tags", []),
+            left_voicemail=data.get("left_voicemail", False),
+            two_way_communication=data.get("two_way_communication", False),
         )
-
-        # Score immediately, so a dangerous reading is judged as it arrives
-        # rather than whenever a scheduler next runs.
-        assessment = reassess_risk(pregnancy)
-
-        body = VitalReadingSerializer(reading).data
-        body["risk_changed"] = assessment is not None
-        body["risk_level"] = assessment.final_risk_level if assessment else None
-        return Response(body, status=status.HTTP_201_CREATED)
+        payload = {
+            "session": MonitoringSessionSerializer(session).data if session else None,
+            "note": MonitoringNoteSerializer(note).data if note else None,
+        }
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 
-class LatestReadingsView(MonitoringView):
-    """The most recent reading event, for the patient header.
+class PatientMonitoringSessionsView(MonitoringView):
+    """This patient's sessions for one calendar month, with a ``totals``
+    block -- "how much time has been logged". Defaults to the current
+    month in the patient's location timezone; ``?year=&month=`` browses
+    another."""
 
-    None when there isn't one yet, rather than a fabricated normal-looking
-    value — a screen that looks calm because data stopped arriving is the
-    worst failure a monitoring system can have.
-    """
-
-    def get(self, request, pregnancy_id):
+    def get(self, request, patient_id):
         _, error = self.hospital_or_error(request)
         if error:
             return error
-        pregnancy, missing = self.get_pregnancy_or_404(pregnancy_id)
+        patient, missing = self.get_patient_or_404(patient_id)
         if missing:
             return missing
 
-        latest = latest_readings(pregnancy)
-        return Response(
-            {
-                "reading": VitalReadingSerializer(latest).data if latest else None,
-                "total_count": pregnancy.readings.count(),
-            },
+        start, end, year, month, error = self.resolve_month_range(request, patient)
+        if error:
+            return error
+
+        sessions = (
+            patient.monitoring_sessions.select_related("added_by", "pregnancy")
+            .filter(recorded_at__gte=start, recorded_at__lte=end)
+            .order_by("-recorded_at", "id")
         )
+        totals = monitoring_period_totals(patient=patient, start=start, end=end)
+
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(sessions, request, view=self)
+        body = paginator.get_paginated_response(MonitoringSessionSerializer(page, many=True).data)
+        body.data["totals"] = totals
+        body.data["year"] = year
+        body.data["month"] = month
+        return body
 
 
-class RiskAssessmentView(MonitoringView):
-    """A pregnancy's risk history — a record of transitions, not of readings."""
+class PatientMonitoringNotesView(MonitoringView):
+    """This patient's notes only, with free-text and tag filtering --
+    used to search a patient's clinical contact history."""
 
-    def get(self, request, pregnancy_id):
+    def get(self, request, patient_id):
         _, error = self.hospital_or_error(request)
         if error:
             return error
-        pregnancy, missing = self.get_pregnancy_or_404(pregnancy_id)
+        patient, missing = self.get_patient_or_404(patient_id)
         if missing:
             return missing
 
-        assessments = pregnancy.risk_assessments.select_related("verified_by")[:50]
-        current = assessments[0] if assessments else None
-
-        return Response(
-            {
-                "current": RiskAssessmentSerializer(current).data if current else None,
-                "history": RiskAssessmentSerializer(assessments, many=True).data,
-            },
+        notes = (
+            patient.monitoring_notes.select_related("added_by", "pregnancy", "session")
+            .prefetch_related("tags")
+            .order_by("-recorded_at", "id")
         )
+        search = request.query_params.get("search")
+        if search:
+            notes = notes.filter(
+                Q(note__icontains=search)
+                | Q(tags__name__icontains=search)
+                | Q(added_by__first_name__icontains=search)
+                | Q(added_by__last_name__icontains=search),
+            ).distinct()
+        tag_id = request.query_params.get("tag_id")
+        if tag_id:
+            notes = notes.filter(tags__id=tag_id)
 
-    def post(self, request, pregnancy_id):
-        """Re-run scoring on demand — useful after correcting a reading."""
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-        pregnancy, missing = self.get_pregnancy_or_404(pregnancy_id)
-        if missing:
-            return missing
-
-        assessment = reassess_risk(pregnancy)
-        if assessment is None:
-            current = current_risk(pregnancy)
-            return Response(
-                {
-                    "detail": "No change in risk level.",
-                    "current": RiskAssessmentSerializer(current).data if current else None,
-                },
-            )
-        return Response(RiskAssessmentSerializer(assessment).data, status=status.HTTP_201_CREATED)
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(notes, request, view=self)
+        return paginator.get_paginated_response(MonitoringNoteSerializer(page, many=True).data)
 
 
-class VerifyRiskView(MonitoringView):
-    """A clinician's review of one risk assessment: confirm the model's
-    answer, or correct it.
+class MonitoringSessionDetailView(OrganizationScopedQuerysetMixin, APIView):
+    """A single session by id -- flat, not nested under its patient, the
+    same way ``/alerts/<id>/`` is flat even though an Alert hangs off a
+    Pregnancy."""
 
-    There is no "just seen, not confirmed" state — a ``confirmed_risk_level``
-    is required. An assessment nobody has agreed with or corrected has not
-    actually been reviewed, whatever a bare timestamp might imply.
-    ``review_status`` is derived here, not chosen by the caller: confirmed
-    when it matches ``final_risk_level``, corrected when it does not.
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+    organization_lookup = "patient__organization"
 
-    Clinicians only, which this docstring always claimed and the permissions
-    did not enforce. A hospital administrator is not required to have any
-    clinical training, and an assessment marked reviewed by somebody who could
-    not review it is worse than one left unreviewed — the queue would look
-    attended to.
-    """
-
-    permission_classes = [IsAuthenticated, IsClinician]
-
-    def post(self, request, pregnancy_id, assessment_id):
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-        pregnancy, missing = self.get_pregnancy_or_404(pregnancy_id)
-        if missing:
-            return missing
-
+    def get_session_or_404(self, session_id):
         try:
-            assessment = pregnancy.risk_assessments.get(pk=assessment_id)
-        except RiskAssessment.DoesNotExist, DjangoValidationError, ValueError:
-            return Response({"detail": "Assessment not found."}, status=status.HTTP_404_NOT_FOUND)
+            session = self.scope_to_organization(
+                MonitoringSession.objects.select_related("patient", "pregnancy", "added_by"),
+            ).get(pk=session_id)
+        except MonitoringSession.DoesNotExist, DjangoValidationError, ValueError:
+            return None, Response({"detail": "Monitoring session not found."}, status=status.HTTP_404_NOT_FOUND)
+        return session, None
 
-        confirmed = request.data.get("confirmed_risk_level")
-        valid_levels = {choice[0] for choice in RiskAssessment.LEVEL_CHOICES}
-        if confirmed not in valid_levels:
+    def get(self, request, session_id):
+        session, missing = self.get_session_or_404(session_id)
+        if missing:
+            return missing
+        return Response(MonitoringSessionSerializer(session).data)
+
+    def _update(self, request, session_id, *, partial):
+        session, missing = self.get_session_or_404(session_id)
+        if missing:
+            return missing
+        if not IsOwnerOrHospitalAdmin().has_object_permission(request, self, session):
             return Response(
-                {"detail": f"confirmed_risk_level must be one of {sorted(valid_levels)}."},
-                status=status.HTTP_400_BAD_REQUEST,
+                {"detail": "Only the staff member who logged this session, or a hospital admin, can edit it."},
+                status=status.HTTP_403_FORBIDDEN,
             )
+        serializer = MonitoringSessionSerializer(session, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
-        assessment.confirmed_risk_level = confirmed
-        assessment.review_status = (
-            RiskAssessment.REVIEW_CONFIRMED
-            if confirmed == assessment.final_risk_level
-            else RiskAssessment.REVIEW_CORRECTED
-        )
-        assessment.verified_at = timezone.now()
-        assessment.verified_by = request.user
-        assessment.save(
-            update_fields=["confirmed_risk_level", "review_status", "verified_at", "verified_by"],
-        )
+    def put(self, request, session_id):
+        return self._update(request, session_id, partial=False)
 
-        return Response(RiskAssessmentSerializer(assessment).data)
+    def patch(self, request, session_id):
+        return self._update(request, session_id, partial=True)
+
+    def delete(self, request, session_id):
+        session, missing = self.get_session_or_404(session_id)
+        if missing:
+            return missing
+        if not IsOwnerOrHospitalAdmin().has_object_permission(request, self, session):
+            return Response(
+                {"detail": "Only the staff member who logged this session, or a hospital admin, can delete it."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        session.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class AttentionQueueView(MonitoringView):
-    """Patients whose latest assessment is not stable — the working list.
+class MonitoringNoteDetailView(OrganizationScopedQuerysetMixin, APIView):
+    """A single note by id -- flat, same reasoning as sessions above."""
 
-    Ordered by severity, then by how long the assessment has gone
-    unreviewed, so the most urgent unreviewed case is always at the top.
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+    organization_lookup = "patient__organization"
+
+    def get_note_or_404(self, note_id):
+        try:
+            note = self.scope_to_organization(
+                MonitoringNote.objects.select_related("patient", "pregnancy", "added_by", "session").prefetch_related(
+                    "tags",
+                ),
+            ).get(pk=note_id)
+        except MonitoringNote.DoesNotExist, DjangoValidationError, ValueError:
+            return None, Response({"detail": "Monitoring note not found."}, status=status.HTTP_404_NOT_FOUND)
+        return note, None
+
+    def get(self, request, note_id):
+        note, missing = self.get_note_or_404(note_id)
+        if missing:
+            return missing
+        return Response(MonitoringNoteSerializer(note).data)
+
+    def _update(self, request, note_id, *, partial):
+        note, missing = self.get_note_or_404(note_id)
+        if missing:
+            return missing
+        if not IsOwnerOrHospitalAdmin().has_object_permission(request, self, note):
+            return Response(
+                {"detail": "Only the staff member who wrote this note, or a hospital admin, can edit it."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = MonitoringNoteSerializer(note, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def put(self, request, note_id):
+        return self._update(request, note_id, partial=False)
+
+    def patch(self, request, note_id):
+        return self._update(request, note_id, partial=True)
+
+    def delete(self, request, note_id):
+        note, missing = self.get_note_or_404(note_id)
+        if missing:
+            return missing
+        if not IsOwnerOrHospitalAdmin().has_object_permission(request, self, note):
+            return Response(
+                {"detail": "Only the staff member who wrote this note, or a hospital admin, can delete it."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        note.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ClinicalTagListCreateView(APIView):
+    """List: any hospital-side role (powers the tag picker). Create: hospital
+    admins only -- a tag, even a location-scoped one, is shared configuration
+    used across every note that references it, so adding one is a
+    deliberate admin action, not a per-note side effect (ad-hoc tags typed
+    inline during note creation still get auto-created -- see
+    ``services.get_or_create_tags`` -- this endpoint is for curating the
+    catalogue directly).
     """
 
-    organization_lookup = "patient__location__organization"
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
 
-    def get(self, request):
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-
-        pregnancies = (
-            self.scope_to_organization(Pregnancy.objects.filter(status=Pregnancy.STATUS_ACTIVE))
-            .select_related("patient", "assigned_staff__user")
-            .prefetch_related("risk_assessments")
-        )
-
-        rows = []
-        for pregnancy in pregnancies:
-            current = pregnancy.risk_assessments.first()
-            if current is None or not current.is_actionable:
-                continue
-            rows.append(
-                {
-                    "patient_id": pregnancy.patient_id,
-                    "pregnancy_id": pregnancy.id,
-                    "full_name": pregnancy.patient.full_name,
-                    "mrn": pregnancy.patient.mrn,
-                    "gestational_age": pregnancy.gestational_age_display,
-                    # final_risk_level: the level actually acted on.
-                    "risk_level": current.final_risk_level,
-                    "risk_level_display": current.get_final_risk_level_display(),
-                    "assessed_at": current.assessed_at,
-                    "needs_review": current.needs_review,
-                    "assigned_staff_name": (
-                        pregnancy.assigned_staff.user.get_full_name() if pregnancy.assigned_staff_id else ""
-                    ),
-                    "has_responsible_clinician": pregnancy.has_responsible_clinician,
-                },
-            )
-
-        # Same canonical encoding as the trained model everywhere in this
-        # project: Low=0, Medium=1, High=2. Negated only here, because a
-        # queue needs the *worst* case first, and that means sorting on the
-        # opposite of what the number itself means.
-        severity = {"low": 0, "medium": 1, "high": 2}
-        rows.sort(
-            key=lambda r: (
-                -severity.get(r["risk_level"], 0),
-                not r["needs_review"],
-                r["assessed_at"],
-            ),
-        )
-
-        return Response(
-            {
-                "count": len(rows),
-                "results": AttentionPatientSerializer(rows, many=True).data,
-            },
-        )
-
-
-class DeviceListCreateView(MonitoringView):
-    """The hospital's devices. Registering stock is an admin task."""
-
-    organization_lookup = "organization"
+    def hospital_or_error(self, request):
+        org = request.user.organization
+        if org is None:
+            return None, Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        return org, None
 
     def get(self, request):
         org, error = self.hospital_or_error(request)
         if error:
             return error
-        devices = (
-            self.scope_to_organization(Device.objects.all())
-            .select_related("assigned_pregnancy__patient")
-            .order_by("serial_number")
-        )
-        return Response(DeviceSerializer(devices, many=True).data)
+        tags = visible_clinical_tags(request, org).order_by("name")
+        location_id = request.query_params.get("location_id")
+        if location_id:
+            tags = tags.filter(location_id=location_id)
+        serializer = ClinicalTagSerializer(tags, many=True)
+        return Response({"count": len(serializer.data), "results": serializer.data})
 
     def post(self, request):
         org, error = self.hospital_or_error(request)
         if error:
             return error
-
-        serializer = DeviceSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        device = Device.objects.create(organization=org, **serializer.validated_data)
-        return Response(DeviceSerializer(device).data, status=status.HTTP_201_CREATED)
-
-
-class DeviceAssignView(MonitoringView):
-    """Put a band on a wrist, or take it off."""
-
-    def post(self, request, pregnancy_id):
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-        pregnancy, missing = self.get_pregnancy_or_404(pregnancy_id)
-        if missing:
-            return missing
-
-        serializer = DeviceAssignSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        device = Device.objects.filter(
-            organization=request.user.organization,
-            pk=serializer.validated_data["device_id"],
-        ).first()
-        if device is None:
-            return Response({"detail": "Device not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            assign_device(
-                device=device,
-                pregnancy=pregnancy,
-                acquisition=serializer.validated_data.get("acquisition", ""),
-            )
-        except MonitoringError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response(DeviceSerializer(device).data)
-
-    def delete(self, request, pregnancy_id):
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-        pregnancy, missing = self.get_pregnancy_or_404(pregnancy_id)
-        if missing:
-            return missing
-
-        device = pregnancy.devices.filter(status=Device.STATUS_ASSIGNED).first()
-        if device is None:
+        if not (request.user.is_superuser or user_role_code(request.user) == settings.ROLE_HOSPITAL_ADMIN):
             return Response(
-                {"detail": "This patient is not wearing a device."},
+                {"detail": "Only a hospital admin can manage the tag catalogue."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = ClinicalTagSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        try:
+            # The uniqueness constraints are conditional (organization+name
+            # OR location+name), which DRF's ModelSerializer does not
+            # auto-validate -- caught here rather than left to surface as a
+            # raw 500. A savepoint (not the bare call) so a caught failure
+            # doesn't poison the rest of this request's transaction.
+            with transaction.atomic():
+                serializer.save()
+        except IntegrityError:
+            return Response(
+                {"name": ["A tag with this name already exists in this scope."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-        unassign_device(device=device)
-        return Response(DeviceSerializer(device).data)
+
+class ClinicalTagDetailView(APIView):
+    """Read: any hospital-side role, within what they can see (see
+    ``visible_clinical_tags``). Edit/delete: hospital admins only."""
+
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+
+    def hospital_or_error(self, request):
+        org = request.user.organization
+        if org is None:
+            return None, Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        return org, None
+
+    def get_tag_or_404(self, request, org, tag_id):
+        try:
+            tag = visible_clinical_tags(request, org).get(pk=tag_id)
+        except ClinicalTag.DoesNotExist, DjangoValidationError, ValueError:
+            return None, Response({"detail": "Clinical tag not found."}, status=status.HTTP_404_NOT_FOUND)
+        return tag, None
+
+    def get(self, request, tag_id):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        tag, missing = self.get_tag_or_404(request, org, tag_id)
+        if missing:
+            return missing
+        return Response(ClinicalTagSerializer(tag).data)
+
+    def _admin_or_403(self, request):
+        if request.user.is_superuser or user_role_code(request.user) == settings.ROLE_HOSPITAL_ADMIN:
+            return None
+        return Response(
+            {"detail": "Only a hospital admin can manage the tag catalogue."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    def _update(self, request, tag_id, *, partial):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        forbidden = self._admin_or_403(request)
+        if forbidden:
+            return forbidden
+        tag, missing = self.get_tag_or_404(request, org, tag_id)
+        if missing:
+            return missing
+        serializer = ClinicalTagSerializer(tag, data=request.data, partial=partial, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        try:
+            with transaction.atomic():
+                serializer.save()
+        except IntegrityError:
+            return Response(
+                {"name": ["A tag with this name already exists in this scope."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(serializer.data)
+
+    def put(self, request, tag_id):
+        return self._update(request, tag_id, partial=False)
+
+    def patch(self, request, tag_id):
+        return self._update(request, tag_id, partial=True)
+
+    def delete(self, request, tag_id):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        forbidden = self._admin_or_403(request)
+        if forbidden:
+            return forbidden
+        tag, missing = self.get_tag_or_404(request, org, tag_id)
+        if missing:
+            return missing
+        tag.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

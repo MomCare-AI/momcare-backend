@@ -1,30 +1,9 @@
+from django.conf import settings
 from rest_framework import serializers
 
-from momcare_platform.core.patients.models import (
-    CareTeamMembership,
-    ClinicalNote,
-    Consent,
-    Patient,
-    Pregnancy,
-    PregnancyRiskFactors,
-)
+from momcare_platform.core.patients.models import Patient, PatientJoinRequest, Pregnancy
+from momcare_platform.core.staff.api.serializers import SecondaryProviderBriefSerializer
 from momcare_platform.core.staff.models import Staff
-
-
-class PregnancyRiskFactorsSerializer(serializers.ModelSerializer):
-    present_factors = serializers.ListField(read_only=True)
-    unanswered_factors = serializers.ListField(read_only=True)
-
-    class Meta:
-        model = PregnancyRiskFactors
-        fields = [
-            "id",
-            *PregnancyRiskFactors.FACTOR_FIELDS,
-            "present_factors",
-            "unanswered_factors",
-            "updated_at",
-        ]
-        read_only_fields = ["id", "present_factors", "unanswered_factors", "updated_at"]
 
 
 class PregnancySerializer(serializers.ModelSerializer):
@@ -36,20 +15,31 @@ class PregnancySerializer(serializers.ModelSerializer):
     gestational_age_display = serializers.CharField(read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     edd_source_display = serializers.CharField(source="get_edd_source_display", read_only=True)
-    assigned_staff_name = serializers.CharField(
-        source="assigned_staff.user.get_full_name",
+    provider_name = serializers.CharField(
+        source="provider.user.get_full_name",
+        read_only=True,
+        default="",
+    )
+    nurse_name = serializers.CharField(
+        source="nurse.user.get_full_name",
+        read_only=True,
+        default="",
+    )
+    care_manager_name = serializers.CharField(
+        source="care_manager.user.get_full_name",
         read_only=True,
         default="",
     )
     # Surfaced so the UI can warn: an assignment to someone who has left the
     # hospital is as good as no assignment once alerts start routing.
     has_responsible_clinician = serializers.BooleanField(read_only=True)
-    assigned_staff_is_active = serializers.BooleanField(
-        source="assigned_staff.is_active",
+    provider_is_active = serializers.BooleanField(
+        source="provider.is_active",
         read_only=True,
         default=False,
     )
-    risk_factors = PregnancyRiskFactorsSerializer(read_only=True)
+    present_factors = serializers.ListField(read_only=True)
+    unanswered_factors = serializers.ListField(read_only=True)
 
     class Meta:
         model = Pregnancy
@@ -66,15 +56,21 @@ class PregnancySerializer(serializers.ModelSerializer):
             "gestational_age_display",
             "gravida",
             "para",
-            "assigned_staff",
-            "assigned_staff_name",
-            "assigned_staff_is_active",
+            "provider",
+            "provider_name",
+            "provider_is_active",
+            "nurse",
+            "nurse_name",
+            "care_manager",
+            "care_manager_name",
             "has_responsible_clinician",
             "status",
             "status_display",
             "outcome_date",
             "notes",
-            "risk_factors",
+            *Pregnancy.FACTOR_FIELDS,
+            "present_factors",
+            "unanswered_factors",
             "created_at",
             "updated_at",
         ]
@@ -82,12 +78,13 @@ class PregnancySerializer(serializers.ModelSerializer):
             "id",
             "patient",
             "edd_confirmed_at",
-            "assigned_staff_is_active",
+            "provider_is_active",
             "has_responsible_clinician",
             "gestational_age_weeks",
             "gestational_age_days",
             "gestational_age_display",
-            "risk_factors",
+            "present_factors",
+            "unanswered_factors",
             "created_at",
             "updated_at",
         ]
@@ -132,103 +129,68 @@ class OrganizationStaffField(serializers.PrimaryKeyRelatedField):
 
 
 class PregnancyWriteSerializer(PregnancySerializer):
-    """Create/update, allowing risk factors to be set alongside the pregnancy."""
+    """Create/update, allowing risk factors and the care team to be set
+    alongside the pregnancy.
 
-    risk_factors = PregnancyRiskFactorsSerializer(required=False)
-    assigned_staff = OrganizationStaffField(required=False, allow_null=True)
+    Every care-team assignment is checked three ways here, so that
+    onboarding, opening a later pregnancy, and correcting one afterwards all
+    go through identical rules rather than three drifting copies:
 
-    class Meta(PregnancySerializer.Meta):
-        read_only_fields = [f for f in PregnancySerializer.Meta.read_only_fields if f != "risk_factors"]
-
-    def update(self, instance, validated_data):
-        factors = validated_data.pop("risk_factors", None)
-        pregnancy = super().update(instance, validated_data)
-        if factors:
-            PregnancyRiskFactors.objects.update_or_create(pregnancy=pregnancy, defaults=factors)
-        return pregnancy
-
-
-class ConsentSerializer(serializers.ModelSerializer):
-    status_display = serializers.CharField(source="get_status_display", read_only=True)
-    method_display = serializers.CharField(source="get_method_display", read_only=True)
-    recorded_by_name = serializers.CharField(
-        source="recorded_by.get_full_name",
-        read_only=True,
-        default="",
-    )
-
-    class Meta:
-        model = Consent
-        fields = [
-            "id",
-            "status",
-            "status_display",
-            "recorded_at",
-            "version",
-            "method",
-            "method_display",
-            "recorded_by_name",
-            "note",
-        ]
-        read_only_fields = ["id", "recorded_at", "recorded_by_name", "status_display", "method_display"]
-
-
-class ClinicalNoteSerializer(serializers.ModelSerializer):
-    author_name = serializers.CharField(source="author.user.get_full_name", read_only=True, default="")
-    author_role = serializers.CharField(source="author.user.role_code", read_only=True, default="")
-
-    class Meta:
-        model = ClinicalNote
-        fields = ["id", "body", "author_name", "author_role", "created_at"]
-        read_only_fields = ["id", "author_name", "author_role", "created_at"]
-
-
-class ClinicalNoteCreateSerializer(serializers.Serializer):
-    body = serializers.CharField(trim_whitespace=True)
-
-    def validate_body(self, value):
-        if not value.strip():
-            raise serializers.ValidationError("A note cannot be empty.")
-        return value
-
-
-class CareTeamMembershipSerializer(serializers.ModelSerializer):
-    """Read shape for a care-team row — additive to Pregnancy.assigned_staff,
-    never a replacement for it (that field has its own serializer already,
-    on Pregnancy itself, and is untouched by this one)."""
-
-    staff_name = serializers.CharField(source="staff.user.get_full_name", read_only=True, default="")
-    role_display = serializers.CharField(source="get_role_display", read_only=True)
-
-    class Meta:
-        model = CareTeamMembership
-        fields = [
-            "id",
-            "staff",
-            "staff_name",
-            "role",
-            "role_display",
-            "is_active",
-            "started_at",
-            "ended_at",
-        ]
-        read_only_fields = ["id", "staff_name", "role_display", "is_active", "started_at", "ended_at"]
-
-
-class CareTeamMembershipCreateSerializer(serializers.Serializer):
-    """Who to add, and in what capacity. The pregnancy comes from the URL,
-    not the body — same reasoning as every other nested write here: an
-    identifier a caller could tamper with to reach another hospital's data
-    just shouldn't be accepted from the client at all.
-
-    ``staff`` reuses ``OrganizationStaffField`` (defined above, for
-    ``assigned_staff``) rather than a plain PrimaryKeyRelatedField, for the
-    identical reason: without it, an admin could name a clinician from a
-    different hospital entirely.
+    - **Same hospital** — structural, via ``OrganizationStaffField``, whose
+      queryset is narrowed per-request. A clinician from another hospital
+      fails as "does not exist", never confirming they exist elsewhere.
+    - **Role matches the slot** — a nurse cannot hold the provider slot.
+      Without this the column would claim an accountability the person
+      doesn't have.
+    - **Capacity** — refuses someone already at ``max_patients``, so a
+      caseload limit is a real limit rather than a number nobody enforces.
     """
 
-    staff = OrganizationStaffField()
-    role = serializers.ChoiceField(choices=CareTeamMembership.ROLE_CHOICES)
+    provider = OrganizationStaffField(required=False, allow_null=True)
+    nurse = OrganizationStaffField(required=False, allow_null=True)
+    care_manager = OrganizationStaffField(required=False, allow_null=True)
+
+    # The slot name and the role code are deliberately the same string.
+    ROLE_FOR_FIELD = {
+        "provider": settings.ROLE_PROVIDER,
+        "nurse": settings.ROLE_NURSE,
+        "care_manager": settings.ROLE_CARE_MANAGER,
+    }
+
+    class Meta(PregnancySerializer.Meta):
+        read_only_fields = PregnancySerializer.Meta.read_only_fields
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+
+        errors = {}
+        for field_name, role_code in self.ROLE_FOR_FIELD.items():
+            if field_name not in attrs:
+                continue
+            staff = attrs[field_name]
+            if staff is None:
+                continue
+
+            # Re-submitting the assignment a pregnancy already has is not a
+            # new assignment. Without this, saving an unrelated field on a
+            # pregnancy whose clinician has since filled up would fail on a
+            # capacity check nobody was asking it to make.
+            if self.instance is not None and getattr(self.instance, f"{field_name}_id", None) == staff.pk:
+                continue
+
+            if staff.user.role_code != role_code:
+                errors[field_name] = f"This staff member is not a {role_code.replace('_', ' ')}."
+                continue
+
+            # Locked for the check: two concurrent assignments must not both
+            # read "one slot left" and both take it.
+            locked = Staff.objects.select_for_update().get(pk=staff.pk)
+            if not locked.has_capacity:
+                errors[field_name] = "This staff member is already at their patient capacity."
+
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
 
 class PatientListSerializer(serializers.ModelSerializer):
@@ -306,8 +268,8 @@ class PatientDetailSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(read_only=True)
     has_app_account = serializers.BooleanField(read_only=True)
     current_pregnancy = PregnancySerializer(read_only=True)
-    consents = ConsentSerializer(many=True, read_only=True)
     location_name = serializers.CharField(source="location.name", read_only=True)
+    secondary_provider_detail = SecondaryProviderBriefSerializer(source="secondary_provider", read_only=True)
 
     class Meta:
         model = Patient
@@ -325,10 +287,14 @@ class PatientDetailSerializer(serializers.ModelSerializer):
             "emergency_contact_name",
             "emergency_contact_phone",
             "emergency_contact_relation",
+            "emergency_contact_email",
             "has_app_account",
             "location_name",
+            "secondary_provider_detail",
             "current_pregnancy",
-            "consents",
+            "consent_date",
+            "secondary_provider",
+            "secondary_provider_detail",
             "is_active",
             "created_at",
             "updated_at",
@@ -339,31 +305,32 @@ class PatientDetailSerializer(serializers.ModelSerializer):
             "full_name",
             "has_app_account",
             "location_name",
+            "secondary_provider_detail",
             "current_pregnancy",
-            "consents",
             "created_at",
             "updated_at",
         ]
 
 
-class ConsentInputSerializer(serializers.Serializer):
-    """Consent captured at enrolment. Required, because storing a patient's
-    record without a recorded agreement is not something the API should allow."""
-
-    status = serializers.ChoiceField(choices=Consent.STATUS_CHOICES, default=Consent.STATUS_GRANTED)
-    version = serializers.CharField(max_length=20, default="v1.0")
-    method = serializers.ChoiceField(choices=Consent.METHOD_CHOICES, default=Consent.METHOD_IN_PERSON)
-    note = serializers.CharField(required=False, allow_blank=True, default="")
-
-
 class PatientCreateSerializer(serializers.Serializer):
-    """Enrolment: the person, optionally her current pregnancy, and consent.
+    """Onboarding: the person, and optionally her current pregnancy.
 
     Location is never accepted from the client — it is resolved from the
-    caller's own hospital, so enrolment cannot place a patient in another
+    caller's own hospital, so onboarding cannot place a patient in another
     tenant.
     """
 
+    # Supplied by the hospital, never generated. Hospitals arrive with their
+    # own existing numbering (on paper files, lab slips, an old system), and a
+    # number this platform invented would be a second, competing identifier
+    # for the same woman. Optional: a hospital without one leaves it blank.
+    mrn = serializers.CharField(
+        max_length=100,
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+        default=None,
+    )
     first_name = serializers.CharField(max_length=50)
     last_name = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
     date_of_birth = serializers.DateField(required=False, allow_null=True)
@@ -374,11 +341,19 @@ class PatientCreateSerializer(serializers.Serializer):
     emergency_contact_name = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
     emergency_contact_phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
     emergency_contact_relation = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    emergency_contact_email = serializers.EmailField(required=False, allow_blank=True, default="")
+    # When she agreed to be monitored. Optional — a hospital that records
+    # consent on paper leaves it blank rather than inventing a date.
+    consent_date = serializers.DateField(required=False, allow_null=True, default=None)
 
-    pregnancy = PregnancyWriteSerializer(required=False)
-    consent = ConsentInputSerializer()
+    # allow_null on both optional blocks, not just required=False: a client
+    # that builds the whole object and sets the absent parts to null (the
+    # normal way a JS or Dart frontend expresses "no pregnancy yet") means
+    # exactly the same thing as omitting the key, and should not be a 400.
+    pregnancy = PregnancyWriteSerializer(required=False, allow_null=True)
 
     PATIENT_FIELDS = [
+        "mrn",
         "first_name",
         "last_name",
         "date_of_birth",
@@ -389,14 +364,51 @@ class PatientCreateSerializer(serializers.Serializer):
         "emergency_contact_name",
         "emergency_contact_phone",
         "emergency_contact_relation",
+        "emergency_contact_email",
+        "consent_date",
     ]
 
-    def split(self) -> tuple[dict, dict | None, dict | None, dict]:
+    def validate_mrn(self, value):
+        # "" becomes None so the database stores NULL, never an empty string —
+        # otherwise two MRN-less patients would collide under the unique
+        # constraint. Only coercion happens here; the uniqueness check lives
+        # in validate() below.
+        return value or None
+
+    def validate_cnic(self, value):
+        return value or None
+
+    def validate(self, attrs):
+        # Every applicable problem is collected into one dict and raised once,
+        # rather than failing on the first: a caller fixing a duplicate MRN
+        # shouldn't then discover a duplicate CNIC on the next round trip.
+        errors = {}
+
+        mrn = attrs.get("mrn")
+        if mrn and Patient.objects.filter(mrn__iexact=mrn).exists():
+            errors["mrn"] = ["A patient with this MRN already exists."]
+
+        cnic = attrs.get("cnic")
+        organization_id = getattr(self.context["request"].user, "organization_id", None)
+        # A caller with no hospital (platform_admin) is skipped rather than
+        # filtered on organization_id=None: that lookup would ask for patients
+        # whose hospital is NULL, which is a column Patient cannot hold, so it
+        # would quietly pass every duplicate CNIC instead of catching one.
+        # The database's unique_cnic_per_organization constraint is the real
+        # guarantee; this check exists to turn it into a clean 400 first.
+        if cnic and organization_id is not None:
+            if Patient.objects.filter(organization_id=organization_id, cnic__iexact=cnic).exists():
+                errors["cnic"] = ["A patient with this CNIC is already registered at this hospital."]
+
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
+    def split(self) -> tuple[dict, dict | None]:
         data = self.validated_data
         patient_data = {k: v for k, v in data.items() if k in self.PATIENT_FIELDS}
         pregnancy = data.get("pregnancy")
-        risk_factors = pregnancy.pop("risk_factors", None) if pregnancy else None
-        return patient_data, pregnancy, risk_factors, data["consent"]
+        return patient_data, pregnancy
 
 
 class WorklistReasonSerializer(serializers.Serializer):
@@ -421,3 +433,93 @@ class WorklistPatientSerializer(serializers.Serializer):
     full_name = serializers.CharField()
     gestational_age = serializers.CharField()
     reasons = WorklistReasonSerializer(many=True)
+
+
+class PatientDraftSerializer(serializers.Serializer):
+    """What a woman can say about herself before any hospital has her.
+
+    Deliberately a subset of ``PatientCreateSerializer``: no location, no
+    organization, no care team, no MRN. Every one of those is a hospital's
+    decision, and she has no hospital yet — offering the fields would invite
+    a client to send values that are silently ignored.
+    """
+
+    first_name = serializers.CharField(max_length=50)
+    last_name = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    date_of_birth = serializers.DateField(required=False, allow_null=True)
+    phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    cnic = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    blood_group = serializers.CharField(max_length=3, required=False, allow_blank=True, default="")
+    emergency_contact_name = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
+    emergency_contact_phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    emergency_contact_relation = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    emergency_contact_email = serializers.EmailField(required=False, allow_blank=True, default="")
+    consent_date = serializers.DateField(required=False, allow_null=True)
+
+    # Her pregnancy as she reports it — dating and history only. Status and
+    # outcome belong to a clinician.
+    lmp = serializers.DateField(required=False, allow_null=True)
+    edd = serializers.DateField(required=False, allow_null=True)
+    gravida = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    para = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+
+    PATIENT_FIELDS = [
+        "first_name",
+        "last_name",
+        "date_of_birth",
+        "phone",
+        "cnic",
+        "blood_group",
+        "emergency_contact_name",
+        "emergency_contact_phone",
+        "emergency_contact_relation",
+        "emergency_contact_email",
+        "consent_date",
+    ]
+    PREGNANCY_FIELDS = ["lmp", "edd", "gravida", "para", *Pregnancy.FACTOR_FIELDS]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # The seven obstetric answers, declared once from the model so this
+        # never drifts from Pregnancy.FACTOR_FIELDS.
+        for field in Pregnancy.FACTOR_FIELDS:
+            self.fields[field] = serializers.ChoiceField(
+                choices=Pregnancy.ANSWER_CHOICES,
+                required=False,
+                default=Pregnancy.UNKNOWN,
+            )
+
+    def split(self) -> tuple[dict, dict | None]:
+        """Into the two dicts ``onboard_patient`` takes."""
+        data = self.validated_data
+        patient_data = {k: v for k, v in data.items() if k in self.PATIENT_FIELDS}
+        pregnancy_data = {k: v for k, v in data.items() if k in self.PREGNANCY_FIELDS}
+        # A pregnancy needs a start; without either date there is nothing to
+        # open and she is simply registered as a patient.
+        if not (pregnancy_data.get("lmp") or pregnancy_data.get("edd")):
+            return patient_data, None
+        return patient_data, pregnancy_data
+
+
+class PatientJoinRequestSerializer(serializers.ModelSerializer):
+    organization_name = serializers.CharField(source="organization.name", read_only=True)
+    organization_city = serializers.CharField(source="organization.city", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    patient_id = serializers.UUIDField(source="patient.id", read_only=True, default=None)
+
+    class Meta:
+        model = PatientJoinRequest
+        fields = [
+            "id",
+            "organization",
+            "organization_name",
+            "organization_city",
+            "status",
+            "status_display",
+            "draft",
+            "decision_note",
+            "decided_at",
+            "patient_id",
+            "created_at",
+        ]
+        read_only_fields = fields

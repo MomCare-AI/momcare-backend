@@ -21,6 +21,7 @@ REGISTRATION = {
     "email": "owner@sunrise.test",
     "password": "BrandNewPass!2026",
     "org_name": "Sunrise Maternity",
+    "license_number": "LIC-0001",
     "org_email": "info@sunrise.test",
     "org_phone": "0511111111",
     "address_line1": "22 Blue Area",
@@ -28,14 +29,12 @@ REGISTRATION = {
     "state": "ICT",
     "postal_code": "44000",
     "country": "Pakistan",
-    "license_no": "IHRA-2026-115",
-    "license_authority": "ihra",
 }
 
 
 def test_registration_confirms_the_application_by_email(client):
     response = client.post(
-        "/api/auth/register/",
+        "/api/organization/onboard/",
         data=json.dumps(REGISTRATION),
         content_type="application/json",
     )
@@ -47,6 +46,35 @@ def test_registration_confirms_the_application_by_email(client):
     assert "Sunrise Maternity" in sent.subject
     # It must set the expectation that sign-in is not yet possible.
     assert "not be able to sign in" in sent.body
+
+
+def test_the_confirmation_email_echoes_back_what_was_submitted(client):
+    """A typo made on the form should be visible to the applicant in
+    writing, not discovered later when the wrong number gets called."""
+    response = client.post(
+        "/api/organization/onboard/",
+        data=json.dumps(REGISTRATION),
+        content_type="application/json",
+    )
+    assert response.status_code == 201
+
+    body = mail.outbox[0].body
+    assert REGISTRATION["address_line1"] in body
+    assert REGISTRATION["city"] in body
+    assert REGISTRATION["state"] in body
+    assert REGISTRATION["postal_code"] in body
+    assert REGISTRATION["country"] in body
+    assert REGISTRATION["org_phone"] in body
+    assert REGISTRATION["org_email"] in body
+
+
+def test_the_confirmation_email_promises_no_specific_timeframe(client):
+    """A number here would be a commitment nobody has actually made."""
+    client.post("/api/organization/onboard/", data=json.dumps(REGISTRATION), content_type="application/json")
+
+    body = mail.outbox[0].body.lower()
+    for phrase in ("business day", "working day", "24 hour", "48 hour", "hours", "within"):
+        assert phrase not in body
 
 
 def test_approval_notifies_the_owner(make_hospital):

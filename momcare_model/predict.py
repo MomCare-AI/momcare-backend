@@ -15,9 +15,10 @@ numbers — never as an error to work around.
 
 Deliberately does NOT apply the Africa+Medium->High rule or the confidence
 threshold — those are postprocessing decisions for
-core.monitoring.services.reassess_risk(), which has the pregnancy's region
-and hospital available and this function does not. This reports only what
-the model itself produced.
+modules.pregnancy.vitals.services.reassess_risk() (moved out of
+core.monitoring on 2026-09-16, same function), which has the pregnancy's
+region and hospital available and this function does not. This reports only
+what the model itself produced.
 
 No pandas here, on purpose — pandas is a training-only dependency (see the
 ``ml-train`` group in pyproject.toml), never installed in production. Missing

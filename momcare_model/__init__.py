@@ -6,7 +6,9 @@ framework dependency. It sits at the repo root beside ``config/`` and
 project wiring nor a Django app — the same reasoning that keeps ``config/``
 separate applies here.
 
-``core.monitoring.services`` is the only Django code that imports from this
-package, and it does so with a function-local import (see reassess_risk()),
-the same pattern already used for the alerts/monitoring cross-import.
+``modules.pregnancy.vitals.services`` (moved out of ``core.monitoring`` on
+2026-09-16 — same function, new home) is the only Django code that imports
+from this package, and it does so with a function-local import (see
+reassess_risk()), the same pattern already used for the alerts/vitals
+cross-import.
 """
