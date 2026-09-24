@@ -278,7 +278,9 @@ class DeviceListCreateView(MonitoringView):
             .select_related("assigned_pregnancy__patient")
             .order_by("serial_number")
         )
-        return Response(DeviceSerializer(devices, many=True).data)
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(devices, request, view=self)
+        return paginator.get_paginated_response(DeviceSerializer(page, many=True).data)
 
     def post(self, request):
         org, error = self.hospital_or_error(request)

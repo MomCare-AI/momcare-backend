@@ -28,10 +28,18 @@ class StaffMemberSerializer(serializers.ModelSerializer):
     def get_has_activated(self, obj) -> bool:
         return not obj.user.requires_password_reset
 
+    # The mirror image of UserMeSerializer's own staff_id: that endpoint
+    # exposes {id: <user id>, staff_id: <staff id>} so the frontend can tell
+    # whether "me" matches a care-team row's staff_id without a second
+    # round-trip; this exposes {id: <staff id>, user_id: <user id>} so it
+    # can do the same comparison the other direction -- e.g. does this row
+    # in the staff list belong to the signed-in user.
+
     class Meta:
         model = Staff
         fields = [
             "id",
+            "user_id",
             "employee_id",
             "full_name",
             "email",

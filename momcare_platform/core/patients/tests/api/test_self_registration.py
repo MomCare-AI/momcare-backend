@@ -208,6 +208,18 @@ def test_the_directory_never_leaks_internal_counts(client, make_hospital, regist
         assert leaked not in row, f"{leaked} must not be public"
 
 
+def test_the_directory_uses_the_standard_pagination_envelope(client, make_hospital, registered_patient):
+    """Used to hard-cap at 200 results with no way to see further ones --
+    proves it now paginates properly like every other list endpoint."""
+    make_hospital("Envelope Directory Hospital")
+    _, headers = registered_patient()
+
+    body = client.get(HOSPITALS, **headers).json()
+
+    assert set(body.keys()) == {"count", "page", "page_size", "total_pages", "next", "previous", "results"}
+    assert body["count"] >= 1
+
+
 # ── Sending a request ────────────────────────────────────────────────────────
 
 
@@ -267,6 +279,17 @@ def test_she_sees_only_her_own_requests(client, make_hospital, registered_patien
     body = client.get(MY_REQUESTS, **hers).json()
 
     assert body["count"] == 0, "another woman's request must be invisible"
+
+
+def test_my_requests_uses_the_standard_pagination_envelope(client, make_hospital, registered_patient):
+    hospital = make_hospital("My Requests Envelope Hospital")
+    _, headers = registered_patient()
+    post(client, MY_REQUESTS, {"organization": str(hospital.org.id), "draft": DRAFT}, headers)
+
+    body = client.get(MY_REQUESTS, **headers).json()
+
+    assert set(body.keys()) == {"count", "page", "page_size", "total_pages", "next", "previous", "results"}
+    assert body["count"] == 1
 
 
 # ── The hospital reviewing ───────────────────────────────────────────────────

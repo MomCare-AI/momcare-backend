@@ -371,7 +371,9 @@ def test_pregnancy_history_is_kept_after_one_ends(client, make_hospital, auth):
         **headers,
     )
 
-    listing = client.get(f"{PATIENTS}{patient_id}/pregnancies/", **headers).json()
+    body = client.get(f"{PATIENTS}{patient_id}/pregnancies/", **headers).json()
+    assert set(body.keys()) == {"count", "page", "page_size", "total_pages", "next", "previous", "results"}
+    listing = body["results"]
     assert len(listing) == 2
     assert {p["status"] for p in listing} == {"delivered", "active"}
 

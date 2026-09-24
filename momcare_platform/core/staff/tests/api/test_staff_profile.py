@@ -149,6 +149,6 @@ def test_the_staff_list_carries_the_new_credentialing_fields(
 
     response = client.get("/api/staff/", **auth(hospital.admin.email))
 
-    row = next(r for r in response.json() if r["id"] == str(doctor.staff.id))
+    row = next(r for r in response.json()["results"] if r["id"] == str(doctor.staff.id))
     assert row["specialty"] == "Maternal-Fetal Medicine"
     assert row["years_of_experience"] is None

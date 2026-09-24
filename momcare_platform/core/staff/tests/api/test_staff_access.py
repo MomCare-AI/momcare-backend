@@ -69,6 +69,28 @@ def test_hospital_admin_can_onboard_a_nurse(client, make_hospital, auth):
     assert len(mail.outbox) == 1
 
 
+def test_onboarding_response_carries_both_the_staff_id_and_the_user_id(client, make_hospital, auth):
+    """The account is created either way -- this proves the response
+    actually says so. Mirrors UserMeSerializer's {id, staff_id} pair in
+    the other direction, so the frontend can tell whose account a staff
+    row belongs to without a second round-trip."""
+    hospital = make_hospital("User Id Response Hospital")
+    location = ensure_default_location(hospital.org)
+
+    response = _onboard(
+        client,
+        auth(hospital.admin.email),
+        role_code=settings.ROLE_NURSE,
+        locations=[location],
+    )
+
+    assert response.status_code == 201, response.content
+    body = response.json()
+    created_user = User.objects.get(email="new.doctor@example.test")
+    assert body["user_id"] == str(created_user.id)
+    assert body["id"] != body["user_id"]
+
+
 def test_a_location_manager_can_onboard_staff_into_their_own_location(client, make_hospital, make_staff, auth):
     hospital = make_hospital("Manager Onboard Hospital")
     manager = make_staff(hospital.org, settings.ROLE_NURSE, "manager@manageronboard.test")
@@ -151,7 +173,21 @@ def test_provider_can_still_read_the_team(client, make_hospital, make_staff, aut
     response = client.get(STAFF, **auth(doctor.email))
 
     assert response.status_code == 200
-    assert [m["email"] for m in response.json()] == [doctor.email]
+    assert [m["email"] for m in response.json()["results"]] == [doctor.email]
+
+
+def test_the_staff_list_uses_the_standard_pagination_envelope(client, make_hospital, make_staff, auth):
+    """Same {count, page, page_size, total_pages, next, previous, results}
+    shape as every other list endpoint -- this one used to return a bare
+    array."""
+    hospital = make_hospital("Envelope Hospital")
+    make_staff(hospital.org, settings.ROLE_NURSE, "nurse@envelopehospital.test")
+
+    body = client.get(STAFF, **auth(hospital.admin.email)).json()
+
+    assert set(body.keys()) == {"count", "page", "page_size", "total_pages", "next", "previous", "results"}
+    assert body["count"] == 1
+    assert body["page"] == 1
 
 
 # ── Validation ───────────────────────────────────────────────────────────────
@@ -331,7 +367,7 @@ def test_the_staff_list_shows_who_has_not_activated_yet(client, make_hospital, a
         locations=[location],
     )
 
-    rows = client.get("/api/staff/", **auth(hospital.admin.email)).json()
+    rows = client.get("/api/staff/", **auth(hospital.admin.email)).json()["results"]
     invited = next(r for r in rows if r["email"] == "pendingrow@activationvisible.test")
 
     assert invited["has_activated"] is False
@@ -369,8 +405,8 @@ def test_staff_list_never_leaks_another_hospital(client, make_hospital, make_sta
     make_staff(alpha.org, settings.ROLE_PROVIDER, "alpha.doc@alpha.test")
     make_staff(beta.org, settings.ROLE_PROVIDER, "beta.doc@beta.test")
 
-    alpha_emails = {m["email"] for m in client.get(STAFF, **auth(alpha.admin.email)).json()}
-    beta_emails = {m["email"] for m in client.get(STAFF, **auth(beta.admin.email)).json()}
+    alpha_emails = {m["email"] for m in client.get(STAFF, **auth(alpha.admin.email)).json()["results"]}
+    beta_emails = {m["email"] for m in client.get(STAFF, **auth(beta.admin.email)).json()["results"]}
 
     assert "alpha.doc@alpha.test" in alpha_emails
     assert "beta.doc@beta.test" in beta_emails

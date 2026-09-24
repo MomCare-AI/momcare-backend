@@ -321,9 +321,22 @@ def test_device_list_never_crosses_hospitals(client, make_hospital, device_for, 
     device_for(alpha, "MC-ALPHA")
     device_for(beta, "MC-BETA")
 
-    serials = {d["serial_number"] for d in client.get("/api/devices/", **auth(alpha.admin.email)).json()}
+    serials = {d["serial_number"] for d in client.get("/api/devices/", **auth(alpha.admin.email)).json()["results"]}
 
     assert serials == {"MC-ALPHA"}
+
+
+def test_the_device_list_uses_the_standard_pagination_envelope(client, make_hospital, device_for, auth):
+    """Used to return a bare array -- proves it now matches every other
+    list endpoint's {count, page, page_size, total_pages, next, previous,
+    results} shape."""
+    hospital = make_hospital("Device Envelope Hospital")
+    device_for(hospital, "MC-ENVELOPE")
+
+    body = client.get("/api/devices/", **auth(hospital.admin.email)).json()
+
+    assert set(body.keys()) == {"count", "page", "page_size", "total_pages", "next", "previous", "results"}
+    assert body["count"] == 1
 
 
 def test_clinical_staff_can_record_readings(client, make_hospital, make_staff, pregnancy_for, auth):

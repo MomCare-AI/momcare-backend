@@ -108,6 +108,20 @@ def test_no_reading_ever_recorded(client, make_hospital, auth):
     assert "ever" in reading_reason["detail"]
 
 
+def test_the_worklist_uses_the_standard_pagination_envelope(client, make_hospital, auth):
+    hospital = make_hospital("Worklist Envelope Hospital")
+    onboard_patient(
+        organization=hospital.org,
+        patient_data={"first_name": "Envelope", "last_name": "Case"},
+        pregnancy_data={"lmp": timezone.now().date() - timedelta(weeks=20)},
+    )
+
+    body = client.get(WORKLIST, **auth(hospital.admin.email)).json()
+
+    assert set(body.keys()) == {"count", "page", "page_size", "total_pages", "next", "previous", "results"}
+    assert body["count"] >= 1
+
+
 def test_a_stale_reading_beyond_seven_days_is_flagged(client, make_hospital, pregnancy_for, auth):
     hospital = make_hospital("Stale Reading Hospital")
     pregnancy = pregnancy_for(hospital)

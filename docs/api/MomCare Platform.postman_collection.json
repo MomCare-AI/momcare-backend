@@ -893,7 +893,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/staff/",
+              "raw": "{{base_url}}/api/staff/?page=1&page_size=25",
               "host": [
                 "{{base_url}}"
               ],
@@ -901,9 +901,19 @@
                 "api",
                 "staff",
                 ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "25"
+                }
               ]
             },
-            "description": "The signed-in user's own hospital team. Not paginated -- a hospital's roster is small enough to return in one shot.\n\nPermissions: IsAuthenticated + any hospital-side role (read-only for everyone; onboarding below is restricted).\n\nEach row's `location_ids` are the sites this person is assigned to (`User.locations`) -- currently just a tag recorded at onboarding time; it does not yet restrict what that person can see elsewhere (Patients/Monitoring/Alerts querysets are still organization-scoped only)."
+            "description": "The signed-in user's own hospital team. Paginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100).\n\nPermissions: IsAuthenticated + any hospital-side role (read-only for everyone; onboarding below is restricted).\n\nEach row's `location_ids` are the sites this person is assigned to (`User.locations`) -- currently just a tag recorded at onboarding time; it does not yet restrict what that person can see elsewhere (Patients/Monitoring/Alerts querysets are still organization-scoped only)."
           },
           "response": []
         },
@@ -1402,7 +1412,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/hospitals/?search=&city=",
+              "raw": "{{base_url}}/api/hospitals/?page=1&page_size=25",
               "host": [
                 "{{base_url}}"
               ],
@@ -1410,9 +1420,19 @@
                 "api",
                 "hospitals",
                 ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "25"
+                }
               ]
             },
-            "description": "The hospitals she can ask to join.\n\nPermissions: any authenticated user.\n\nOnly **approved and active** hospitals appear — one still under review is not hers to discover. Returns public fields only (name, city, country, phone): never patient counts, licences or staff.\n\n`search` matches name or city; `city` filters exactly. Deliberately a searchable list, NOT distance-sorted — real 'hospitals near me' needs coordinates the Location model does not carry, and inventing them would be worse than a city filter that is honest about what it is."
+            "description": "The hospitals she can ask to join.\n\nPermissions: any authenticated user.\n\nOnly **approved and active** hospitals appear — one still under review is not hers to discover. Returns public fields only (name, city, country, phone): never patient counts, licences or staff.\n\n`search` matches name or city; `city` filters exactly. Deliberately a searchable list, NOT distance-sorted — real 'hospitals near me' needs coordinates the Location model does not carry, and inventing them would be worse than a city filter that is honest about what it is.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
           },
           "response": []
         },
@@ -1456,7 +1476,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/my-requests/",
+              "raw": "{{base_url}}/api/my-requests/?page=1&page_size=25",
               "host": [
                 "{{base_url}}"
               ],
@@ -1464,9 +1484,19 @@
                 "api",
                 "my-requests",
                 ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "25"
+                }
               ]
             },
-            "description": "Every request she has sent, with its status and the hospital's decision note.\n\nPermissions: IsAuthenticated + IsPatient.\n\nShe has no organization, so Postgres RLS — correctly fail-closed — would show her nothing. This endpoint runs inside `bypass_rls()` with an explicit `user=request.user` filter instead: the filter, not the policy, is what keeps her to her own rows here.\n\nOnce approved, `patient_id` points at her new clinical record.\n\nStatuses: `pending`, `approved`, `rejected`, and `withdrawn` — the last meaning she was accepted elsewhere while this one was still open."
+            "description": "Every request she has sent, with its status and the hospital's decision note.\n\nPermissions: IsAuthenticated + IsPatient.\n\nShe has no organization, so Postgres RLS — correctly fail-closed — would show her nothing. This endpoint runs inside `bypass_rls()` with an explicit `user=request.user` filter instead: the filter, not the policy, is what keeps her to her own rows here.\n\nOnce approved, `patient_id` points at her new clinical record.\n\nStatuses: `pending`, `approved`, `rejected`, and `withdrawn` — the last meaning she was accepted elsewhere while this one was still open.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
           },
           "response": []
         },
@@ -1724,7 +1754,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/patients/{{patient_id}}/pregnancies/",
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/pregnancies/?page=1&page_size=25",
               "host": [
                 "{{base_url}}"
               ],
@@ -1734,9 +1764,19 @@
                 "{{patient_id}}",
                 "pregnancies",
                 ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "25"
+                }
               ]
             },
-            "description": "This patient's full pregnancy history, newest first -- each with its care team and risk factors.\n\nPermissions: IsAuthenticated + any hospital-side role."
+            "description": "This patient's full pregnancy history, newest first -- each with its care team and risk factors.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
           },
           "response": []
         },
@@ -1842,7 +1882,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/patients/worklist/?assigned_to=",
+              "raw": "{{base_url}}/api/patients/worklist/?page=1&page_size=25",
               "host": [
                 "{{base_url}}"
               ],
@@ -1851,9 +1891,19 @@
                 "patients",
                 "worklist",
                 ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "25"
+                }
               ]
             },
-            "description": "Administrative and care-continuity GAPS — cases where something procedural is missing, independent of whether today's vitals look bad.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nFlags active pregnancies with: no reading in 7+ days, no obstetric risk history ever answered, or no lead clinician (including one who has since been deactivated -- an assignment to someone who has left is as good as no assignment once alerts start routing).\n\nRows with the MOST gaps sort first. The two day-thresholds are administrative defaults, not clinically validated.\n\n`assigned_to=me` narrows to the caller's own caseload, same semantics as the patient list."
+            "description": "Administrative and care-continuity GAPS — cases where something procedural is missing, independent of whether today's vitals look bad.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nFlags active pregnancies with: no reading in 7+ days, no obstetric risk history ever answered, or no lead clinician (including one who has since been deactivated -- an assignment to someone who has left is as good as no assignment once alerts start routing).\n\nRows with the MOST gaps sort first. The two day-thresholds are administrative defaults, not clinically validated.\n\n`assigned_to=me` narrows to the caller's own caseload, same semantics as the patient list.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
           },
           "response": []
         },
@@ -2269,7 +2319,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/devices/",
+              "raw": "{{base_url}}/api/devices/?page=1&page_size=25",
               "host": [
                 "{{base_url}}"
               ],
@@ -2277,8 +2327,19 @@
                 "api",
                 "devices",
                 ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "25"
+                }
               ]
-            }
+            },
+            "description": "\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
           },
           "response": []
         },

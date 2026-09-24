@@ -246,12 +246,9 @@ class PatientWorklistView(PatientScopedView):
         # opening than one missing a single, possibly-explainable thing.
         rows.sort(key=lambda r: -len(r["reasons"]))
 
-        return Response(
-            {
-                "count": len(rows),
-                "results": WorklistPatientSerializer(rows, many=True).data,
-            },
-        )
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(WorklistPatientSerializer(page, many=True).data)
 
     def _reasons_for(self, pregnancy, now) -> list[dict]:
         reasons = []
@@ -333,7 +330,9 @@ class PregnancyListCreateView(PatientScopedView):
             "nurse__user",
             "care_manager__user",
         )
-        return Response(PregnancySerializer(pregnancies, many=True).data)
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(pregnancies, request, view=self)
+        return paginator.get_paginated_response(PregnancySerializer(page, many=True).data)
 
     def post(self, request, patient_id):
         _, error = self.hospital_or_error(request)
@@ -464,6 +463,7 @@ class HospitalDirectoryView(APIView):
         # Cross-tenant by design and by necessity: she belongs to no hospital,
         # and the whole point is to show her the ones she could join. Only
         # public-facing fields are returned — never counts, licences or staff.
+        paginator = DefaultPagination()
         with bypass_rls():
             hospitals = Organization.objects.filter(
                 status=Organization.STATUS_APPROVED,
@@ -476,6 +476,7 @@ class HospitalDirectoryView(APIView):
             if city:
                 hospitals = hospitals.filter(city__iexact=city)
 
+            page = paginator.paginate_queryset(hospitals.order_by("name", "id"), request, view=self)
             rows = [
                 {
                     "id": str(h.id),
@@ -484,18 +485,20 @@ class HospitalDirectoryView(APIView):
                     "country": h.country,
                     "phone": h.phone,
                 }
-                for h in hospitals.order_by("name", "id")[:200]
+                for h in page
             ]
-        return Response({"count": len(rows), "results": rows})
+        return paginator.get_paginated_response(rows)
 
 
 class PatientJoinRequestView(PatientSelfView):
     """Ask a hospital to take her on, and see what she has already asked."""
 
     def get(self, request):
+        paginator = DefaultPagination()
         with bypass_rls():
-            data = PatientJoinRequestSerializer(self.my_requests(request), many=True).data
-        return Response({"count": len(data), "results": data})
+            page = paginator.paginate_queryset(self.my_requests(request), request, view=self)
+            data = PatientJoinRequestSerializer(page, many=True).data
+        return paginator.get_paginated_response(data)
 
     def post(self, request):
         from momcare_platform.core.organization.models import Organization

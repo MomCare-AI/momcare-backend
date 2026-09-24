@@ -91,7 +91,11 @@ class StaffListView(HospitalPortalView):
             .prefetch_related("user__locations")
             .order_by("user__first_name", "user__last_name")
         )
-        return Response(StaffMemberSerializer(staff, many=True, context={"request": request}).data)
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(staff, request, view=self)
+        return paginator.get_paginated_response(
+            StaffMemberSerializer(page, many=True, context={"request": request}).data,
+        )
 
     def post(self, request):
         org, error = self.hospital_or_error(request)
