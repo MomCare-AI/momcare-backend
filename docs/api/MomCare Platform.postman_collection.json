@@ -2006,6 +2006,151 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "List Patient Statuses",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/statuses/?page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "statuses",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "This patient's status timeline -- full history, newest first. The current status is simply the most recent entry; there is no separate \"current status\" pointer field.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's patient resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Patient Status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/statuses/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "statuses",
+                ""
+              ]
+            },
+            "description": "Log a status entry against this patient. `name`/`description`/`color` are free text -- not a foreign key into Status Labels above -- so logging something that isn't in the catalogue is allowed; the catalogue exists to power a frontend picker, not to constrain what can be logged. The same name may be logged again later for the same patient (a status like \"Stable\" plausibly recurs over the months a pregnancy spans).\n\nPermissions: IsAuthenticated + any hospital-side role. `name`/`description` cannot be blank; `color` must be a hex code like `#RRGGBB`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Critical\",\n  \"description\": \"Needs urgent review\",\n  \"color\": \"#ff0000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Patient Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patient-statuses/{{status_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patient-statuses",
+                "{{status_id}}",
+                ""
+              ]
+            },
+            "description": "A single status entry by id -- flat, same reasoning as Sessions/Notes above. Another hospital's entry resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Patient Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patient-statuses/{{status_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patient-statuses",
+                "{{status_id}}",
+                ""
+              ]
+            },
+            "description": "Edit a status entry.\n\nPermissions: IsAuthenticated + the staff member who logged it, or a hospital admin -- a different staff member's attempt returns 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Stable\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Patient Status",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patient-statuses/{{status_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patient-statuses",
+                "{{status_id}}",
+                ""
+              ]
+            },
+            "description": "Hard delete.\n\nPermissions: IsAuthenticated + the staff member who logged it, or a hospital admin."
+          },
+          "response": []
         }
       ]
     },
@@ -2466,7 +2611,7 @@
       ]
     },
     {
-      "name": "Clinical Monitoring",
+      "name": "Clinical Tags",
       "item": [
         {
           "name": "List Clinical Tags",
@@ -2638,7 +2783,401 @@
             "description": "Remove a tag from the catalogue -- it is also removed from every note currently carrying it (a plain M2M row deletion, the notes themselves are untouched).\n\nPermissions: IsAuthenticated + hospital_admin only."
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "Monitoring",
+      "item": [
+        {
+          "name": "List Combined (Sessions + Notes)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/?year=&month=&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "year",
+                  "value": ""
+                },
+                {
+                  "key": "month",
+                  "value": ""
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "This patient's clinical contact history as one merged, chronological feed -- every MonitoringSession (with its linked note, if any) and every standalone note (session=None) -- **scoped to one calendar month**, newest first.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin/provider/nurse/care_manager). A patient's own account cannot read this -- it names staff and clinical detail, the same PHI boundary as the patient record itself.\n\nEach row is `{session, note}` -- either half may be null: a duration-only contact has `note: null`, a standalone note has `session: null`.\n\n`year`/`month` (both optional) pick which calendar month to view -- defaults to the current month in the patient's location timezone. The response carries a top-level `totals: {total_seconds, total_formatted}` block for that same month (summed across MonitoringSession.duration_seconds only -- notes carry no duration), plus the echoed `year`/`month` so the client can trust the server's interpretation. 400 if `month` is outside 1-12 or either value isn't an integer."
+          },
+          "response": []
         },
+        {
+          "name": "Create Monitoring Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                ""
+              ]
+            },
+            "description": "Log time spent on this patient with no note attached -- creates a MonitoringSession, `note` in the response is null.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`duration_seconds` must be 1-86400 (24 hours). `recorded_at` is optional -- omit it to use now, or backdate a retroactive entry (rejected if in the future). `pregnancy` is filled in automatically from the patient's current active pregnancy -- there is no field for it in this request; if she has none yet (or is between two), the session is still created, just with no pregnancy attached.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"duration_seconds\": 600,\n  \"recorded_at\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Monitoring Note",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                ""
+              ]
+            },
+            "description": "Log a note with no duration -- creates a standalone MonitoringNote, `session` in the response is null.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nAt least one of `duration_seconds`/`note` is required on every call to this endpoint -- an empty payload is rejected with 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"Called to check on nausea; advised hydration and small frequent meals.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Combined (Session + Note + Tags)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                ""
+              ]
+            },
+            "description": "The full shape: a session and a note created together, atomically, with the note linked to the session.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`tags` entries are get-or-create: pass `id` to attach an existing tag exactly as-is (its name/color are never touched by attaching it), or `name` (+ optional `color`) to create one on the fly -- a new ad-hoc tag is created at the *location* level (the patient's own branch), not hospital-wide, on the reasoning that a quick tag typed mid-note is local by default; a shared hospital-wide tag is a deliberate admin action (see Create Clinical Tag above). Matching on name is case-insensitive.\n\n`left_voicemail`/`two_way_communication`: at most one may be true, and both require a non-empty `note` -- a call outcome with nothing said makes no sense.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"duration_seconds\": 420,\n  \"note\": \"Discussed medication adherence and scheduled a follow-up call.\",\n  \"tags\": [\n    {\n      \"name\": \"Follow Up\",\n      \"color\": \"#00a86b\"\n    },\n    {\n      \"id\": \"{{tag_id}}\"\n    }\n  ],\n  \"left_voicemail\": false,\n  \"two_way_communication\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Monitoring Sessions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/sessions/?year=&month=&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                "sessions",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "year",
+                  "value": ""
+                },
+                {
+                  "key": "month",
+                  "value": ""
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "This patient's sessions for one calendar month, no note pairing -- \"how much time has been logged.\"\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`year`/`month` (both optional) pick which calendar month -- defaults to the current month in the patient's location timezone. The response carries a top-level `totals: {total_seconds, total_formatted}` block for that same month, plus the echoed `year`/`month`. 400 if `month` is outside 1-12 or either value isn't an integer."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Monitoring Session",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-sessions/{{session_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-sessions",
+                "{{session_id}}",
+                ""
+              ]
+            },
+            "description": "A single session by id -- flat, not nested under its patient, the same way `/alerts/<id>/` is flat even though an Alert hangs off a pregnancy.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's session resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Monitoring Session",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-sessions/{{session_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-sessions",
+                "{{session_id}}",
+                ""
+              ]
+            },
+            "description": "Correct a session's duration or backdate its `recorded_at`.\n\nPermissions: IsAuthenticated + any hospital-side role for the request to reach the view, then **owner or hospital_admin** at the object level -- only the staff member who logged this session, or a hospital admin, may edit it. Anyone else gets 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"duration_seconds\": 900\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Monitoring Session",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-sessions/{{session_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-sessions",
+                "{{session_id}}",
+                ""
+              ]
+            },
+            "description": "Remove a session. If it has a linked note, the note is deleted too (a real mistake, not two separate corrections) -- deleting a note on its own never touches its session.\n\nPermissions: owner or hospital_admin, same as Update Session."
+          },
+          "response": []
+        },
+        {
+          "name": "List Monitoring Notes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/notes/?search=&tag_id=&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "monitoring",
+                "notes",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": ""
+                },
+                {
+                  "key": "tag_id",
+                  "value": ""
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "This patient's notes only, searchable -- used to look back through her clinical contact history.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`search` matches note text, tag names, or the author's name. `tag_id` narrows to notes carrying one specific tag."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Monitoring Note",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-notes/{{note_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-notes",
+                "{{note_id}}",
+                ""
+              ]
+            },
+            "description": "A single note by id -- flat, same reasoning as sessions above.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's note resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Monitoring Note",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-notes/{{note_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-notes",
+                "{{note_id}}",
+                ""
+              ]
+            },
+            "description": "Correct a note's text, replace its tag set, or update its call-outcome flags.\n\nPermissions: owner or hospital_admin at the object level, same as Update Session.\n\n`tags_input` (write-only) *replaces* the note's whole tag set with the resolved result of this list -- same get-or-create semantics as `tags` on Log Contact. Omit it entirely to leave the existing tags untouched; send `[]` to clear them. `note` cannot be blank.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"Corrected: reports mild swelling, not severe.\",\n  \"tags_input\": [\n    {\n      \"name\": \"Watch Closely\"\n    }\n  ],\n  \"left_voicemail\": false,\n  \"two_way_communication\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Monitoring Note",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/monitoring-notes/{{note_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "monitoring-notes",
+                "{{note_id}}",
+                ""
+              ]
+            },
+            "description": "Remove a note. Its linked session (if any) is untouched -- only deleting the session cascades to the note, not the other way around.\n\nPermissions: owner or hospital_admin, same as Update Session."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Status Labels",
+      "item": [
         {
           "name": "List Status Labels",
           "request": {
@@ -2807,535 +3346,6 @@
               ]
             },
             "description": "Hard delete -- the catalogue entry only, never the patient statuses already logged with that name (they're free text, not a foreign key -- see Log Patient Status below).\n\nPermissions: IsAuthenticated + hospital_admin only."
-          },
-          "response": []
-        },
-        {
-          "name": "List Monitoring Feed (Combined)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/?year=&month=&page=1&page_size=20",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patients",
-                "{{patient_id}}",
-                "monitoring",
-                ""
-              ],
-              "query": [
-                {
-                  "key": "year",
-                  "value": ""
-                },
-                {
-                  "key": "month",
-                  "value": ""
-                },
-                {
-                  "key": "page",
-                  "value": "1"
-                },
-                {
-                  "key": "page_size",
-                  "value": "20"
-                }
-              ]
-            },
-            "description": "This patient's clinical contact history as one merged, chronological feed -- every MonitoringSession (with its linked note, if any) and every standalone note (session=None) -- **scoped to one calendar month**, newest first.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin/provider/nurse/care_manager). A patient's own account cannot read this -- it names staff and clinical detail, the same PHI boundary as the patient record itself.\n\nEach row is `{session, note}` -- either half may be null: a duration-only contact has `note: null`, a standalone note has `session: null`.\n\n`year`/`month` (both optional) pick which calendar month to view -- defaults to the current month in the patient's location timezone. The response carries a top-level `totals: {total_seconds, total_formatted}` block for that same month (summed across MonitoringSession.duration_seconds only -- notes carry no duration), plus the echoed `year`/`month` so the client can trust the server's interpretation. 400 if `month` is outside 1-12 or either value isn't an integer."
-          },
-          "response": []
-        },
-        {
-          "name": "Log Contact — Duration Only",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patients",
-                "{{patient_id}}",
-                "monitoring",
-                ""
-              ]
-            },
-            "description": "Log time spent on this patient with no note attached -- creates a MonitoringSession, `note` in the response is null.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`duration_seconds` must be 1-86400 (24 hours). `recorded_at` is optional -- omit it to use now, or backdate a retroactive entry (rejected if in the future). `pregnancy` is filled in automatically from the patient's current active pregnancy -- there is no field for it in this request; if she has none yet (or is between two), the session is still created, just with no pregnancy attached.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"duration_seconds\": 600,\n  \"recorded_at\": \"\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Log Contact — Note Only",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patients",
-                "{{patient_id}}",
-                "monitoring",
-                ""
-              ]
-            },
-            "description": "Log a note with no duration -- creates a standalone MonitoringNote, `session` in the response is null.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nAt least one of `duration_seconds`/`note` is required on every call to this endpoint -- an empty payload is rejected with 400.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"note\": \"Called to check on nausea; advised hydration and small frequent meals.\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Log Contact — Duration + Note + Tags",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patients",
-                "{{patient_id}}",
-                "monitoring",
-                ""
-              ]
-            },
-            "description": "The full shape: a session and a note created together, atomically, with the note linked to the session.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`tags` entries are get-or-create: pass `id` to attach an existing tag exactly as-is (its name/color are never touched by attaching it), or `name` (+ optional `color`) to create one on the fly -- a new ad-hoc tag is created at the *location* level (the patient's own branch), not hospital-wide, on the reasoning that a quick tag typed mid-note is local by default; a shared hospital-wide tag is a deliberate admin action (see Create Clinical Tag above). Matching on name is case-insensitive.\n\n`left_voicemail`/`two_way_communication`: at most one may be true, and both require a non-empty `note` -- a call outcome with nothing said makes no sense.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"duration_seconds\": 420,\n  \"note\": \"Discussed medication adherence and scheduled a follow-up call.\",\n  \"tags\": [\n    {\n      \"name\": \"Follow Up\",\n      \"color\": \"#00a86b\"\n    },\n    {\n      \"id\": \"{{tag_id}}\"\n    }\n  ],\n  \"left_voicemail\": false,\n  \"two_way_communication\": true\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "List Sessions",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/sessions/?year=&month=&page=1&page_size=20",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patients",
-                "{{patient_id}}",
-                "monitoring",
-                "sessions",
-                ""
-              ],
-              "query": [
-                {
-                  "key": "year",
-                  "value": ""
-                },
-                {
-                  "key": "month",
-                  "value": ""
-                },
-                {
-                  "key": "page",
-                  "value": "1"
-                },
-                {
-                  "key": "page_size",
-                  "value": "20"
-                }
-              ]
-            },
-            "description": "This patient's sessions for one calendar month, no note pairing -- \"how much time has been logged.\"\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`year`/`month` (both optional) pick which calendar month -- defaults to the current month in the patient's location timezone. The response carries a top-level `totals: {total_seconds, total_formatted}` block for that same month, plus the echoed `year`/`month`. 400 if `month` is outside 1-12 or either value isn't an integer."
-          },
-          "response": []
-        },
-        {
-          "name": "Get Session",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/monitoring-sessions/{{session_id}}/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "monitoring-sessions",
-                "{{session_id}}",
-                ""
-              ]
-            },
-            "description": "A single session by id -- flat, not nested under its patient, the same way `/alerts/<id>/` is flat even though an Alert hangs off a pregnancy.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's session resolves to 404."
-          },
-          "response": []
-        },
-        {
-          "name": "Update Session",
-          "request": {
-            "method": "PATCH",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/monitoring-sessions/{{session_id}}/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "monitoring-sessions",
-                "{{session_id}}",
-                ""
-              ]
-            },
-            "description": "Correct a session's duration or backdate its `recorded_at`.\n\nPermissions: IsAuthenticated + any hospital-side role for the request to reach the view, then **owner or hospital_admin** at the object level -- only the staff member who logged this session, or a hospital admin, may edit it. Anyone else gets 403.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"duration_seconds\": 900\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Delete Session",
-          "request": {
-            "method": "DELETE",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/monitoring-sessions/{{session_id}}/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "monitoring-sessions",
-                "{{session_id}}",
-                ""
-              ]
-            },
-            "description": "Remove a session. If it has a linked note, the note is deleted too (a real mistake, not two separate corrections) -- deleting a note on its own never touches its session.\n\nPermissions: owner or hospital_admin, same as Update Session."
-          },
-          "response": []
-        },
-        {
-          "name": "List Notes",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/patients/{{patient_id}}/monitoring/notes/?search=&tag_id=&page=1&page_size=20",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patients",
-                "{{patient_id}}",
-                "monitoring",
-                "notes",
-                ""
-              ],
-              "query": [
-                {
-                  "key": "search",
-                  "value": ""
-                },
-                {
-                  "key": "tag_id",
-                  "value": ""
-                },
-                {
-                  "key": "page",
-                  "value": "1"
-                },
-                {
-                  "key": "page_size",
-                  "value": "20"
-                }
-              ]
-            },
-            "description": "This patient's notes only, searchable -- used to look back through her clinical contact history.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`search` matches note text, tag names, or the author's name. `tag_id` narrows to notes carrying one specific tag."
-          },
-          "response": []
-        },
-        {
-          "name": "Get Note",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/monitoring-notes/{{note_id}}/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "monitoring-notes",
-                "{{note_id}}",
-                ""
-              ]
-            },
-            "description": "A single note by id -- flat, same reasoning as sessions above.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's note resolves to 404."
-          },
-          "response": []
-        },
-        {
-          "name": "Update Note",
-          "request": {
-            "method": "PATCH",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/monitoring-notes/{{note_id}}/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "monitoring-notes",
-                "{{note_id}}",
-                ""
-              ]
-            },
-            "description": "Correct a note's text, replace its tag set, or update its call-outcome flags.\n\nPermissions: owner or hospital_admin at the object level, same as Update Session.\n\n`tags_input` (write-only) *replaces* the note's whole tag set with the resolved result of this list -- same get-or-create semantics as `tags` on Log Contact. Omit it entirely to leave the existing tags untouched; send `[]` to clear them. `note` cannot be blank.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"note\": \"Corrected: reports mild swelling, not severe.\",\n  \"tags_input\": [\n    {\n      \"name\": \"Watch Closely\"\n    }\n  ],\n  \"left_voicemail\": false,\n  \"two_way_communication\": true\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Delete Note",
-          "request": {
-            "method": "DELETE",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/monitoring-notes/{{note_id}}/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "monitoring-notes",
-                "{{note_id}}",
-                ""
-              ]
-            },
-            "description": "Remove a note. Its linked session (if any) is untouched -- only deleting the session cascades to the note, not the other way around.\n\nPermissions: owner or hospital_admin, same as Update Session."
-          },
-          "response": []
-        },
-        {
-          "name": "List Patient Statuses",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/patients/{{patient_id}}/statuses/?page=1&page_size=20",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patients",
-                "{{patient_id}}",
-                "statuses",
-                ""
-              ],
-              "query": [
-                {
-                  "key": "page",
-                  "value": "1"
-                },
-                {
-                  "key": "page_size",
-                  "value": "20"
-                }
-              ]
-            },
-            "description": "This patient's status timeline -- full history, newest first. The current status is simply the most recent entry; there is no separate \"current status\" pointer field.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's patient resolves to 404."
-          },
-          "response": []
-        },
-        {
-          "name": "Log Patient Status",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/patients/{{patient_id}}/statuses/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patients",
-                "{{patient_id}}",
-                "statuses",
-                ""
-              ]
-            },
-            "description": "Log a status entry against this patient. `name`/`description`/`color` are free text -- not a foreign key into Status Labels above -- so logging something that isn't in the catalogue is allowed; the catalogue exists to power a frontend picker, not to constrain what can be logged. The same name may be logged again later for the same patient (a status like \"Stable\" plausibly recurs over the months a pregnancy spans).\n\nPermissions: IsAuthenticated + any hospital-side role. `name`/`description` cannot be blank; `color` must be a hex code like `#RRGGBB`.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"Critical\",\n  \"description\": \"Needs urgent review\",\n  \"color\": \"#ff0000\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Get Patient Status",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/patient-statuses/{{status_id}}/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patient-statuses",
-                "{{status_id}}",
-                ""
-              ]
-            },
-            "description": "A single status entry by id -- flat, same reasoning as Sessions/Notes above. Another hospital's entry resolves to 404."
-          },
-          "response": []
-        },
-        {
-          "name": "Update Patient Status",
-          "request": {
-            "method": "PATCH",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/patient-statuses/{{status_id}}/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patient-statuses",
-                "{{status_id}}",
-                ""
-              ]
-            },
-            "description": "Edit a status entry.\n\nPermissions: IsAuthenticated + the staff member who logged it, or a hospital admin -- a different staff member's attempt returns 403.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"Stable\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Delete Patient Status",
-          "request": {
-            "method": "DELETE",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/patient-statuses/{{status_id}}/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "patient-statuses",
-                "{{status_id}}",
-                ""
-              ]
-            },
-            "description": "Hard delete.\n\nPermissions: IsAuthenticated + the staff member who logged it, or a hospital admin."
           },
           "response": []
         }
