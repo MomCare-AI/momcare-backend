@@ -1,12 +1,18 @@
-"""Device assignment and risk scoring."""
+"""Device assignment, risk scoring, and reading statistics."""
 
 from __future__ import annotations
 
+from collections import Counter
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Avg, Count, Max, Min
 from django.utils import timezone
+from rest_framework import serializers
 
+from momcare_model import clinical_categories
+from momcare_model.statistics import allocate_percentages
 from momcare_platform.modules.pregnancy.vitals.models import Device, RiskAssessment, VitalReading
 
 
@@ -145,3 +151,177 @@ def latest_readings(pregnancy) -> VitalReading | None:
     format), so there is exactly one "latest" — not one per type.
     """
     return VitalReading.objects.filter(pregnancy=pregnancy).order_by("-recorded_at").first()
+
+
+# ── Reading statistics & vitals summary ─────────────────────────────────────
+# See docs/design/2026-09-25-reading-statistics-design.md. Adapted from
+# Neuro_RPM's reading-statistics/vitals-summary features, simplified for
+# VitalReading's flat, named-column schema (no per-type table split, so no
+# weighted cross-table merge and no generic value_1..value_5 remapping).
+
+# Day-count for each preset window, inclusive of today -- "2_days" means today
+# and yesterday, not today plus 48 hours.
+READING_PERIODS = {
+    "2_days": 2,
+    "1_week": 7,
+    "1_month": 30,
+    "3_months": 90,
+    "6_months": 180,
+    "1_year": 365,
+}
+
+# One vital-scoped group per selectable `reading_type` -- statistics are
+# always scoped to exactly one group, never all 9 fields at once (averaging
+# blood pressure together with glucose would not mean anything).
+READING_TYPE_FIELDS = {
+    "blood_pressure": ["systolic_bp", "diastolic_bp", "heart_rate"],
+    "temperature": ["body_temp_f"],
+    "blood_glucose": ["blood_glucose"],
+    "hemoglobin": ["hemoglobin"],
+    "wellness": ["stress_score", "phys_activity_score"],
+}
+
+# Which of the five clinical_categories functions apply to which reading_type.
+# "wellness" has none -- no clinical bands are defined for stress/activity scores.
+READING_TYPE_CATEGORIES = {
+    "blood_pressure": ["bp_category", "heart_rate_category"],
+    "temperature": ["temperature_category"],
+    "blood_glucose": ["glucose_category"],
+    "hemoglobin": ["hemoglobin_category"],
+    "wellness": [],
+}
+
+# How to classify one raw row (a dict of field values) per category key --
+# bp_category is the only one needing two fields from the same row.
+_CATEGORY_CLASSIFIERS = {
+    "bp_category": lambda row: clinical_categories.bp_category(row.get("systolic_bp"), row.get("diastolic_bp")),
+    "heart_rate_category": lambda row: clinical_categories.heart_rate_category(row.get("heart_rate")),
+    "temperature_category": lambda row: clinical_categories.temperature_category(row.get("body_temp_f")),
+    "glucose_category": lambda row: clinical_categories.glucose_category(row.get("blood_glucose")),
+    "hemoglobin_category": lambda row: clinical_categories.hemoglobin_category(row.get("hemoglobin")),
+}
+
+
+def resolve_reading_period(code: str, tzinfo) -> tuple:
+    """``(start, end)`` day-boundary bounds for a preset reading-statistics
+    window, in the pregnancy's own location timezone -- inclusive of today.
+    """
+    if code not in READING_PERIODS:
+        raise serializers.ValidationError({"period": [f"Must be one of: {', '.join(READING_PERIODS)}."]})
+    now_local = timezone.localtime(timezone.now(), timezone=tzinfo)
+    end = now_local.replace(hour=23, minute=59, second=59, microsecond=999999)
+    start = (now_local - timedelta(days=READING_PERIODS[code] - 1)).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    return start, end
+
+
+def resolve_custom_reading_range(start_date: str, end_date: str, tzinfo) -> tuple:
+    """``(start, end)`` day-boundary bounds for a caller-given ``YYYY-MM-DD``
+    range, inclusive both ends, in the pregnancy's own location timezone.
+    """
+    try:
+        start_naive = datetime.strptime(start_date, "%Y-%m-%d")
+        end_naive = datetime.strptime(end_date, "%Y-%m-%d")
+    except (TypeError, ValueError) as exc:
+        raise serializers.ValidationError(
+            {"start_date": ["start_date and end_date must both be given as YYYY-MM-DD."]},
+        ) from exc
+    if start_naive > end_naive:
+        raise serializers.ValidationError({"start_date": ["start_date must not be after end_date."]})
+
+    start = timezone.make_aware(start_naive.replace(hour=0, minute=0, second=0, microsecond=0), tzinfo)
+    end = timezone.make_aware(end_naive.replace(hour=23, minute=59, second=59, microsecond=999999), tzinfo)
+    return start, end
+
+
+def compute_reading_statistics(queryset, reading_type: str) -> dict:
+    """Average/min/max/count plus category-percentage breakdown for exactly
+    one ``reading_type`` group, over an already date-filtered ``queryset``.
+
+    Real DB aggregation (``.aggregate()``), not Neuro_RPM's Python-list
+    approach -- that existed only to solve a multi-table field-remapping
+    problem VitalReading's flat schema doesn't have.
+    """
+    if reading_type not in READING_TYPE_FIELDS:
+        raise serializers.ValidationError({"reading_type": [f"Must be one of: {', '.join(READING_TYPE_FIELDS)}."]})
+    fields = READING_TYPE_FIELDS[reading_type]
+
+    annotations: dict[str, Avg | Min | Max | Count] = {}
+    for field in fields:
+        annotations[f"{field}__avg"] = Avg(field)
+        annotations[f"{field}__min"] = Min(field)
+        annotations[f"{field}__max"] = Max(field)
+        annotations[f"{field}__count"] = Count(field)
+    result = queryset.aggregate(**annotations)
+
+    average, minimum, maximum, readings_count = {}, {}, {}, {}
+    for field in fields:
+        count = result[f"{field}__count"]
+        if not count:
+            continue
+        average[field] = round(float(result[f"{field}__avg"]), 2)
+        minimum[field] = round(float(result[f"{field}__min"]), 2)
+        maximum[field] = round(float(result[f"{field}__max"]), 2)
+        readings_count[field] = count
+
+    categories = {}
+    category_keys = READING_TYPE_CATEGORIES[reading_type]
+    if category_keys:
+        rows = list(queryset.values(*fields))
+        for category_key in category_keys:
+            classify = _CATEGORY_CLASSIFIERS[category_key]
+            tallied = Counter(classify(row) for row in rows)
+            tallied.pop("", None)  # blank = that vital missing on that row
+            total = sum(tallied.values())
+            if not total:
+                # No reading in the window carried this vital at all -- skip
+                # the category rather than showing an all-zero band set,
+                # matching Neuro_RPM's own "_compute_categories skips empty
+                # counts" behavior.
+                continue
+            band_info = clinical_categories.CATEGORY_BANDS[category_key]
+            band_counts = {band: tallied.get(band, 0) for band in band_info["bands"]}
+            percentages = allocate_percentages(band_counts, total)
+            categories[category_key] = {
+                "guideline": band_info["guideline"],
+                "bands": [
+                    {"key": band, "count": band_counts[band], "percentage": percentages[band]}
+                    for band in band_info["bands"]
+                ],
+            }
+
+    return {
+        "average": average,
+        "min": minimum,
+        "max": maximum,
+        "readings_count": readings_count,
+        "categories": categories,
+    }
+
+
+# The vitals a rolling summary averages -- age/stress/activity excluded (age
+# isn't a trend metric; stress/activity have no established clinical unit to
+# summarize this way).
+VITALS_SUMMARY_FIELDS = ["systolic_bp", "diastolic_bp", "heart_rate", "body_temp_f", "blood_glucose", "hemoglobin"]
+
+
+def compute_vitals_summary(pregnancy) -> dict:
+    """Rolling 30-day average across every vital, one aggregate query.
+
+    ``null`` (``None``), never ``0`` or an omitted key, for a vital with no
+    readings in the window -- a fabricated normal-looking value is worse
+    than an honest gap, same rule ``LatestReadingsView`` already follows.
+    """
+    since = timezone.now() - timedelta(days=30)
+    annotations = {f"{field}__avg": Avg(field) for field in VITALS_SUMMARY_FIELDS}
+    result = VitalReading.objects.filter(pregnancy=pregnancy, recorded_at__gte=since).aggregate(**annotations)
+
+    averages: dict[str, float | None] = {}
+    for field in VITALS_SUMMARY_FIELDS:
+        value = result[f"{field}__avg"]
+        averages[field] = round(float(value), 2) if value is not None else None
+    return {"last_30_days_average": averages}

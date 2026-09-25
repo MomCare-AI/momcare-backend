@@ -6,7 +6,7 @@ hospital, so a reading can never be filed against another tenant's patient.
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -26,9 +26,13 @@ from momcare_platform.modules.pregnancy.vitals.models import Device, RiskAssessm
 from momcare_platform.modules.pregnancy.vitals.services import (
     MonitoringError,
     assign_device,
+    compute_reading_statistics,
+    compute_vitals_summary,
     current_risk,
     latest_readings,
     reassess_risk,
+    resolve_custom_reading_range,
+    resolve_reading_period,
     unassign_device,
 )
 
@@ -68,6 +72,12 @@ class ReadingListCreateView(MonitoringView):
     """A pregnancy's readings, and recording a new one."""
 
     def get(self, request, pregnancy_id):
+        """``period``/``start_date``+``end_date`` narrow the window (a custom
+        range wins if both are given); ``reading_type`` is what actually
+        triggers the ``statistics`` block -- no separate flag, matching
+        Neuro_RPM's own trigger. See
+        docs/design/2026-09-25-reading-statistics-design.md.
+        """
         _, error = self.hospital_or_error(request)
         if error:
             return error
@@ -76,14 +86,38 @@ class ReadingListCreateView(MonitoringView):
             return missing
 
         readings = pregnancy.readings.all()
+        tzinfo = pregnancy.patient.location.timezone
 
         since = request.query_params.get("since")
         if since:
             readings = readings.filter(recorded_at__gte=since)
 
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+        period = request.query_params.get("period")
+        try:
+            if start_date or end_date:
+                start, end = resolve_custom_reading_range(start_date, end_date, tzinfo)
+                readings = readings.filter(recorded_at__gte=start, recorded_at__lte=end)
+            elif period:
+                start, end = resolve_reading_period(period, tzinfo)
+                readings = readings.filter(recorded_at__gte=start, recorded_at__lte=end)
+        except serializers.ValidationError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+
+        statistics: dict = {}
+        reading_type = request.query_params.get("reading_type")
+        if reading_type:
+            try:
+                statistics = compute_reading_statistics(readings, reading_type)
+            except serializers.ValidationError as exc:
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+
         paginator = DefaultPagination()
         page = paginator.paginate_queryset(readings.order_by("-recorded_at", "id"), request, view=self)
-        return paginator.get_paginated_response(VitalReadingSerializer(page, many=True).data)
+        body = paginator.get_paginated_response(VitalReadingSerializer(page, many=True).data)
+        body.data["statistics"] = statistics
+        return body
 
     def post(self, request, pregnancy_id):
         _, error = self.hospital_or_error(request)
@@ -165,6 +199,22 @@ class LatestReadingsView(MonitoringView):
                 "total_count": pregnancy.readings.count(),
             },
         )
+
+
+class VitalsSummaryView(MonitoringView):
+    """Rolling 30-day average across every vital, no filters -- the quick
+    glance-at-it card. See docs/design/2026-09-25-reading-statistics-design.md.
+    """
+
+    def get(self, request, pregnancy_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        pregnancy, missing = self.get_pregnancy_or_404(pregnancy_id)
+        if missing:
+            return missing
+
+        return Response(compute_vitals_summary(pregnancy))
 
 
 class RiskAssessmentView(MonitoringView):

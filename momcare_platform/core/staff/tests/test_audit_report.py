@@ -12,8 +12,6 @@ from rest_framework import serializers
 from momcare_platform.core.monitoring.models import MonitoringNote, MonitoringSession
 from momcare_platform.core.patients.services import onboard_patient
 from momcare_platform.core.staff.services import AUDIT_PERIODS, compute_audit_report, resolve_audit_period
-from momcare_platform.modules.pregnancy.alerts.models import Alert
-from momcare_platform.modules.pregnancy.vitals.models import RiskAssessment
 
 pytestmark = pytest.mark.django_db
 
@@ -45,9 +43,17 @@ def _make_patient(hospital, staff_user, *, first_name="Ayesha"):
 
 
 def _make_alert(pregnancy, staff_user, *, status, acknowledge=True, resolve=False):
+    # Resolved via the app registry, not a static import: both live in
+    # momcare_platform.modules, which core (and its tests) must never import --
+    # the "core must not import modules" import-linter contract.
+    from django.apps import apps as django_apps  # noqa: PLC0415
+
+    Alert = django_apps.get_model("alerts", "Alert")  # noqa: N806
+    RiskAssessment = django_apps.get_model("monitoring", "RiskAssessment")  # noqa: N806
+
     assessment = RiskAssessment.objects.create(pregnancy=pregnancy, risk_level="high", final_risk_level="high")
     now = timezone.now()
-    alert = Alert.objects.create(
+    return Alert.objects.create(
         pregnancy=pregnancy,
         assessment=assessment,
         level="high",
@@ -56,9 +62,8 @@ def _make_alert(pregnancy, staff_user, *, status, acknowledge=True, resolve=Fals
         acknowledged_at=now if acknowledge else None,
         resolved_by=staff_user if resolve else None,
         resolved_at=now if resolve else None,
-        resolution=Alert.RESOLUTION_HANDLED if resolve else "",
+        resolution="handled" if resolve else "",
     )
-    return alert
 
 
 def test_total_patients_reflects_current_caseload(make_hospital, make_staff):
@@ -160,8 +165,8 @@ def test_alerts_handled_counts_acknowledged_and_resolved(make_hospital, make_sta
     # pregnancy, so two independently-acted-on alerts need two episodes.
     patient_a = _make_patient(hospital, nurse, first_name="Ayesha")
     patient_b = _make_patient(hospital, nurse, first_name="Sana")
-    _make_alert(patient_a.current_pregnancy, nurse, status=Alert.STATUS_ACKNOWLEDGED, acknowledge=True, resolve=False)
-    _make_alert(patient_b.current_pregnancy, nurse, status=Alert.STATUS_RESOLVED, acknowledge=True, resolve=True)
+    _make_alert(patient_a.current_pregnancy, nurse, status="acknowledged", acknowledge=True, resolve=False)
+    _make_alert(patient_b.current_pregnancy, nurse, status="resolved", acknowledge=True, resolve=True)
     start, end = resolve_audit_period("month")
 
     report = compute_audit_report(nurse.staff, start=start, end=end)

@@ -2377,6 +2377,238 @@
           "response": []
         },
         {
+          "name": "List Readings — 2 Days",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?period=2_days",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "2_days"
+                }
+              ]
+            },
+            "description": "Readings from today and yesterday, in the pregnancy's own location timezone."
+          },
+          "response": []
+        },
+        {
+          "name": "List Readings — 1 Week",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?period=1_week",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "1_week"
+                }
+              ]
+            },
+            "description": "Readings from the last 7 days, inclusive of today."
+          },
+          "response": []
+        },
+        {
+          "name": "List Readings — 1 Month",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?period=1_month",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "1_month"
+                }
+              ]
+            },
+            "description": "Readings from the last 30 days, inclusive of today."
+          },
+          "response": []
+        },
+        {
+          "name": "List Readings — 3 Months",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?period=3_months",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "3_months"
+                }
+              ]
+            },
+            "description": "Readings from the last 90 days, inclusive of today."
+          },
+          "response": []
+        },
+        {
+          "name": "List Readings — 6 Months",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?period=6_months",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "6_months"
+                }
+              ]
+            },
+            "description": "Readings from the last 180 days, inclusive of today."
+          },
+          "response": []
+        },
+        {
+          "name": "List Readings — 1 Year",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?period=1_year",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "1_year"
+                }
+              ]
+            },
+            "description": "Readings from the last 365 days, inclusive of today."
+          },
+          "response": []
+        },
+        {
+          "name": "List Readings — Custom Date Range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?start_date=2026-08-01&end_date=2026-08-31",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "start_date",
+                  "value": "2026-08-01"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2026-08-31"
+                }
+              ]
+            },
+            "description": "start_date/end_date (YYYY-MM-DD), inclusive both ends. Takes precedence over `period` if both are given. start_date after end_date returns 400."
+          },
+          "response": []
+        },
+        {
+          "name": "List Readings — Blood Pressure, Past Month (with Statistics)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/readings/?period=1_month&reading_type=blood_pressure",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "1_month"
+                },
+                {
+                  "key": "reading_type",
+                  "value": "blood_pressure"
+                }
+              ]
+            },
+            "description": "`reading_type` is what triggers the `statistics` block -- no separate flag, matching Neuro_RPM's own trigger. Adds average/min/max/count for systolic_bp/diastolic_bp/heart_rate, plus a category-percentage breakdown (bp_category, heart_rate_category) alongside the normal reading list. Statistics are always scoped to exactly one `reading_type` -- never all 9 vitals dumped together, since averaging blood pressure with glucose would not mean anything. Other values: `temperature`, `blood_glucose`, `hemoglobin`, `wellness`. An unrecognized value returns 400."
+          },
+          "response": []
+        },
+        {
           "name": "Latest Reading",
           "request": {
             "method": "GET",
@@ -2396,6 +2628,28 @@
               ]
             },
             "description": "The single most recent reading event, or `{\"reading\": null, \"total_count\": 0}` when there isn't one yet -- deliberately never a fabricated normal-looking value."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Vitals Summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/vitals-summary/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "vitals-summary",
+                ""
+              ]
+            },
+            "description": "The quick glance-at-it card: rolling 30-day average across every vital, no filters. `null` (not 0 or an omitted key) for a vital with no readings in the window. For a deeper look at one specific vital over a chosen time range -- with min/max and category percentages -- use List Readings with `reading_type` and `period` instead."
           },
           "response": []
         },
@@ -2611,7 +2865,7 @@
       ]
     },
     {
-      "name": "Clinical Tags",
+      "name": "Monitoring",
       "item": [
         {
           "name": "List Clinical Tags",
@@ -2783,12 +3037,7 @@
             "description": "Remove a tag from the catalogue -- it is also removed from every note currently carrying it (a plain M2M row deletion, the notes themselves are untouched).\n\nPermissions: IsAuthenticated + hospital_admin only."
           },
           "response": []
-        }
-      ]
-    },
-    {
-      "name": "Monitoring",
-      "item": [
+        },
         {
           "name": "List Combined (Sessions + Notes)",
           "request": {
@@ -3176,6 +3425,182 @@
       ]
     },
     {
+      "name": "Note Templates",
+      "item": [
+        {
+          "name": "List Note Templates",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/note-templates/?location_id=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "note-templates",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Templates visible to the caller: this hospital's org-level templates (shown in every branch), plus whichever locations they can see into -- every location for hospital_admin, only their own assigned location(s) for provider/nurse/care_manager. Optional `location_id` narrows to one location's own templates.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nPurely a content library -- picking a template is a frontend action (copy `content` into a new note's text field); the backend never records which template a note came from, if any. `NoteTemplate` is scoped to exactly one of `organization` (hospital-wide) or `location` (one branch only) -- never both, never neither. A new Location automatically gets its own copy of every org-level template the moment it's created; after that the two sides are fully independent."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Note Template — Org-Level",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/note-templates/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "note-templates",
+                ""
+              ]
+            },
+            "description": "Create a hospital-wide note template, visible from every one of this hospital's locations.\n\nPermissions: IsAuthenticated + hospital_admin only -- a template is shared configuration, curating it is a deliberate admin action.\n\nExactly one of `organization`/`location` is required, and it must be your own hospital -- naming another tenant's id returns 400, not a leaked confirmation that it exists. `title` must be unique within its scope (unlike Neuro_RPM, which allows duplicate titles) -- two templates with the same name in a picker is just confusing.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Routine Check-in\",\n  \"content\": \"Patient reports feeling well. No new symptoms since last contact.\",\n  \"organization\": \"{{organization_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Note Template — Location-Level",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/note-templates/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "note-templates",
+                ""
+              ]
+            },
+            "description": "Create a template visible only at one branch. Same rules as the org-level variant above.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Missed Appointment\",\n  \"content\": \"Attempted contact by phone, no answer. Will retry tomorrow.\",\n  \"location\": \"{{location_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Note Template",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/note-templates/{{note_template_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "note-templates",
+                "{{note_template_id}}",
+                ""
+              ]
+            },
+            "description": "A single note template by id, within what the caller can see (see List Note Templates). Another hospital's template resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Note Template",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/note-templates/{{note_template_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "note-templates",
+                "{{note_template_id}}",
+                ""
+              ]
+            },
+            "description": "Edit a template's title or content.\n\nPermissions: IsAuthenticated + hospital_admin only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Updated wording for this template.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Note Template",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/note-templates/{{note_template_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "note-templates",
+                "{{note_template_id}}",
+                ""
+              ]
+            },
+            "description": "Hard delete -- the catalogue entry only. Any note previously written using this template's content is a plain, independent MonitoringNote with no link back to it, so deleting a template never touches notes already written.\n\nPermissions: IsAuthenticated + hospital_admin only."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "Status Labels",
       "item": [
         {
@@ -3461,6 +3886,10 @@
     },
     {
       "key": "status_id",
+      "value": ""
+    },
+    {
+      "key": "note_template_id",
       "value": ""
     }
   ]

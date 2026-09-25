@@ -30,6 +30,7 @@ from momcare_platform.core.monitoring.api.serializers import (
     CombinedMonitoringSerializer,
     MonitoringNoteSerializer,
     MonitoringSessionSerializer,
+    NoteTemplateSerializer,
     PatientStatusSerializer,
     StatusLabelSerializer,
 )
@@ -37,6 +38,7 @@ from momcare_platform.core.monitoring.models import (
     ClinicalTag,
     MonitoringNote,
     MonitoringSession,
+    NoteTemplate,
     PatientStatus,
     StatusLabel,
 )
@@ -514,6 +516,150 @@ class ClinicalTagDetailView(APIView):
         if missing:
             return missing
         tag.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def visible_note_templates(request, org):
+    """Same visibility rule as ``visible_clinical_tags``: org-level templates
+    (visible from every branch), plus whichever locations the caller can see
+    into."""
+    qs = NoteTemplate.objects.filter(organization=org, location__isnull=True)
+    if sees_all_locations_in_org(request.user):
+        qs = qs | NoteTemplate.objects.filter(location__organization=org)
+    else:
+        qs = qs | NoteTemplate.objects.filter(location_id__in=user_location_ids(request.user))
+    return qs.distinct()
+
+
+class NoteTemplateListCreateView(APIView):
+    """List: any hospital-side role (powers the template picker -- content is
+    copied client-side into a new note, MomCare never records which template
+    a note came from, same as the reference implementation). Create: hospital
+    admins only -- a template is shared configuration, curating it is a
+    deliberate admin action, same reasoning as ``ClinicalTagListCreateView``.
+    """
+
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+
+    def hospital_or_error(self, request):
+        org = request.user.organization
+        if org is None:
+            return None, Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        return org, None
+
+    def get(self, request):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        templates = visible_note_templates(request, org).order_by("title")
+        location_id = request.query_params.get("location_id")
+        if location_id:
+            templates = templates.filter(location_id=location_id)
+        serializer = NoteTemplateSerializer(templates, many=True)
+        return Response({"count": len(serializer.data), "results": serializer.data})
+
+    def post(self, request):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        if not (request.user.is_superuser or user_role_code(request.user) == settings.ROLE_HOSPITAL_ADMIN):
+            return Response(
+                {"detail": "Only a hospital admin can manage the note template catalogue."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = NoteTemplateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        try:
+            with transaction.atomic():
+                serializer.save(created_by=request.user, updated_by=request.user)
+        except IntegrityError:
+            return Response(
+                {"title": ["A note template with this title already exists in this scope."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class NoteTemplateDetailView(APIView):
+    """Read: any hospital-side role, within what they can see (see
+    ``visible_note_templates``). Edit/delete: hospital admins only."""
+
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+
+    def hospital_or_error(self, request):
+        org = request.user.organization
+        if org is None:
+            return None, Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        return org, None
+
+    def get_template_or_404(self, request, org, template_id):
+        try:
+            template = visible_note_templates(request, org).get(pk=template_id)
+        except NoteTemplate.DoesNotExist, DjangoValidationError, ValueError:
+            return None, Response({"detail": "Note template not found."}, status=status.HTTP_404_NOT_FOUND)
+        return template, None
+
+    def get(self, request, template_id):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        template, missing = self.get_template_or_404(request, org, template_id)
+        if missing:
+            return missing
+        return Response(NoteTemplateSerializer(template).data)
+
+    def _admin_or_403(self, request):
+        if request.user.is_superuser or user_role_code(request.user) == settings.ROLE_HOSPITAL_ADMIN:
+            return None
+        return Response(
+            {"detail": "Only a hospital admin can manage the note template catalogue."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    def _update(self, request, template_id, *, partial):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        forbidden = self._admin_or_403(request)
+        if forbidden:
+            return forbidden
+        template, missing = self.get_template_or_404(request, org, template_id)
+        if missing:
+            return missing
+        serializer = NoteTemplateSerializer(
+            template,
+            data=request.data,
+            partial=partial,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        try:
+            with transaction.atomic():
+                serializer.save(updated_by=request.user)
+        except IntegrityError:
+            return Response(
+                {"title": ["A note template with this title already exists in this scope."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(serializer.data)
+
+    def put(self, request, template_id):
+        return self._update(request, template_id, partial=False)
+
+    def patch(self, request, template_id):
+        return self._update(request, template_id, partial=True)
+
+    def delete(self, request, template_id):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        forbidden = self._admin_or_403(request)
+        if forbidden:
+            return forbidden
+        template, missing = self.get_template_or_404(request, org, template_id)
+        if missing:
+            return missing
+        template.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

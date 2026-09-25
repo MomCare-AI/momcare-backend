@@ -17,6 +17,8 @@ from momcare_platform.core.monitoring.api.views import (
     ClinicalTagListCreateView,
     MonitoringNoteDetailView,
     MonitoringSessionDetailView,
+    NoteTemplateDetailView,
+    NoteTemplateListCreateView,
     PatientMonitoringNotesView,
     PatientMonitoringSessionsView,
     PatientMonitoringView,
@@ -91,6 +93,7 @@ from momcare_platform.modules.pregnancy.vitals.api.views import (
     ReadingListCreateView,
     RiskAssessmentView,
     VerifyRiskView,
+    VitalsSummaryView,
 )
 
 router = DefaultRouter() if settings.DEBUG else SimpleRouter()
@@ -351,6 +354,11 @@ core_urlpatterns = [
         name="reading-latest",
     ),
     re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/vitals-summary/?$",
+        VitalsSummaryView.as_view(),
+        name="vitals-summary",
+    ),
+    re_path(
         r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/device/?$",
         DeviceAssignView.as_view(),
         name="pregnancy-device",
@@ -405,6 +413,16 @@ core_urlpatterns = [
         r"^clinical-tags/(?P<tag_id>[0-9a-f-]{36})/?$",
         ClinicalTagDetailView.as_view(),
         name="clinical-tag-detail",
+    ),
+    # Reusable canned note text -- org-level (hospital-wide) or
+    # location-level, see NoteTemplate's own docstring. Purely a content
+    # library, no linkage to MonitoringNote (the frontend copies `content`
+    # into a new note's text field, matching Neuro_RPM's own real design).
+    re_path(r"^note-templates/?$", NoteTemplateListCreateView.as_view(), name="note-template-list"),
+    re_path(
+        r"^note-templates/(?P<template_id>[0-9a-f-]{36})/?$",
+        NoteTemplateDetailView.as_view(),
+        name="note-template-detail",
     ),
     # The status-label catalogue -- org-level (hospital-wide) or
     # location-level, see StatusLabel's own docstring. Decoupled from

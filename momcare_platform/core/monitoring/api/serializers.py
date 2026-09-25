@@ -7,6 +7,7 @@ from momcare_platform.core.monitoring.models import (
     ClinicalTag,
     MonitoringNote,
     MonitoringSession,
+    NoteTemplate,
     PatientStatus,
     StatusLabel,
 )
@@ -36,6 +37,52 @@ class ClinicalTagSerializer(serializers.ModelSerializer):
         "exactly one" half at the DB level; this is what stops a hospital
         admin planting a tag under another tenant's organization/location
         by id before it ever reaches that constraint.
+        """
+        request = self.context.get("request")
+        caller_org = getattr(getattr(request, "user", None), "organization", None) if request else None
+
+        organization = attrs.get("organization", getattr(self.instance, "organization", None))
+        location = attrs.get("location", getattr(self.instance, "location", None))
+
+        if bool(organization) == bool(location):
+            raise serializers.ValidationError("Provide exactly one of 'organization' or 'location'.")
+        if organization is not None and organization != caller_org:
+            raise serializers.ValidationError({"organization": "Must be your own hospital."})
+        if location is not None and (caller_org is None or location.organization_id != caller_org.id):
+            raise serializers.ValidationError({"location": "Must belong to your own hospital."})
+        return attrs
+
+
+class NoteTemplateSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.CharField(source="created_by.get_full_name", read_only=True, default="")
+    updated_by_name = serializers.CharField(source="updated_by.get_full_name", read_only=True, default="")
+
+    class Meta:
+        model = NoteTemplate
+        fields = [
+            "id",
+            "title",
+            "content",
+            "organization",
+            "location",
+            "created_by",
+            "created_by_name",
+            "updated_by",
+            "updated_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_by", "updated_by", "created_at", "updated_at"]
+
+    def validate_title(self, value):
+        cleaned = value.strip()
+        if not cleaned:
+            raise serializers.ValidationError("title cannot be blank.")
+        return cleaned
+
+    def validate(self, attrs):
+        """Exactly one of organization/location, and it must be the
+        caller's own hospital -- same reasoning as ClinicalTagSerializer.validate above.
         """
         request = self.context.get("request")
         caller_org = getattr(getattr(request, "user", None), "organization", None) if request else None

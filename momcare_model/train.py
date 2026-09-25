@@ -44,7 +44,9 @@ from momcare_model.config import (
 def _git_commit() -> str:
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=str(REPO_ROOT), text=True,
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(REPO_ROOT),
+            text=True,
         ).strip()
     except Exception:  # noqa: BLE001 — metadata is best-effort, never fatal
         return "unknown"

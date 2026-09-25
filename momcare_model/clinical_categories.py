@@ -88,6 +88,33 @@ def hemoglobin_category(hemoglobin) -> str:
     return "Normal"
 
 
+# The fixed band order and guideline citation for each category function above --
+# every band always appears in a statistics response, even at 0%, in this order.
+# Kept alongside the functions themselves so the two can never drift apart.
+CATEGORY_BANDS = {
+    "bp_category": {
+        "guideline": "ACC/AHA Blood Pressure Guidelines",
+        "bands": ["Hypotensive", "Normal", "Elevated", "Stage 1", "Stage 2", "Hypertensive Crisis"],
+    },
+    "heart_rate_category": {
+        "guideline": "American Heart Association Heart Rate Guidelines",
+        "bands": ["Bradycardia", "Normal", "Tachycardia"],
+    },
+    "temperature_category": {
+        "guideline": "CDC/WHO Temperature Guidelines",
+        "bands": ["Hypothermia", "Low", "Normal", "Low Grade Fever", "Fever"],
+    },
+    "glucose_category": {
+        "guideline": "American Diabetes Association Glucose Guidelines",
+        "bands": ["Normal", "Prediabetes", "Diabetes"],
+    },
+    "hemoglobin_category": {
+        "guideline": "WHO Pregnancy Anemia Guidelines",
+        "bands": ["Severe Anemia", "Moderate Anemia", "Mild Anemia", "Normal"],
+    },
+}
+
+
 def categorize(vitals: dict) -> dict:
     """All five categories for one reading, keyed by RiskAssessment field name."""
     return {

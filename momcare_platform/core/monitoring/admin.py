@@ -4,6 +4,7 @@ from momcare_platform.core.monitoring.models import (
     ClinicalTag,
     MonitoringNote,
     MonitoringSession,
+    NoteTemplate,
     PatientStatus,
     StatusLabel,
 )
@@ -34,6 +35,14 @@ class MonitoringNoteAdmin(admin.ModelAdmin):
     readonly_fields = ["created_at", "updated_at"]
     date_hierarchy = "recorded_at"
     filter_horizontal = ["tags"]
+
+
+@admin.register(NoteTemplate)
+class NoteTemplateAdmin(admin.ModelAdmin):
+    list_display = ["title", "organization", "location", "created_by", "created_at"]
+    list_filter = ["organization", "location"]
+    search_fields = ["title", "content"]
+    readonly_fields = ["created_at", "updated_at"]
 
 
 @admin.register(StatusLabel)

@@ -240,6 +240,87 @@ class MonitoringNote(UUIDPrimaryKeyModel, TimeStampedModel):
         return f"{self.patient.full_name} · {self.recorded_at:%Y-%m-%d}"
 
 
+class NoteTemplate(UUIDPrimaryKeyModel, TimeStampedModel):
+    """Reusable canned note text (a title and a block of content) a staff
+    member picks instead of typing a note from scratch -- adapted from
+    Neuro_RPM's own ``NoteTemplate``.
+
+    Purely a content library: there is no linkage to ``MonitoringNote``
+    whatsoever, matching Neuro_RPM's own real (not its documented-but-never-
+    built) design -- the frontend copies ``content`` into a note's own text
+    field, and the resulting note is a plain, independent ``MonitoringNote``
+    with no record of which template it came from, if any.
+
+    Scoped and copied to new locations exactly like ``ClinicalTag`` above --
+    see that model's own docstring for the reasoning. Unlike Neuro_RPM,
+    ``title`` is unique per scope (two ``UniqueConstraint``s below) -- two
+    templates with the same name in a staff picker is just confusing, and
+    this app's other catalogues already enforce it.
+    """
+
+    organization = models.ForeignKey(
+        "organization.Organization",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="note_templates",
+    )
+    location = models.ForeignKey(
+        "locations.Location",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="note_templates",
+    )
+    title = models.CharField(max_length=255)
+    content = models.TextField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ["title"]
+        verbose_name = "Note Template"
+        verbose_name_plural = "Note Templates"
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(organization__isnull=False, location__isnull=True)
+                    | models.Q(organization__isnull=True, location__isnull=False)
+                ),
+                name="notetemplate_exactly_one_scope",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "title"],
+                condition=models.Q(organization__isnull=False),
+                name="unique_org_note_template_title",
+            ),
+            models.UniqueConstraint(
+                fields=["location", "title"],
+                condition=models.Q(location__isnull=False),
+                name="unique_location_note_template_title",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["organization", "title"]),
+            models.Index(fields=["location", "title"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.title
+
+
 class StatusLabel(UUIDPrimaryKeyModel, TimeStampedModel):
     """A hospital-invented status label (e.g. "Critical", "Waiting",
     "Telehealth Connected") -- adapted from Neuro_RPM's ``GlobalStatus``.
