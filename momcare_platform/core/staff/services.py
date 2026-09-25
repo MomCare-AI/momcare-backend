@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Sum
 from django.db.models.deletion import ProtectedError
+from django.db.models.functions import TruncDate
+from django.utils import timezone
+from rest_framework import serializers
 
+from momcare_platform.core.monitoring.models import MonitoringNote, MonitoringSession
+from momcare_platform.core.monitoring.services import monitoring_period_totals
 from momcare_platform.core.staff.models import Staff
 from momcare_platform.core.users.models import Role, User
 
@@ -124,6 +132,104 @@ def reactivate_staff(staff) -> Staff:
     """Restore a previously deactivated staff member."""
     staff.reactivate()
     return staff
+
+
+# Preset rolling-window codes for the staff audit report -- "how far back
+# from right now," not a specific calendar month to browse (see
+# docs/design/2026-09-25-staff-audit-report-design.md).
+AUDIT_PERIODS = {
+    "2d": 2,
+    "week": 7,
+    "month": 30,
+    "3month": 90,
+    "6month": 180,
+    "year": 365,
+    "2year": 730,
+}
+
+
+def resolve_audit_period(code: str) -> tuple:
+    """``(start, end)`` for a preset audit-report window, ending now.
+
+    UTC, not a per-location timezone -- unlike Patient, a Staff row has no
+    single canonical location (locations live on User, many-to-many), and a
+    rolling N-day window has no calendar-day boundary to get right the way
+    month-browsing does.
+    """
+    if code not in AUDIT_PERIODS:
+        raise serializers.ValidationError(
+            {"period": [f"Must be one of: {', '.join(AUDIT_PERIODS)}."]},
+        )
+    end = timezone.now()
+    start = end - timedelta(days=AUDIT_PERIODS[code])
+    return start, end
+
+
+def compute_audit_report(staff: Staff, *, start, end) -> dict:
+    """Assemble the staff audit report for ``staff`` within [``start``,
+    ``end``] -- caseload, monitoring time (with a day-by-day distribution),
+    call outcomes, and alerts handled. No RPM/CCM split and no "compliance %"
+    -- neither concept has a MomCare equivalent (see the design doc).
+
+    Alert is resolved via the app registry, not a static import: it lives in
+    ``modules.pregnancy.alerts``, a module `core` must never import (the
+    `core must not import modules` import-linter contract) -- same pattern
+    used elsewhere in `core.patients` for `RiskAssessment`.
+    """
+    from django.apps import apps as django_apps  # noqa: PLC0415
+
+    Alert = django_apps.get_model("alerts", "Alert")
+
+    user = staff.user
+
+    monitoring_time = monitoring_period_totals(added_by=user, start=start, end=end)
+    distribution = list(
+        MonitoringSession.objects.filter(added_by=user, recorded_at__gte=start, recorded_at__lte=end)
+        .annotate(day=TruncDate("recorded_at"))
+        .values("day")
+        .annotate(seconds=Sum("duration_seconds"))
+        .order_by("day"),
+    )
+    monitoring_time["distribution"] = [
+        {"date": row["day"].isoformat(), "seconds": row["seconds"]} for row in distribution
+    ]
+
+    notes = MonitoringNote.objects.filter(added_by=user, recorded_at__gte=start, recorded_at__lte=end)
+    two_way_count = notes.filter(two_way_communication=True).count()
+    voicemail_count = notes.filter(left_voicemail=True).count()
+    total_calls = two_way_count + voicemail_count
+    call_success_rate = round(two_way_count / total_calls, 2) if total_calls else 0
+
+    acknowledged_count = Alert.objects.filter(
+        acknowledged_by=user,
+        acknowledged_at__gte=start,
+        acknowledged_at__lte=end,
+    ).count()
+    resolved_count = Alert.objects.filter(
+        resolved_by=user,
+        resolved_at__gte=start,
+        resolved_at__lte=end,
+    ).count()
+
+    return {
+        "staff": {
+            "id": str(staff.id),
+            "name": user.get_full_name(),
+            "role": user.role_code,
+            "employee_id": staff.employee_id,
+        },
+        "total_patients": staff.current_patient_count,
+        "monitoring_time": monitoring_time,
+        "call_outcomes": {
+            "two_way_count": two_way_count,
+            "voicemail_count": voicemail_count,
+            "call_success_rate": call_success_rate,
+        },
+        "alerts_handled": {
+            "acknowledged_count": acknowledged_count,
+            "resolved_count": resolved_count,
+        },
+    }
 
 
 def delete_staff(staff) -> None:

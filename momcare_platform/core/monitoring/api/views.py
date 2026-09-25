@@ -30,8 +30,16 @@ from momcare_platform.core.monitoring.api.serializers import (
     CombinedMonitoringSerializer,
     MonitoringNoteSerializer,
     MonitoringSessionSerializer,
+    PatientStatusSerializer,
+    StatusLabelSerializer,
 )
-from momcare_platform.core.monitoring.models import ClinicalTag, MonitoringNote, MonitoringSession
+from momcare_platform.core.monitoring.models import (
+    ClinicalTag,
+    MonitoringNote,
+    MonitoringSession,
+    PatientStatus,
+    StatusLabel,
+)
 from momcare_platform.core.monitoring.services import (
     create_combined_monitoring,
     monitoring_period_totals,
@@ -506,4 +514,231 @@ class ClinicalTagDetailView(APIView):
         if missing:
             return missing
         tag.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def visible_status_labels(request, org):
+    """Same visibility rule as ``visible_clinical_tags``: org-level labels,
+    plus whichever locations the caller can see into."""
+    qs = StatusLabel.objects.filter(organization=org, location__isnull=True)
+    if sees_all_locations_in_org(request.user):
+        qs = qs | StatusLabel.objects.filter(location__organization=org)
+    else:
+        qs = qs | StatusLabel.objects.filter(location_id__in=user_location_ids(request.user))
+    return qs.distinct()
+
+
+class StatusLabelListCreateView(APIView):
+    """List: any hospital-side role (powers the status picker). Create:
+    hospital admins only -- same reasoning as ``ClinicalTagListCreateView``:
+    the catalogue is shared configuration, curating it is a deliberate admin
+    action, not a per-status side effect (logging a status on a patient never
+    requires or touches this catalogue -- see ``PatientStatus``'s own
+    docstring for the decoupling).
+    """
+
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+
+    def hospital_or_error(self, request):
+        org = request.user.organization
+        if org is None:
+            return None, Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        return org, None
+
+    def get(self, request):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        labels = visible_status_labels(request, org).order_by("name")
+        location_id = request.query_params.get("location_id")
+        if location_id:
+            labels = labels.filter(location_id=location_id)
+        serializer = StatusLabelSerializer(labels, many=True)
+        return Response({"count": len(serializer.data), "results": serializer.data})
+
+    def post(self, request):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        if not (request.user.is_superuser or user_role_code(request.user) == settings.ROLE_HOSPITAL_ADMIN):
+            return Response(
+                {"detail": "Only a hospital admin can manage the status catalogue."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = StatusLabelSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        try:
+            with transaction.atomic():
+                serializer.save()
+        except IntegrityError:
+            return Response(
+                {"name": ["A status with this name already exists in this scope."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class StatusLabelDetailView(APIView):
+    """Read: any hospital-side role, within what they can see (see
+    ``visible_status_labels``). Edit/delete: hospital admins only."""
+
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+
+    def hospital_or_error(self, request):
+        org = request.user.organization
+        if org is None:
+            return None, Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        return org, None
+
+    def get_label_or_404(self, request, org, label_id):
+        try:
+            label = visible_status_labels(request, org).get(pk=label_id)
+        except StatusLabel.DoesNotExist, DjangoValidationError, ValueError:
+            return None, Response({"detail": "Status label not found."}, status=status.HTTP_404_NOT_FOUND)
+        return label, None
+
+    def get(self, request, label_id):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        label, missing = self.get_label_or_404(request, org, label_id)
+        if missing:
+            return missing
+        return Response(StatusLabelSerializer(label).data)
+
+    def _admin_or_403(self, request):
+        if request.user.is_superuser or user_role_code(request.user) == settings.ROLE_HOSPITAL_ADMIN:
+            return None
+        return Response(
+            {"detail": "Only a hospital admin can manage the status catalogue."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    def _update(self, request, label_id, *, partial):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        forbidden = self._admin_or_403(request)
+        if forbidden:
+            return forbidden
+        label, missing = self.get_label_or_404(request, org, label_id)
+        if missing:
+            return missing
+        serializer = StatusLabelSerializer(label, data=request.data, partial=partial, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        try:
+            with transaction.atomic():
+                serializer.save()
+        except IntegrityError:
+            return Response(
+                {"name": ["A status with this name already exists in this scope."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(serializer.data)
+
+    def put(self, request, label_id):
+        return self._update(request, label_id, partial=False)
+
+    def patch(self, request, label_id):
+        return self._update(request, label_id, partial=True)
+
+    def delete(self, request, label_id):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+        forbidden = self._admin_or_403(request)
+        if forbidden:
+            return forbidden
+        label, missing = self.get_label_or_404(request, org, label_id)
+        if missing:
+            return missing
+        label.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PatientStatusListCreateView(MonitoringView):
+    """This patient's status timeline -- full history, newest first -- and
+    logging a new entry. Nested under the patient, same shape as
+    ``PatientMonitoringNotesView``.
+    """
+
+    def get(self, request, patient_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+
+        statuses = patient.statuses.select_related("added_by").order_by("-created_at")
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(statuses, request, view=self)
+        return paginator.get_paginated_response(PatientStatusSerializer(page, many=True).data)
+
+    def post(self, request, patient_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        patient, missing = self.get_patient_or_404(patient_id)
+        if missing:
+            return missing
+
+        serializer = PatientStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        entry = serializer.save(patient=patient, pregnancy=patient.current_pregnancy, added_by=request.user)
+        return Response(PatientStatusSerializer(entry).data, status=status.HTTP_201_CREATED)
+
+
+class PatientStatusDetailView(OrganizationScopedQuerysetMixin, APIView):
+    """A single patient status entry by id -- flat, same reasoning as
+    sessions/notes above."""
+
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+    organization_lookup = "patient__organization"
+
+    def get_status_entry_or_404(self, status_id):
+        try:
+            entry = self.scope_to_organization(
+                PatientStatus.objects.select_related("patient", "pregnancy", "added_by"),
+            ).get(pk=status_id)
+        except PatientStatus.DoesNotExist, DjangoValidationError, ValueError:
+            return None, Response({"detail": "Patient status not found."}, status=status.HTTP_404_NOT_FOUND)
+        return entry, None
+
+    def get(self, request, status_id):
+        entry, missing = self.get_status_entry_or_404(status_id)
+        if missing:
+            return missing
+        return Response(PatientStatusSerializer(entry).data)
+
+    def _update(self, request, status_id, *, partial):
+        entry, missing = self.get_status_entry_or_404(status_id)
+        if missing:
+            return missing
+        if not IsOwnerOrHospitalAdmin().has_object_permission(request, self, entry):
+            return Response(
+                {"detail": "Only the staff member who logged this status, or a hospital admin, can edit it."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = PatientStatusSerializer(entry, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def put(self, request, status_id):
+        return self._update(request, status_id, partial=False)
+
+    def patch(self, request, status_id):
+        return self._update(request, status_id, partial=True)
+
+    def delete(self, request, status_id):
+        entry, missing = self.get_status_entry_or_404(status_id)
+        if missing:
+            return missing
+        if not IsOwnerOrHospitalAdmin().has_object_permission(request, self, entry):
+            return Response(
+                {"detail": "Only the staff member who logged this status, or a hospital admin, can delete it."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        entry.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

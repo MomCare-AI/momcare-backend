@@ -24,6 +24,7 @@ from momcare_platform.core.common.scoping import (
     OrganizationScopedQuerysetMixin,
     scope_to_assigned_staff,
 )
+from momcare_platform.core.monitoring.models import PatientStatus
 from momcare_platform.core.patients.api.serializers import (
     PatientCreateSerializer,
     PatientDetailSerializer,
@@ -115,6 +116,17 @@ def _active_pregnancy_prefetch() -> Prefetch:
     return Prefetch("pregnancies", queryset=active, to_attr="active_pregnancies")
 
 
+def _statuses_prefetch():
+    """Every status entry, newest first -- ``PatientListSerializer`` embeds
+    the whole history per row (see the patient-statuses design doc), so this
+    avoids one query per patient on a paginated list."""
+    return Prefetch(
+        "statuses",
+        queryset=PatientStatus.objects.order_by("-created_at"),
+        to_attr="prefetched_statuses",
+    )
+
+
 class PatientListCreateView(PatientScopedView):
     """List and search this hospital's patients, or enrol a new one."""
 
@@ -135,6 +147,7 @@ class PatientListCreateView(PatientScopedView):
             .select_related("location")
             .prefetch_related(
                 _active_pregnancy_prefetch(),
+                _statuses_prefetch(),
             )
         )
         queryset = self._scope_to_assigned(queryset, request)

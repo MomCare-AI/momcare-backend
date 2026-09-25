@@ -1065,6 +1065,34 @@
           "response": []
         },
         {
+          "name": "Get Staff Audit Report",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/staff/{{staff_id}}/audit-report/?period=month",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "staff",
+                "{{staff_id}}",
+                "audit-report",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "month"
+                }
+              ]
+            },
+            "description": "This staff member's activity report for a preset rolling window ending now: caseload, monitoring time (with a day-by-day distribution), call outcomes (2-way vs. voicemail), and alerts they've acknowledged/resolved. No RPM/CCM split and no \"compliance %\" -- MomCare runs one programme and neither concept has an equivalent here.\n\n`period` (optional, default `month`) is one of: `2d` (last 2 days), `week` (last 7), `month` (last 30), `3month` (last 90), `6month` (last 180), `year` (last 365), `2year` (last 730). Any other value returns 400. The window always ends at the moment of the request, not a stored/cached value.\n\nPermissions: IsAuthenticated + the staff member themselves, or anyone who can manage them (hospital_admin, or a manager of at least one of their locations -- same rule already used for edit/deactivate/reactivate). Any other staff member in the same hospital gets 403; another hospital's staff id resolves to 404."
+          },
+          "response": []
+        },
+        {
           "name": "Deactivate Staff",
           "request": {
             "method": "POST",
@@ -2612,6 +2640,177 @@
           "response": []
         },
         {
+          "name": "List Status Labels",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/status-labels/?location_id=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "status-labels",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Labels visible to the caller: this hospital's org-level status labels, plus whichever locations they can see into -- every location for hospital_admin, only their own assigned location(s) for provider/nurse/care_manager. Optional `location_id` narrows to one location's own labels.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nStatusLabel is a hospital-invented status catalogue (e.g. \"Critical\", \"Waiting\", \"Telehealth Connected\") -- scoped to exactly one of `organization` (hospital-wide) or `location` (one branch only), never both, never neither. A new Location automatically gets its own copy of every org-level label the moment it's created; after that the two sides are fully independent. This catalogue is decoupled from Patient Statuses below -- it exists to power a picker in the frontend, not to constrain what can actually be logged against a patient."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Status Label — Org-Level",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/status-labels/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "status-labels",
+                ""
+              ]
+            },
+            "description": "Create a hospital-wide status label, visible from every one of this hospital's locations.\n\nPermissions: IsAuthenticated + hospital_admin only -- a label, even a location-scoped one, is shared configuration, so adding one is a deliberate admin action, same rule as the Clinical Tag catalogue above.\n\nExactly one of `organization`/`location` is required, and it must be your own hospital -- naming another tenant's id returns 400, not a leaked confirmation that it exists. `color` is optional, must be a hex code like `#RRGGBB` when given.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Critical\",\n  \"description\": \"Needs urgent review\",\n  \"organization\": \"{{organization_id}}\",\n  \"color\": \"#ff0000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Status Label — Location-Level",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/status-labels/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "status-labels",
+                ""
+              ]
+            },
+            "description": "Create a label visible only at one branch. Same rules as the org-level variant above.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Waiting\",\n  \"location\": \"{{location_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Status Label",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/status-labels/{{label_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "status-labels",
+                "{{label_id}}",
+                ""
+              ]
+            },
+            "description": "A single status label by id, within what the caller can see (see List Status Labels). Another hospital's label resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Status Label",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/status-labels/{{label_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "status-labels",
+                "{{label_id}}",
+                ""
+              ]
+            },
+            "description": "Rename or recolor a status label.\n\nPermissions: IsAuthenticated + hospital_admin only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"New Name\",\n  \"color\": \"#123456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Status Label",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/status-labels/{{label_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "status-labels",
+                "{{label_id}}",
+                ""
+              ]
+            },
+            "description": "Hard delete -- the catalogue entry only, never the patient statuses already logged with that name (they're free text, not a foreign key -- see Log Patient Status below).\n\nPermissions: IsAuthenticated + hospital_admin only."
+          },
+          "response": []
+        },
+        {
           "name": "List Monitoring Feed (Combined)",
           "request": {
             "method": "GET",
@@ -2994,6 +3193,151 @@
             "description": "Remove a note. Its linked session (if any) is untouched -- only deleting the session cascades to the note, not the other way around.\n\nPermissions: owner or hospital_admin, same as Update Session."
           },
           "response": []
+        },
+        {
+          "name": "List Patient Statuses",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/statuses/?page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "statuses",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "This patient's status timeline -- full history, newest first. The current status is simply the most recent entry; there is no separate \"current status\" pointer field.\n\nPermissions: IsAuthenticated + any hospital-side role. Another hospital's patient resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Log Patient Status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patients/{{patient_id}}/statuses/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "{{patient_id}}",
+                "statuses",
+                ""
+              ]
+            },
+            "description": "Log a status entry against this patient. `name`/`description`/`color` are free text -- not a foreign key into Status Labels above -- so logging something that isn't in the catalogue is allowed; the catalogue exists to power a frontend picker, not to constrain what can be logged. The same name may be logged again later for the same patient (a status like \"Stable\" plausibly recurs over the months a pregnancy spans).\n\nPermissions: IsAuthenticated + any hospital-side role. `name`/`description` cannot be blank; `color` must be a hex code like `#RRGGBB`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Critical\",\n  \"description\": \"Needs urgent review\",\n  \"color\": \"#ff0000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Patient Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patient-statuses/{{status_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patient-statuses",
+                "{{status_id}}",
+                ""
+              ]
+            },
+            "description": "A single status entry by id -- flat, same reasoning as Sessions/Notes above. Another hospital's entry resolves to 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Patient Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/patient-statuses/{{status_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patient-statuses",
+                "{{status_id}}",
+                ""
+              ]
+            },
+            "description": "Edit a status entry.\n\nPermissions: IsAuthenticated + the staff member who logged it, or a hospital admin -- a different staff member's attempt returns 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Stable\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Patient Status",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patient-statuses/{{status_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patient-statuses",
+                "{{status_id}}",
+                ""
+              ]
+            },
+            "description": "Hard delete.\n\nPermissions: IsAuthenticated + the staff member who logged it, or a hospital admin."
+          },
+          "response": []
         }
       ]
     }
@@ -3099,6 +3443,14 @@
     },
     {
       "key": "notification_id",
+      "value": ""
+    },
+    {
+      "key": "label_id",
+      "value": ""
+    },
+    {
+      "key": "status_id",
       "value": ""
     }
   ]

@@ -730,14 +730,16 @@ def test_listing_more_patients_does_not_cost_more_queries(
 
     The ceiling includes one query for row-level security's SET LOCAL, set
     once per request from the JWT's own org claim by TenantAwareJWTAuthentication
-    - a fixed cost, not one that grows with the page.
+    - a fixed cost, not one that grows with the page - plus one more fixed
+    cost for the status-history prefetch (see patients/api/views.py's
+    ``_statuses_prefetch``, added alongside ``_active_pregnancy_prefetch``).
     """
     hospital = make_hospital("Volume Hospital")
     headers = auth(hospital.admin.email)
     for index in range(6):
         post_patient(client, headers, first_name=f"Patient{index}", cnic=f"61101-000000{index}-1")
 
-    with django_assert_max_num_queries(13):
+    with django_assert_max_num_queries(14):
         response = client.get(PATIENTS, **headers)
 
     assert response.status_code == 200

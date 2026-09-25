@@ -38,6 +38,7 @@ that reference implementation:
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
 from django.utils import timezone
@@ -237,3 +238,126 @@ class MonitoringNote(UUIDPrimaryKeyModel, TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.patient.full_name} · {self.recorded_at:%Y-%m-%d}"
+
+
+class StatusLabel(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A hospital-invented status label (e.g. "Critical", "Waiting",
+    "Telehealth Connected") -- adapted from Neuro_RPM's ``GlobalStatus``.
+
+    Scoped and copied to new locations exactly like ``ClinicalTag`` above --
+    see that model's own docstring for the reasoning. Deliberately not
+    referenced by ``PatientStatus`` below: this catalogue exists to power a
+    picker in the frontend, not to constrain what can actually be logged
+    against a patient, matching Neuro_RPM's own decoupling of the two models.
+    """
+
+    organization = models.ForeignKey(
+        "organization.Organization",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="status_labels",
+    )
+    location = models.ForeignKey(
+        "locations.Location",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="status_labels",
+    )
+    name = models.CharField(max_length=100)
+    description = models.CharField(max_length=255, blank=True)
+    color = models.CharField(max_length=7, null=True, blank=True, validators=[HEX_COLOR_VALIDATOR])  # noqa: DJ001
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Status Label"
+        verbose_name_plural = "Status Labels"
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(organization__isnull=False, location__isnull=True)
+                    | models.Q(organization__isnull=True, location__isnull=False)
+                ),
+                name="statuslabel_exactly_one_scope",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "name"],
+                condition=models.Q(organization__isnull=False),
+                name="unique_org_status_label_name",
+            ),
+            models.UniqueConstraint(
+                fields=["location", "name"],
+                condition=models.Q(location__isnull=False),
+                name="unique_location_status_label_name",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["organization", "name"]),
+            models.Index(fields=["location", "name"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class PatientStatus(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A status entry logged against a patient at a point in time -- adapted
+    from Neuro_RPM's ``PatientStatus``.
+
+    Free-text ``name``/``description``/``color`` -- not an FK to
+    ``StatusLabel`` (see that model's docstring). "Current status" is simply
+    the most recent row (``patient.statuses.first()``, ``Meta.ordering``
+    below is already ``-created_at``) -- no separate pointer field to keep in
+    sync. Unlike Neuro_RPM, the same ``name`` may be logged again later for
+    the same patient -- a status can recur over the months a pregnancy spans,
+    so "logged once, never again" would be the wrong default here.
+
+    Editable and hard-deletable, same posture as ``MonitoringNote`` (its
+    sibling model in this app), not the "never edit, never delete" rule that
+    applies to readings/assessments/alerts.
+    """
+
+    patient = models.ForeignKey(
+        "patients.Patient",
+        on_delete=models.CASCADE,
+        related_name="statuses",
+    )
+    # Nullable for the same reason as MonitoringNote.pregnancy: onboard_patient()
+    # allows a Patient with no Pregnancy yet. Auto-filled from
+    # patient.current_pregnancy at creation time.
+    pregnancy = models.ForeignKey(
+        "patients.Pregnancy",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="statuses",
+    )
+    name = models.CharField(max_length=100)
+    description = models.CharField(max_length=255)
+    color = models.CharField(max_length=7, validators=[HEX_COLOR_VALIDATOR])
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="patient_statuses_added",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Patient Status"
+        verbose_name_plural = "Patient Statuses"
+        indexes = [models.Index(fields=["patient", "-created_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.patient.full_name} · {self.name}"
+
+    def clean(self):
+        # Model-level backstop against bulk_create/queryset.update()/raw-SQL
+        # bypasses of the serializer's own blank-name check -- same pattern
+        # Neuro_RPM's own PatientStatus.clean() guards against.
+        if not self.name.strip():
+            raise ValidationError({"name": "name cannot be blank."})
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)

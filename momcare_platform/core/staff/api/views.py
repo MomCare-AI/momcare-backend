@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -25,10 +25,12 @@ from momcare_platform.core.staff.models import SecondaryProvider, Staff
 from momcare_platform.core.staff.services import (
     StaffError,
     can_manage_staff,
+    compute_audit_report,
     deactivate_staff,
     delete_staff,
     onboard_staff,
     reactivate_staff,
+    resolve_audit_period,
 )
 
 
@@ -219,6 +221,45 @@ class StaffProfileView(StaffScopedView):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class StaffAuditReportView(StaffScopedView):
+    """A staff member's activity report for a preset rolling window --
+    caseload, monitoring time, call outcomes, alerts handled. See
+    docs/design/2026-09-25-staff-audit-report-design.md.
+
+    Read: the staff member themselves, or anyone who can manage them
+    (hospital_admin, or a manager of at least one of their locations) --
+    same rule ``can_manage_staff`` already enforces for edit/deactivate/
+    reactivate. Anyone else in the same hospital gets 403; another
+    hospital's staff id resolves to 404 via ``get_staff_or_404`` before this
+    check ever runs.
+    """
+
+    def get(self, request, staff_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        member, missing = self.get_staff_or_404(staff_id)
+        if missing:
+            return missing
+
+        is_self = member.user_id == request.user.id
+        if not (is_self or can_manage_staff(request.user, member)):
+            return Response(
+                {"detail": "You can only view your own audit report, or one for staff you manage."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        code = request.query_params.get("period", "month")
+        try:
+            start, end = resolve_audit_period(code)
+        except serializers.ValidationError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+
+        report = compute_audit_report(member, start=start, end=end)
+        report["period"] = {"code": code, "start": start.isoformat(), "end": end.isoformat()}
+        return Response(report)
 
 
 class StaffAssignmentStatusView(StaffScopedView):

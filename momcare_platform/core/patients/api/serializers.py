@@ -207,6 +207,7 @@ class PatientListSerializer(serializers.ModelSerializer):
     pregnancy_status = serializers.SerializerMethodField()
     risk_level = serializers.SerializerMethodField()
     risk_assessed_at = serializers.SerializerMethodField()
+    statuses = serializers.SerializerMethodField()
 
     class Meta:
         model = Patient
@@ -222,6 +223,7 @@ class PatientListSerializer(serializers.ModelSerializer):
             "pregnancy_status",
             "risk_level",
             "risk_assessed_at",
+            "statuses",
             "is_active",
             "created_at",
         ]
@@ -263,6 +265,19 @@ class PatientListSerializer(serializers.ModelSerializer):
         assessed_at = getattr(pregnancy, "latest_risk_at", None) if pregnancy else None
         return assessed_at.isoformat() if assessed_at else None
 
+    def _statuses(self, obj):
+        """Prefer the prefetched queryset over a fresh per-row query -- same
+        reasoning as ``_pregnancy`` above. Full history, newest first
+        (``PatientStatus.Meta.ordering``), matching Neuro_RPM's own
+        unconditional embed of every entry -- see the design doc's Decision 3."""
+        prefetched = getattr(obj, "prefetched_statuses", None)
+        if prefetched is not None:
+            return prefetched
+        return obj.statuses.all()
+
+    def get_statuses(self, obj) -> list[dict]:
+        return [{"name": s.name, "description": s.description, "color": s.color} for s in self._statuses(obj)]
+
 
 class PatientDetailSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(read_only=True)
@@ -270,6 +285,7 @@ class PatientDetailSerializer(serializers.ModelSerializer):
     current_pregnancy = PregnancySerializer(read_only=True)
     location_name = serializers.CharField(source="location.name", read_only=True)
     secondary_provider_detail = SecondaryProviderBriefSerializer(source="secondary_provider", read_only=True)
+    statuses = serializers.SerializerMethodField()
 
     class Meta:
         model = Patient
@@ -295,6 +311,7 @@ class PatientDetailSerializer(serializers.ModelSerializer):
             "consent_date",
             "secondary_provider",
             "secondary_provider_detail",
+            "statuses",
             "is_active",
             "created_at",
             "updated_at",
@@ -307,9 +324,16 @@ class PatientDetailSerializer(serializers.ModelSerializer):
             "location_name",
             "secondary_provider_detail",
             "current_pregnancy",
+            "statuses",
             "created_at",
             "updated_at",
         ]
+
+    def get_statuses(self, obj) -> list[dict]:
+        """Full history, newest first -- same shape as ``PatientListSerializer``'s
+        own ``get_statuses``, matching Neuro_RPM's unconditional embed (design
+        doc Decision 3)."""
+        return [{"name": s.name, "description": s.description, "color": s.color} for s in obj.statuses.all()]
 
 
 class PatientCreateSerializer(serializers.Serializer):

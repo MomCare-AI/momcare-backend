@@ -20,6 +20,10 @@ from momcare_platform.core.monitoring.api.views import (
     PatientMonitoringNotesView,
     PatientMonitoringSessionsView,
     PatientMonitoringView,
+    PatientStatusDetailView,
+    PatientStatusListCreateView,
+    StatusLabelDetailView,
+    StatusLabelListCreateView,
 )
 from momcare_platform.core.organization.api.views import (
     MyOrganizationView,
@@ -47,6 +51,7 @@ from momcare_platform.core.staff.api.views import (
     SecondaryProviderDetailView,
     SecondaryProviderListCreateView,
     StaffAssignmentStatusView,
+    StaffAuditReportView,
     StaffDeactivateView,
     StaffListView,
     StaffProfileView,
@@ -252,6 +257,11 @@ core_urlpatterns = [
         name="staff-assignment-status",
     ),
     re_path(
+        r"^staff/(?P<staff_id>[0-9a-f-]{36})/audit-report/?$",
+        StaffAuditReportView.as_view(),
+        name="staff-audit-report",
+    ),
+    re_path(
         r"^staff/(?P<staff_id>[0-9a-f-]{36})/deactivate/?$",
         StaffDeactivateView.as_view(),
         name="staff-deactivate",
@@ -395,6 +405,27 @@ core_urlpatterns = [
         r"^clinical-tags/(?P<tag_id>[0-9a-f-]{36})/?$",
         ClinicalTagDetailView.as_view(),
         name="clinical-tag-detail",
+    ),
+    # The status-label catalogue -- org-level (hospital-wide) or
+    # location-level, see StatusLabel's own docstring. Decoupled from
+    # PatientStatus below (a picker source, not a foreign key).
+    re_path(r"^status-labels/?$", StatusLabelListCreateView.as_view(), name="status-label-list"),
+    re_path(
+        r"^status-labels/(?P<label_id>[0-9a-f-]{36})/?$",
+        StatusLabelDetailView.as_view(),
+        name="status-label-detail",
+    ),
+    # A patient's status timeline -- nested under the patient, same shape as
+    # monitoring notes above.
+    re_path(
+        r"^patients/(?P<patient_id>[0-9a-f-]{36})/statuses/?$",
+        PatientStatusListCreateView.as_view(),
+        name="patient-status-list",
+    ),
+    re_path(
+        r"^patient-statuses/(?P<status_id>[0-9a-f-]{36})/?$",
+        PatientStatusDetailView.as_view(),
+        name="patient-status-detail",
     ),
     # The queue a clinician works from.
     # Aggregates for the portal overview.

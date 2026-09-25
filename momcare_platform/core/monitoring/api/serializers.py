@@ -7,6 +7,8 @@ from momcare_platform.core.monitoring.models import (
     ClinicalTag,
     MonitoringNote,
     MonitoringSession,
+    PatientStatus,
+    StatusLabel,
 )
 from momcare_platform.core.monitoring.services import get_or_create_tags
 
@@ -239,3 +241,66 @@ class CombinedMonitoringSerializer(serializers.Serializer):
         if not duration and not note_text:
             raise serializers.ValidationError("Provide at least a duration or a note.")
         return attrs
+
+
+class StatusLabelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StatusLabel
+        fields = ["id", "name", "description", "color", "organization", "location", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_color(self, value):
+        if not value:
+            return None
+        HEX_COLOR_VALIDATOR(value)
+        return value
+
+    def validate(self, attrs):
+        """Exactly one of organization/location, and it must be the caller's
+        own hospital -- same reasoning as ClinicalTagSerializer.validate above.
+        """
+        request = self.context.get("request")
+        caller_org = getattr(getattr(request, "user", None), "organization", None) if request else None
+
+        organization = attrs.get("organization", getattr(self.instance, "organization", None))
+        location = attrs.get("location", getattr(self.instance, "location", None))
+
+        if bool(organization) == bool(location):
+            raise serializers.ValidationError("Provide exactly one of 'organization' or 'location'.")
+        if organization is not None and organization != caller_org:
+            raise serializers.ValidationError({"organization": "Must be your own hospital."})
+        if location is not None and (caller_org is None or location.organization_id != caller_org.id):
+            raise serializers.ValidationError({"location": "Must belong to your own hospital."})
+        return attrs
+
+
+class PatientStatusSerializer(serializers.ModelSerializer):
+    patient_name = serializers.CharField(source="patient.full_name", read_only=True)
+    added_by_name = serializers.CharField(source="added_by.get_full_name", read_only=True, default="")
+
+    class Meta:
+        model = PatientStatus
+        fields = [
+            "id",
+            "patient",
+            "patient_name",
+            "pregnancy",
+            "name",
+            "description",
+            "color",
+            "added_by",
+            "added_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "patient", "pregnancy", "added_by", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        cleaned = value.strip()
+        if not cleaned:
+            raise serializers.ValidationError("name cannot be blank.")
+        return cleaned
+
+    def validate_color(self, value):
+        HEX_COLOR_VALIDATOR(value)
+        return value

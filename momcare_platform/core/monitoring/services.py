@@ -170,11 +170,14 @@ def month_bounds(*, year: int, month: int, tzinfo):
     return start, end
 
 
-def monitoring_period_totals(*, patient, start, end) -> dict:
-    """Total monitoring seconds logged for ``patient`` within [``start``,
-    ``end``] (inclusive) on ``recorded_at``. Shared aggregation core for
-    both calendar-month totals (below) and any future rolling-window
-    caller -- the query shape is defined once here.
+def monitoring_period_totals(*, start, end, **filters) -> dict:
+    """Total monitoring seconds logged within [``start``, ``end``] (inclusive)
+    on ``recorded_at``, additionally filtered by ``**filters`` -- e.g.
+    ``patient=patient`` for a patient's own totals, or ``added_by=staff.user``
+    for a staff member's activity totals (see ``staff.services.
+    compute_audit_report``). Shared aggregation core for both calendar-month
+    totals (below) and any rolling-window caller -- the query shape is
+    defined once here regardless of which column narrows it.
 
     Unlike Neuro_RPM's version, there is no per-program split to report --
     MomCare has exactly one programme, so this is a single total, not an
@@ -182,9 +185,9 @@ def monitoring_period_totals(*, patient, start, end) -> dict:
     """
     total = (
         MonitoringSession.objects.filter(
-            patient=patient,
             recorded_at__gte=start,
             recorded_at__lte=end,
+            **filters,
         ).aggregate(total=Sum("duration_seconds"))["total"]
         or 0
     )
