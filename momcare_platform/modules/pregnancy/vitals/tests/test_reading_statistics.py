@@ -112,6 +112,34 @@ def test_blood_pressure_statistics_average_min_max_count(make_hospital, pregnanc
     assert stats["readings_count"] == {"systolic_bp": 3, "diastolic_bp": 3, "heart_rate": 3}
 
 
+def test_blood_pressure_average_rounds_to_nearest_whole_number_not_nearest_ten(make_hospital, pregnancy_for):
+    """150+140+141=431/3=143.66... -> nearest whole number is 144, returned as
+    int, not float 143.67 and not bucketed to a nearest-ten value like 140."""
+    hospital = make_hospital("BP Rounding Hospital")
+    pregnancy = pregnancy_for(hospital)
+    _reading(pregnancy, systolic_bp="150", diastolic_bp="100", heart_rate="110")
+    _reading(pregnancy, systolic_bp="140", diastolic_bp="95", heart_rate="85")
+    _reading(pregnancy, systolic_bp="141", diastolic_bp="93", heart_rate="78")
+
+    stats = compute_reading_statistics(pregnancy.readings.all(), "blood_pressure")
+
+    assert stats["average"]["systolic_bp"] == 144
+    assert isinstance(stats["average"]["systolic_bp"], int)
+
+
+def test_temperature_average_keeps_one_decimal_as_a_float(make_hospital, pregnancy_for):
+    hospital = make_hospital("Temperature Rounding Hospital")
+    pregnancy = pregnancy_for(hospital)
+    _reading(pregnancy, body_temp_f="98.4")
+    _reading(pregnancy, body_temp_f="99.1")
+    _reading(pregnancy, body_temp_f="99.9")
+
+    stats = compute_reading_statistics(pregnancy.readings.all(), "temperature")
+
+    assert stats["average"]["body_temp_f"] == 99.1
+    assert isinstance(stats["average"]["body_temp_f"], float)
+
+
 def test_blood_pressure_category_percentages(make_hospital, pregnancy_for):
     """3 stage-2 BP readings -> 100% Stage 2. 2 normal + 1 tachycardia heart
     rate -> 67%/33%, largest-remainder rounded, matching Neuro_RPM's own
@@ -202,9 +230,23 @@ def test_vitals_summary_averages_the_last_30_days(make_hospital, pregnancy_for):
 
     summary = compute_vitals_summary(pregnancy)
 
-    assert summary["last_30_days_average"]["systolic_bp"] == 125.0
-    assert summary["last_30_days_average"]["diastolic_bp"] == 85.0
-    assert summary["last_30_days_average"]["heart_rate"] == 75.0
+    assert summary["last_30_days_average"]["systolic_bp"] == 125
+    assert isinstance(summary["last_30_days_average"]["systolic_bp"], int)
+    assert summary["last_30_days_average"]["diastolic_bp"] == 85
+    assert summary["last_30_days_average"]["heart_rate"] == 75
+
+
+def test_vitals_summary_rounds_a_fractional_average_to_the_nearest_whole_number(make_hospital, pregnancy_for):
+    """120+130+141=391/3=130.33... -> 130, not truncated/bucketed."""
+    hospital = make_hospital("Vitals Summary Rounding Hospital")
+    pregnancy = pregnancy_for(hospital)
+    _reading(pregnancy, systolic_bp="120")
+    _reading(pregnancy, systolic_bp="130")
+    _reading(pregnancy, systolic_bp="141")
+
+    summary = compute_vitals_summary(pregnancy)
+
+    assert summary["last_30_days_average"]["systolic_bp"] == 130
 
 
 def test_vitals_summary_excludes_readings_older_than_30_days(make_hospital, pregnancy_for):

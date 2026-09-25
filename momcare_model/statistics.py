@@ -1,10 +1,9 @@
-"""Largest-remainder percentage allocation.
+"""Largest-remainder percentage allocation, and per-metric display rounding.
 
-Ported verbatim (same algorithm, same tie-breaking) from Neuro_RPM's
-``guideline_bands.py::allocate_percentages`` — naive rounding of, say, three
-even thirds gives 33+33+33=99, not 100; this hands the leftover point(s) to
-whichever categories had the largest fractional remainder, so a percentage
-breakdown always sums to exactly 100.
+Both ported from Neuro_RPM's ``guideline_bands.py`` (``allocate_percentages``
+and ``METRIC_ROUNDING``/``round_metric_value``) — pure display-formatting
+rules, no clinical meaning of their own, kept together since both exist only
+to make a statistics/summary response readable.
 """
 
 from __future__ import annotations
@@ -28,3 +27,34 @@ def allocate_percentages(counts: dict[str, int], total: int) -> dict[str, int]:
     for key in order[:remainder]:
         floors[key] += 1
     return floors
+
+
+# Decimal places for average/min/max display, per vital -- 0 means rounded to
+# the nearest whole number and returned as an int (e.g. 121, not 121.0);
+# anything higher means rounded to that many decimal places, returned as a
+# float. Ported from Neuro_RPM's own METRIC_ROUNDING (systolic/diastolic/
+# heart_rate/mean_arterial_pressure/oxygen -> 0, weight/glucose/temperature ->
+# 1) and extended for the two vitals Neuro_RPM doesn't have (hemoglobin,
+# MomCare's own; stress/activity scores, MomCare's own self-report scale) --
+# both get 1 decimal, matching weight/glucose's "continuous measurement" tier
+# rather than the "simple vital-sign count" tier BP/HR fall into.
+METRIC_ROUNDING: dict[str, int] = {
+    "systolic_bp": 0,
+    "diastolic_bp": 0,
+    "heart_rate": 0,
+    "body_temp_f": 1,
+    "blood_glucose": 1,
+    "hemoglobin": 1,
+    "stress_score": 1,
+    "phys_activity_score": 1,
+}
+
+
+def round_metric_value(metric: str, value: float) -> float | int:
+    """Round ``value`` for display, using ``metric``'s own decimal rule.
+
+    Unknown metrics default to 1 decimal place, same fallback Neuro_RPM uses.
+    """
+    decimals = METRIC_ROUNDING.get(metric, 1)
+    rounded = round(value, decimals)
+    return int(rounded) if decimals == 0 else rounded

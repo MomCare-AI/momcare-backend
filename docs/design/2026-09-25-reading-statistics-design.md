@@ -126,6 +126,17 @@ that type) → every block is an empty dict, never omitted keys or a divide-by-z
   `momcare_model stays framework-free` import-linter contract already in place) — largest-
   remainder rounding, guarantees percentages sum to exactly 100, already proven correct by
   Neuro_RPM's own tests (thirds case, 67/33 case).
+- `round_metric_value(metric, value)` + `METRIC_ROUNDING` (same module, `momcare_model/
+  statistics.py`) — display rounding for `average`/`min`/`max`, **per metric, not a uniform 2
+  decimals** (the first implementation pass's mistake, corrected 25 Sep 2026 after the user
+  asked whether this matched Neuro_RPM's own convention — it didn't yet). Ported from
+  Neuro_RPM's own `METRIC_ROUNDING`: `systolic_bp`/`diastolic_bp`/`heart_rate` → 0 decimals,
+  returned as `int` (`125.9` → `126` — nearest whole number, **not** a nearest-ten bucket);
+  `body_temp_f`/`blood_glucose`/`hemoglobin` → 1 decimal, returned as `float`. Extended for the
+  two vitals Neuro_RPM doesn't have — `stress_score`/`phys_activity_score` get 1 decimal,
+  same "continuous measurement" tier as glucose/temperature. An unrecognized metric defaults to
+  1 decimal, matching Neuro_RPM's own fallback. Applied identically in `compute_vitals_summary`
+  (Feature 2) for the same reason: one display convention, not a per-endpoint one.
 - Category tally: only for `reading_type`s that map to a classifiable field (not `wellness`) —
   run every reading's raw value(s) through the matching `clinical_categories.py` function,
   `Counter` the non-blank results (blank `""` = vital missing on that reading, excluded from

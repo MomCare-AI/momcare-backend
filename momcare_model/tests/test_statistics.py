@@ -1,8 +1,8 @@
-"""``allocate_percentages`` -- pure function, no Django involved, ported
-verbatim from Neuro_RPM's own ``guideline_bands.py``.
+"""``allocate_percentages``/``round_metric_value`` -- pure functions, no
+Django involved, ported from Neuro_RPM's own ``guideline_bands.py``.
 """
 
-from momcare_model.statistics import allocate_percentages
+from momcare_model.statistics import allocate_percentages, round_metric_value
 
 
 def test_evenly_divisible_counts_split_cleanly():
@@ -53,3 +53,44 @@ def test_percentages_always_sum_to_exactly_one_hundred():
         total = sum(counts.values())
         result = allocate_percentages(counts, total)
         assert sum(result.values()) == 100
+
+
+# ── round_metric_value ────────────────────────────────────────────────────
+
+
+def test_zero_decimal_metrics_round_to_the_nearest_whole_number_and_return_int():
+    """125.9 rounds to 126, not 130 -- there is no round-to-nearest-10
+    bucketing anywhere in this rule, only nearest-whole-number."""
+    result = round_metric_value("systolic_bp", 125.9)
+
+    assert result == 126
+    assert isinstance(result, int)
+
+
+def test_zero_decimal_metrics_round_to_the_nearer_whole_number():
+    assert round_metric_value("heart_rate", 91.4) == 91
+    assert round_metric_value("heart_rate", 91.6) == 92
+
+
+def test_one_decimal_metrics_keep_one_decimal_and_return_float():
+    result = round_metric_value("body_temp_f", 101.567)
+
+    assert result == 101.6
+    assert isinstance(result, float)
+
+
+def test_every_zero_decimal_metric_returns_int():
+    for metric in ["systolic_bp", "diastolic_bp", "heart_rate"]:
+        assert isinstance(round_metric_value(metric, 88.5), int)
+
+
+def test_every_one_decimal_metric_returns_float():
+    for metric in ["body_temp_f", "blood_glucose", "hemoglobin", "stress_score", "phys_activity_score"]:
+        assert isinstance(round_metric_value(metric, 88.5), float)
+
+
+def test_an_unrecognized_metric_defaults_to_one_decimal():
+    result = round_metric_value("some_future_vital", 12.345)
+
+    assert result == 12.3
+    assert isinstance(result, float)

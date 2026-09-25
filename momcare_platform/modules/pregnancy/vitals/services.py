@@ -12,7 +12,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from momcare_model import clinical_categories
-from momcare_model.statistics import allocate_percentages
+from momcare_model.statistics import allocate_percentages, round_metric_value
 from momcare_platform.modules.pregnancy.vitals.models import Device, RiskAssessment, VitalReading
 
 
@@ -258,14 +258,17 @@ def compute_reading_statistics(queryset, reading_type: str) -> dict:
         annotations[f"{field}__count"] = Count(field)
     result = queryset.aggregate(**annotations)
 
-    average, minimum, maximum, readings_count = {}, {}, {}, {}
+    average: dict[str, float | int] = {}
+    minimum: dict[str, float | int] = {}
+    maximum: dict[str, float | int] = {}
+    readings_count: dict[str, int] = {}
     for field in fields:
         count = result[f"{field}__count"]
         if not count:
             continue
-        average[field] = round(float(result[f"{field}__avg"]), 2)
-        minimum[field] = round(float(result[f"{field}__min"]), 2)
-        maximum[field] = round(float(result[f"{field}__max"]), 2)
+        average[field] = round_metric_value(field, float(result[f"{field}__avg"]))
+        minimum[field] = round_metric_value(field, float(result[f"{field}__min"]))
+        maximum[field] = round_metric_value(field, float(result[f"{field}__max"]))
         readings_count[field] = count
 
     categories = {}
@@ -320,8 +323,8 @@ def compute_vitals_summary(pregnancy) -> dict:
     annotations = {f"{field}__avg": Avg(field) for field in VITALS_SUMMARY_FIELDS}
     result = VitalReading.objects.filter(pregnancy=pregnancy, recorded_at__gte=since).aggregate(**annotations)
 
-    averages: dict[str, float | None] = {}
+    averages: dict[str, float | int | None] = {}
     for field in VITALS_SUMMARY_FIELDS:
         value = result[f"{field}__avg"]
-        averages[field] = round(float(value), 2) if value is not None else None
+        averages[field] = round_metric_value(field, float(value)) if value is not None else None
     return {"last_30_days_average": averages}
