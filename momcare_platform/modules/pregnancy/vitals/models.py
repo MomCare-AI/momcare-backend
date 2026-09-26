@@ -317,7 +317,20 @@ class RiskAssessment(UUIDPrimaryKeyModel):
         return self.final_risk_level != self.LEVEL_LOW
 
     @property
+    def needs_attention(self) -> bool:
+        """Worth a clinician's attention regardless of review state -- either
+        the risk itself is actionable (Medium/High), or the model's own
+        confidence was below the hospital's threshold, whatever the level
+        came out as (a flagged Low is still worth a second look). The two
+        signals are independent: severity and model certainty don't move
+        together. This is the single OR condition both the Risk Review
+        Queue's query and ``resolve_risk_review()``'s guard key off of --
+        keeping it here means neither can drift out of sync with the other.
+        """
+        return self.is_actionable or self.flagged_for_review
+
+    @property
     def needs_review(self) -> bool:
-        """A pending non-low assessment is one nobody has reviewed or
-        escalated yet — the same rule the Risk Review Queue lists against."""
-        return self.is_actionable and self.review_status == self.REVIEW_PENDING
+        """Needs attention and nobody has resolved it yet — the same rule
+        the Risk Review Queue lists against."""
+        return self.needs_attention and self.review_status == self.REVIEW_PENDING

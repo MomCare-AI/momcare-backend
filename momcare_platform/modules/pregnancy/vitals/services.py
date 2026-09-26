@@ -159,17 +159,22 @@ def current_risk(pregnancy) -> RiskAssessment | None:
 
 
 def resolve_risk_review(assessment, *, new_status, confirmed_risk_level, actor) -> RiskAssessment:
-    """Move a pending, actionable assessment to reviewed or escalated.
+    """Move a pending assessment that needs attention to reviewed or escalated.
 
-    Only actionable (non-Low) assessments still Pending can be resolved —
-    matching Neuro_RPM's ``resolve_reading()`` guard exactly. ``confirmed_risk_level``
-    is required on both actions, not optional the way Neuro_RPM's plain
-    review/escalate are — MomCare's own deliberate rule (see
-    ``VerifyRiskView``'s former docstring): there is no "just seen, not
-    confirmed" state.
+    Only an assessment that is still Pending **and** worth attention (see
+    ``RiskAssessment.needs_attention`` — actionable, flagged for low
+    confidence, or both) can be resolved — the same condition the Risk
+    Review Queue lists against, so nothing shown there ever dead-ends here.
+    Broader than Neuro_RPM's own ``resolve_reading()`` guard (theirs has
+    only one axis, out-of-range severity; MomCare has two independent
+    signals — severity and model confidence — since only MomCare runs a
+    real probabilistic model here). ``confirmed_risk_level`` is required on
+    both actions, not optional the way Neuro_RPM's plain review/escalate
+    are — MomCare's own deliberate rule (see ``VerifyRiskView``'s former
+    docstring): there is no "just seen, not confirmed" state.
     """
-    if not assessment.is_actionable:
-        raise MonitoringError("Only actionable (non-Low) assessments can be reviewed.")
+    if not assessment.needs_attention:
+        raise MonitoringError("Only an actionable or flagged assessment can be reviewed.")
     if assessment.review_status != RiskAssessment.REVIEW_PENDING:
         raise MonitoringError("This assessment has already been resolved.")
 

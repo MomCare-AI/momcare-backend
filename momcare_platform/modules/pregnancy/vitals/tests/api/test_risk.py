@@ -302,7 +302,7 @@ def test_a_resolved_assessment_cannot_be_reviewed_again(
     assert "already been resolved" in response.json()["detail"]
 
 
-def test_a_low_risk_assessment_cannot_be_reviewed(
+def test_an_unflagged_low_risk_assessment_cannot_be_reviewed(
     client,
     make_hospital,
     make_staff,
@@ -310,7 +310,8 @@ def test_a_low_risk_assessment_cannot_be_reviewed(
     auth,
     _no_auto_scoring,
 ):
-    """Only actionable (non-Low) assessments enter the review workflow at all."""
+    """Neither condition applies -- not actionable, not flagged -- so this
+    never needed attention in the first place."""
     hospital = make_hospital("Low Risk Hospital")
     doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@lowrisk.test")
     pregnancy = pregnancy_for(hospital)
@@ -318,6 +319,7 @@ def test_a_low_risk_assessment_cannot_be_reviewed(
     assessment = reassess_risk(pregnancy)
     assert assessment is not None
     assert assessment.is_actionable is False
+    assert assessment.flagged_for_review is False
 
     response = client.post(
         f"/api/pregnancies/{pregnancy.id}/risk/{assessment.id}/review/",
@@ -328,6 +330,39 @@ def test_a_low_risk_assessment_cannot_be_reviewed(
 
     assert response.status_code == 400
     assert "actionable" in response.json()["detail"]
+
+
+def test_a_flagged_low_risk_assessment_can_be_reviewed(
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
+):
+    """Not actionable, but flagged -- the model itself was unsure about a
+    Low verdict, so it's still worth a doctor's look and a real review
+    action, not a dead end."""
+    hospital = make_hospital("Flagged Low Risk Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@flaggedlow.test")
+    pregnancy = pregnancy_for(hospital)
+    assessment = RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=RiskAssessment.LEVEL_LOW,
+        final_risk_level=RiskAssessment.LEVEL_LOW,
+        flagged_for_review=True,
+    )
+    assert assessment.needs_review is True
+
+    response = client.post(
+        f"/api/pregnancies/{pregnancy.id}/risk/{assessment.id}/review/",
+        data=json.dumps({"confirmed_risk_level": "low"}),
+        content_type="application/json",
+        **auth(doctor.email),
+    )
+
+    assert response.status_code == 200
+    assessment.refresh_from_db()
+    assert assessment.review_status == RiskAssessment.REVIEW_REVIEWED
 
 
 def test_acknowledging_the_alert_records_who_looked(
@@ -392,7 +427,7 @@ def _flagged_assessment(pregnancy, *, review_status=RiskAssessment.REVIEW_PENDIN
     )
 
 
-def test_risk_review_queue_lists_a_patient_with_a_pending_flagged_assessment(
+def test_risk_review_queue_lists_a_patient_flagged_and_actionable_with_both_reasons(
     client,
     make_hospital,
     pregnancy_for,
@@ -409,6 +444,7 @@ def test_risk_review_queue_lists_a_patient_with_a_pending_flagged_assessment(
     assert body["count"] == 1
     assert body["results"][0]["pregnancy_id"] == str(pregnancy.id)
     assert body["results"][0]["assessment"]["flagged_for_review"] is True
+    assert set(body["results"][0]["reasons"]) == {"actionable", "low_confidence"}
 
 
 def test_risk_review_queue_excludes_already_resolved_assessments(
@@ -426,20 +462,67 @@ def test_risk_review_queue_excludes_already_resolved_assessments(
     assert response.json()["count"] == 0
 
 
-def test_risk_review_queue_excludes_unflagged_actionable_assessments(
+def test_risk_review_queue_includes_unflagged_actionable_assessments(
     client,
     make_hospital,
     pregnancy_for,
     auth,
 ):
-    """needs_review is broader than the Risk Review Queue -- flagged_for_review
-    (low model confidence) is a stricter trigger than plain non-Low/pending."""
-    hospital = make_hospital("Unflagged Excluded Hospital")
+    """Medium/High belongs in the queue whether or not the model was
+    confident about it -- severity alone is enough."""
+    hospital = make_hospital("Unflagged Actionable Hospital")
     pregnancy = pregnancy_for(hospital)
     RiskAssessment.objects.create(
         pregnancy=pregnancy,
         risk_level=RiskAssessment.LEVEL_HIGH,
         final_risk_level=RiskAssessment.LEVEL_HIGH,
+        flagged_for_review=False,
+    )
+
+    response = client.get("/api/risk-review-queue/", **auth(hospital.admin.email))
+
+    body = response.json()
+    assert body["count"] == 1
+    assert body["results"][0]["reasons"] == ["actionable"]
+
+
+def test_risk_review_queue_includes_flagged_low_risk_assessments(
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
+):
+    """A Low verdict the model itself wasn't confident about still belongs
+    in the queue -- confidence is an independent signal from severity."""
+    hospital = make_hospital("Flagged Low Included Hospital")
+    pregnancy = pregnancy_for(hospital)
+    RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=RiskAssessment.LEVEL_LOW,
+        final_risk_level=RiskAssessment.LEVEL_LOW,
+        flagged_for_review=True,
+    )
+
+    response = client.get("/api/risk-review-queue/", **auth(hospital.admin.email))
+
+    body = response.json()
+    assert body["count"] == 1
+    assert body["results"][0]["reasons"] == ["low_confidence"]
+
+
+def test_risk_review_queue_excludes_unflagged_low_risk_assessments(
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
+):
+    """Neither condition applies -- normal, confident, Low -- nothing to see."""
+    hospital = make_hospital("Normal Excluded Hospital")
+    pregnancy = pregnancy_for(hospital)
+    RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=RiskAssessment.LEVEL_LOW,
+        final_risk_level=RiskAssessment.LEVEL_LOW,
         flagged_for_review=False,
     )
 

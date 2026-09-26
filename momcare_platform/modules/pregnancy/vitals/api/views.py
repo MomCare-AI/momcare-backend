@@ -7,7 +7,7 @@ hospital, so a reading can never be filed against another tenant's patient.
 from collections.abc import Callable
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import OuterRef, Subquery
+from django.db.models import OuterRef, Q, Subquery
 from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
@@ -332,16 +332,30 @@ class EscalateRiskView(_RiskReviewActionView):
 
 
 class RiskReviewQueueView(MonitoringView):
-    """Patients whose current pregnancy has at least one flagged, still-
-    pending assessment — "whose vitals just crossed a threshold and nobody
-    has looked yet." Adapted from Neuro_RPM's Reading Review Workflow
-    (``?workflow=reading_review`` on their Patient list + their
+    """Patients whose current pregnancy has at least one pending assessment
+    that needs attention — either the risk level itself is actionable
+    (Medium/High), or the model's own confidence was below the hospital's
+    threshold, whatever the level came out as (see
+    ``RiskAssessment.needs_attention`` — the single OR condition this query
+    and ``resolve_risk_review()``'s guard both key off of, kept in one place
+    so they can't drift apart). Adapted from Neuro_RPM's Reading Review
+    Workflow (``?workflow=reading_review`` on their Patient list + their
     ``dashboard-kpis`` count) — one patient-centric list rather than a query
     param on the Patient endpoint, since that's this project's own
     convention for a standing queue (see ``AlertListView``, which the
     scoping/pagination shape below mirrors exactly). Named to match the rest
     of the risk review workflow (``review_status``, ``review``/``escalate``)
     rather than the unrelated, already-existing ``Alert`` model/endpoint.
+
+    Neuro_RPM has no equivalent of this dual condition — their trigger
+    (``is_out_of_range``) is a single raw-value threshold with no confidence
+    score behind it, since they have no trained model gating this workflow.
+    Kept as one combined workflow rather than two separate ones: both
+    triggers resolve through the identical ``review``/``escalate`` action,
+    so a second queue/endpoint would only duplicate that resolution logic
+    for no behavioural difference. Each entry's ``reasons`` field says which
+    of the two conditions applied, so a clinician can tell why a given
+    patient is here without needing two lists.
 
     The ``count`` in the pagination envelope doubles as the KPI number —
     same convention ``AlertListView`` already uses for its own
@@ -353,24 +367,37 @@ class RiskReviewQueueView(MonitoringView):
     def _scope_to_assigned(self, queryset, request):
         return scope_to_assigned_staff(queryset, request, path_prefix="")
 
+    @staticmethod
+    def _reasons(assessment):
+        reasons = []
+        if assessment.is_actionable:
+            reasons.append("actionable")
+        if assessment.flagged_for_review:
+            reasons.append("low_confidence")
+        return reasons
+
     def get(self, request):
         _, error = self.hospital_or_error(request)
         if error:
             return error
 
-        latest_flagged = RiskAssessment.objects.filter(
+        needs_attention = Q(flagged_for_review=True) | Q(
+            final_risk_level__in=[RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH],
+        )
+        latest_relevant = RiskAssessment.objects.filter(
+            needs_attention,
             pregnancy=OuterRef("pk"),
-            flagged_for_review=True,
             review_status=RiskAssessment.REVIEW_PENDING,
         ).order_by("-assessed_at")
 
         queryset = (
             self.scope_to_organization(Pregnancy.objects.filter(status=Pregnancy.STATUS_ACTIVE))
             .filter(
-                risk_assessments__flagged_for_review=True,
+                Q(risk_assessments__flagged_for_review=True)
+                | Q(risk_assessments__final_risk_level__in=[RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH]),
                 risk_assessments__review_status=RiskAssessment.REVIEW_PENDING,
             )
-            .annotate(flagged_assessment_id=Subquery(latest_flagged.values("id")[:1]))
+            .annotate(relevant_assessment_id=Subquery(latest_relevant.values("id")[:1]))
             .select_related("patient")
             .distinct()
             .order_by("-created_at")
@@ -383,7 +410,7 @@ class RiskReviewQueueView(MonitoringView):
         assessments = {
             assessment.id: assessment
             for assessment in RiskAssessment.objects.filter(
-                id__in=[pregnancy.flagged_assessment_id for pregnancy in page],
+                id__in=[pregnancy.relevant_assessment_id for pregnancy in page],
             ).select_related("reading")
         }
         results = [
@@ -391,7 +418,8 @@ class RiskReviewQueueView(MonitoringView):
                 "patient_id": pregnancy.patient_id,
                 "patient_name": pregnancy.patient.full_name,
                 "pregnancy_id": pregnancy.id,
-                "assessment": RiskAssessmentSerializer(assessments[pregnancy.flagged_assessment_id]).data,
+                "reasons": self._reasons(assessments[pregnancy.relevant_assessment_id]),
+                "assessment": RiskAssessmentSerializer(assessments[pregnancy.relevant_assessment_id]).data,
             }
             for pregnancy in page
         ]

@@ -2731,7 +2731,7 @@
                 ""
               ]
             },
-            "description": "Clinicians only (provider, nurse, care_manager) -- a hospital_admin cannot review a clinical assessment. `confirmed_risk_level` is required and must be one of low/medium/high. Marks a pending, actionable (non-Low) assessment as reviewed -- no further action needed. Only pending assessments can be reviewed; calling this on an already-reviewed/escalated assessment is a 400. The original `risk_level`/`final_risk_level` are never overwritten."
+            "description": "Clinicians only (provider, nurse, care_manager) -- a hospital_admin cannot review a clinical assessment. `confirmed_risk_level` is required and must be one of low/medium/high. Marks a pending assessment as reviewed -- no further action needed. Resolvable only if it needs attention: either the risk level itself is actionable (Medium/High), or the model's own confidence was below the hospital's threshold, whatever the level came out as (a flagged Low is still resolvable). Calling this on an assessment that needs neither, or one already reviewed/escalated, is a 400. The original `risk_level`/`final_risk_level` are never overwritten."
           },
           "response": []
         },
@@ -2769,7 +2769,7 @@
                 ""
               ]
             },
-            "description": "Clinicians only. Marks a pending, actionable assessment as escalated -- a triage label only, no Alert side effect and no notification (MomCare's real escalation ladder is the separate Alert/AlertEvent system, which already runs independently). Same guards as Review: `confirmed_risk_level` required, only a still-pending assessment can be escalated."
+            "description": "Clinicians only. Marks a pending assessment as escalated -- a triage label only, no Alert side effect and no notification (MomCare's real escalation ladder is the separate Alert/AlertEvent system, which already runs independently). Same guards as Review: `confirmed_risk_level` required, only an assessment that needs attention (actionable, flagged, or both) and is still pending can be escalated."
           },
           "response": []
         },
@@ -2796,7 +2796,7 @@
                 }
               ]
             },
-            "description": "Patients whose current pregnancy has at least one flagged (low model confidence), still-pending assessment -- whose vitals just crossed a threshold and nobody has looked yet. Paginated; the envelope's `count` doubles as the KPI number, same convention the Alerts list uses for its own `unacknowledged` badge. `?assigned_to=me` narrows to the caller's own care-team patients, same semantics as the Patients and Alerts lists."
+            "description": "Patients whose current pregnancy has at least one pending assessment that needs attention -- either the risk level itself is actionable (Medium/High), or the model's own confidence was below the hospital's threshold, whatever the level came out as. These are two independent signals (severity and model certainty don't move together), so a flagged Low shows up here too, not just Medium/High cases. Each result carries a `reasons` array (`actionable` and/or `low_confidence`) saying which condition applied. Paginated; the envelope's `count` doubles as the KPI number, same convention the Alerts list uses for its own `unacknowledged` badge. `?assigned_to=me` narrows to the caller's own care-team patients, same semantics as the Patients and Alerts lists."
           },
           "response": []
         },

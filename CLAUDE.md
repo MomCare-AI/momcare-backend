@@ -153,7 +153,7 @@ The platform is built and running. Eight capabilities are complete, tested and p
 | 7 | Alerts and escalation — three-tier ladder, in-portal notifications only (no email leg — removed deliberately, see below), append-only audit trail |
 | 8 | Clinical contact logging — sessions, notes, and a tenant-scoped tag catalogue (`core/monitoring`, `app_label="clinical_notes"`) — see "Apps and what each owns" below |
 
-**773 backend tests (4 skipped, whole suite — `uv run pytest`) as of the 26 Sep 2026 revision,
+**776 backend tests (4 skipped, whole suite — `uv run pytest`) as of the 26 Sep 2026 revision,
 30 frontend.** `momcare_platform/core` alone is 620 of those — see the `Testing` section below
 for that narrower, faster command.
 Security-critical tests validated by fault injection: each protection was
@@ -453,16 +453,28 @@ label-only actions: there is no "just seen, not confirmed" state here:
   independently of this field — confirmed with the user rather than wired together, since
   a flagged assessment doesn't always have a live Alert to act on (a flagged Low-risk
   reading never raises one at all — see `Alert`'s own "at most one open alert" rule).
-- Both guard identically to Neuro_RPM's `resolve_reading()`: only an **actionable
-  (non-Low), still-pending** assessment can be resolved — calling either action twice, or
-  on a Low assessment, is a 400.
+- Both guard on `RiskAssessment.needs_attention` — **actionable (Medium/High) OR
+  flagged_for_review, or both** — plus still-pending. Broader than Neuro_RPM's own
+  `resolve_reading()` guard (theirs has a single axis, raw-value severity; MomCare has two
+  independent signals, severity and model confidence, since only MomCare runs a real
+  probabilistic model here). Calling either action on an assessment that needs neither, or
+  one already resolved, is a 400.
 - `POST /risk/bulk-review/` — resolve several assessments to their own target status in
   one atomic call, ported from Neuro_RPM's `bulk-review`. All-or-nothing: one bad item
   rolls back every write.
 
-`GET /risk-review-queue/` — patients whose current pregnancy has a flagged, still-pending
-assessment, i.e. "whose vitals just crossed a threshold and nobody has looked yet." Named
-to match the rest of this workflow (`review_status`, `review`/`escalate`) rather than the
+`GET /risk-review-queue/` — patients whose current pregnancy has at least one pending
+assessment matching `needs_attention`: **actionable (Medium/High) OR flagged for low
+model confidence**, regardless of level — a flagged Low still shows up, since confidence
+and severity are independent signals that don't move together. Each result carries a
+`reasons` array (`actionable`/`low_confidence`, either or both) so a clinician can tell at
+a glance why a patient is there without needing two separate lists. Neuro_RPM has no
+equivalent of this dual condition — their trigger (`is_out_of_range`) is a single raw-value
+threshold with no confidence score behind it, since they have no trained model gating this
+workflow; this is a MomCare-specific design, not a port. Kept as **one** combined workflow
+rather than two, since both triggers resolve through the identical `review`/`escalate`
+action — a second queue/endpoint would only duplicate that resolution logic. Named to
+match the rest of this workflow (`review_status`, `review`/`escalate`) rather than the
 unrelated, already-existing `Alert` model/endpoint — briefly shipped as `attention-queue`
 before this rename the same day. Patient-centric (one row per patient, not per
 assessment), matching Neuro_RPM's own `?workflow=reading_review` roster filter — but
@@ -473,10 +485,11 @@ doubles as the KPI number, the same convention `AlertListView` already uses for 
 `unacknowledged` badge — Neuro_RPM needed a second `dashboard-kpis` endpoint only because
 their list and their count are scoped differently; here they aren't.
 
-`needs_review` (the property MomCare already had) is **broader** than the Risk Review
-Queue: it's true for any actionable, still-pending assessment, regardless of confidence.
-`flagged_for_review` is the narrower, confidence-specific trigger the Risk Review Queue
-actually filters on — the two are related but not interchangeable.
+`RiskAssessment.needs_attention` (actionable OR flagged) is the one place this OR
+condition is defined — both the Queue's query and the `review`/`escalate` guard read off
+it, so they can't drift out of sync. `needs_review` (the property MomCare already had) is
+just `needs_attention and review_status == pending`, re-pointed at the new property rather
+than redefined from scratch.
 
 ### Scoring and alerting are one transaction
 

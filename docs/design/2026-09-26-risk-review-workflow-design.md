@@ -35,8 +35,9 @@ answerable by comparing it to `final_risk_level`. It's just no longer what
 `review_status` itself says, and which of the two terminal values an assessment lands on
 is now chosen by which action the clinician calls, not derived from that comparison.
 
-`needs_review` (pre-existing property: `is_actionable and review_status == PENDING`)
-is unchanged in shape, just re-pointed at the renamed constant.
+`needs_review` (pre-existing property, originally `is_actionable and review_status ==
+PENDING`) was re-pointed at the renamed constant here, then changed again the same day —
+see the "`needs_attention`" follow-up section below for why its shape itself changed too.
 
 ## Endpoints
 
@@ -50,10 +51,9 @@ Both `IsClinician`-gated, both require `confirmed_risk_level` in the body (one o
 low/medium/high) — this requirement is MomCare's own and predates this feature (the old
 `VerifyRiskView`'s docstring: "there is no 'just seen, not confirmed' state"); it is
 deliberately **not** relaxed to match Neuro_RPM's own review/escalate, which take no
-risk-level input at all. Both share one guard, ported from Neuro_RPM's
-`resolve_reading()`: only an assessment that is both **actionable** (non-Low) and still
-**pending** can be resolved. Calling either action on an already-resolved or Low
-assessment is a 400 with a message naming which condition failed.
+risk-level input at all. Both guard on `RiskAssessment.needs_attention` (see the
+follow-up section below) plus still-pending: an assessment that needs neither attention
+condition, or one already resolved, is a 400 with a message naming which failed.
 
 ### Escalate is a label only
 
@@ -75,11 +75,44 @@ independently), so the two systems would need to special-case a "nothing to bump
 regardless, and conflating a clinician's manual triage note with the automated ladder's
 own tier state was judged more confusing than useful.
 
+## Follow-up same day: `needs_attention` — actionable OR flagged, one workflow not two
+
+First shipped with the queue and the review/escalate guard both keyed on
+`flagged_for_review` alone. Walking the user through the actual behavior surfaced a real
+gap: a flagged **Low**-risk assessment (the model was unsure even about a Low verdict)
+could appear in the queue but then 400 on `review`/`escalate`, since those required
+`is_actionable` (non-Low) — a dead end the queue shouldn't have surfaced. Separately, the
+user asked for Medium/High cases to appear in the queue **regardless of confidence**,
+which the original `flagged_for_review`-only filter didn't do either.
+
+Resolved by asking directly: does this need to be one workflow or two separate ones,
+given severity (Medium/High) and model confidence are independent signals that Neuro_RPM
+itself never has to reconcile (their own trigger, `is_out_of_range`, is a single raw-value
+threshold with no confidence score behind it — they have no trained model gating this
+workflow, so this dual-condition question simply doesn't arise for them; there was no
+precedent to copy). **One workflow.** Both conditions resolve through the identical
+`review`/`escalate` action — there's no second action, no different resolution mechanic
+for "flagged" versus "actionable" — so two separate queues/endpoints would only duplicate
+that resolution logic for no behavioral difference.
+
+`RiskAssessment.needs_attention` is the single OR condition both places now read off:
+
+```python
+@property
+def needs_attention(self) -> bool:
+    return self.is_actionable or self.flagged_for_review
+```
+
+`needs_review` (pre-existing) becomes `needs_attention and review_status == PENDING` —
+same shape, re-pointed at the new property rather than redefined from scratch. Both the
+Queue's query and `resolve_risk_review()`'s guard now key off this identical condition, so
+they can't drift apart the way they briefly did.
+
 ## Risk Review Queue
 
-`GET /risk-review-queue/` — patients whose current pregnancy has a flagged
-(`flagged_for_review=True`), still-pending assessment: "whose vitals just crossed a
-threshold and nobody has looked yet." Patient-centric (one row per patient, with that
+`GET /risk-review-queue/` — patients whose current pregnancy has at least one pending
+assessment matching `needs_attention`: **actionable (Medium/High) OR flagged for low
+model confidence**, whatever the level. Patient-centric (one row per patient, with that
 patient's most recent qualifying assessment embedded), matching Neuro_RPM's own
 `?workflow=reading_review` roster filter on their Patient list — but shaped as its own
 standing endpoint rather than a query param, matching this project's own convention for
@@ -87,6 +120,10 @@ a queue (`AlertListView`, `PatientWorklistView`) rather than Neuro_RPM's viewset
 convention. Scoped identically to `AlertListView`
 (`pregnancy__patient__location__organization` via `patient__location__organization` on
 Pregnancy directly, plus `?assigned_to=me` via the shared `scope_to_assigned_staff()`).
+
+Each result carries a `reasons` array (`["actionable"]`, `["low_confidence"]`, or both) so
+a clinician can tell at a glance which condition put a patient there, since one list now
+answers two different questions.
 
 **Named and renamed the same day.** Shipped first as `AttentionQueueView`/
 `/attention-queue/`, reusing a name a previous session had already coined in a
@@ -103,14 +140,10 @@ list and their count use different scoping (the list defaults to the live/pendin
 the KPI is independent of any list filter); here they're the same query, so a second
 endpoint would just duplicate it.
 
-`flagged_for_review` vs. `needs_review`: kept as two distinct, non-interchangeable
-concepts. `needs_review` (pre-existing) is broad — any actionable, pending assessment,
-whatever its confidence. `flagged_for_review` is the narrower trigger the Risk Review
-Queue actually filters on — specifically low model confidence. "Out of range" was
-considered and rejected as an alternate name for `flagged_for_review` (raised by the
-user, who then asked for a recommendation): that phrase already means something else in
-Neuro_RPM (a *value* outside a bound) and would misdescribe MomCare's trigger, which
-fires on uncertainty, not on an extreme reading.
+"Out of range" was considered and rejected as an alternate name for `flagged_for_review`
+(raised by the user, who then asked for a recommendation): that phrase already means
+something else in Neuro_RPM (a *value* outside a bound) and would misdescribe MomCare's
+trigger, which fires on uncertainty, not on an extreme reading.
 
 ## Bulk review
 
@@ -125,17 +158,22 @@ hospital-scoped `RiskAssessment` queryset — an id outside it reads as not-foun
 
 ## Testing
 
-19 new/updated tests in `modules/pregnancy/vitals/tests/api/test_risk.py`: review,
+24 new/updated tests in `modules/pregnancy/vitals/tests/api/test_risk.py`: review,
 escalate-is-label-only (asserts the pregnancy's live Alert tier is untouched and no
-`AlertEvent` was written), the already-resolved guard, the Low-risk guard, four Risk
-Review Queue tests (lists a match, excludes resolved, excludes unflagged-but-actionable,
-cross-tenant isolation), and three bulk-review tests (per-item status, all-or-nothing
-rollback, cross-tenant isolation). 773 backend tests total (whole suite), up from 767.
+`AlertEvent` was written), the already-resolved guard, the neither-condition guard
+(renamed from the original Low-risk-only guard), a flagged-Low-can-be-reviewed case
+proving the fix, six Risk Review Queue tests (flagged-and-actionable with both reasons,
+excludes resolved, includes unflagged-actionable, includes flagged-Low, excludes
+neither-condition, cross-tenant isolation), and three bulk-review tests (per-item status,
+all-or-nothing rollback, cross-tenant isolation). 776 backend tests total (whole suite),
+up from 767.
 
 ## Out of scope
 
 - No Alert side effect from `escalate` (see above).
 - No `DataBound`-style configurable thresholds — the model's confidence is the only
-  trigger, matching MomCare's existing "no rules engine" decision.
+  uncertainty trigger, matching MomCare's existing "no rules engine" decision.
 - No separate `dashboard-kpis` endpoint — the Risk Review Queue's own pagination count
   serves that purpose.
+- No second, separate "confidence review" workflow — one `needs_attention` condition,
+  one queue, one set of actions (see the follow-up section above).
