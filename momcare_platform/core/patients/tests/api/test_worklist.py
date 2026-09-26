@@ -1,5 +1,5 @@
 """The worklist — administrative/care-continuity gaps, deliberately a
-different question from the Attention Queue's clinical severity.
+different question from the Risk Review Queue's clinical severity.
 
 Every reason is checked independently: absent when the underlying condition
 doesn't hold, present with the right detail when it does, and a pregnancy

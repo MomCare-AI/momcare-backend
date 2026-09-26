@@ -331,7 +331,7 @@ class EscalateRiskView(_RiskReviewActionView):
     resolver = staticmethod(escalate_risk)
 
 
-class AttentionQueueView(MonitoringView):
+class RiskReviewQueueView(MonitoringView):
     """Patients whose current pregnancy has at least one flagged, still-
     pending assessment — "whose vitals just crossed a threshold and nobody
     has looked yet." Adapted from Neuro_RPM's Reading Review Workflow
@@ -339,7 +339,9 @@ class AttentionQueueView(MonitoringView):
     ``dashboard-kpis`` count) — one patient-centric list rather than a query
     param on the Patient endpoint, since that's this project's own
     convention for a standing queue (see ``AlertListView``, which the
-    scoping/pagination shape below mirrors exactly).
+    scoping/pagination shape below mirrors exactly). Named to match the rest
+    of the risk review workflow (``review_status``, ``review``/``escalate``)
+    rather than the unrelated, already-existing ``Alert`` model/endpoint.
 
     The ``count`` in the pagination envelope doubles as the KPI number —
     same convention ``AlertListView`` already uses for its own

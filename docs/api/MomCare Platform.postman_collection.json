@@ -2774,18 +2774,18 @@
           "response": []
         },
         {
-          "name": "Get Attention Queue",
+          "name": "Get Risk Review Queue",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/attention-queue/?assigned_to=me",
+              "raw": "{{base_url}}/api/risk-review-queue/?assigned_to=me",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "attention-queue",
+                "risk-review-queue",
                 ""
               ],
               "query": [

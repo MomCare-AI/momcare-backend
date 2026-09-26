@@ -319,5 +319,5 @@ class RiskAssessment(UUIDPrimaryKeyModel):
     @property
     def needs_review(self) -> bool:
         """A pending non-low assessment is one nobody has reviewed or
-        escalated yet — the same rule the Attention Queue lists against."""
+        escalated yet — the same rule the Risk Review Queue lists against."""
         return self.is_actionable and self.review_status == self.REVIEW_PENDING

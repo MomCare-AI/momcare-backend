@@ -196,16 +196,16 @@ class PatientListCreateView(PatientScopedView):
 
 class PatientWorklistView(PatientScopedView):
     """Administrative and care-continuity gaps — a different question from
-    the Attention Queue's clinical severity.
+    the Risk Review Queue's clinical severity.
 
-    The Attention Queue (core/monitoring/api/views.py) answers "whose vitals
-    just crossed a threshold." This answers "does this case have a gap that
-    has nothing to do with today's vitals being bad" - no reading in a
-    while, no note logged, no risk history ever answered, nobody
-    accountable. Deliberately a separate endpoint and never merged with the
-    Attention Queue, the same way "not assessed" stays visually distinct
-    from "low risk" everywhere else in this portal - see
-    docs/worklist-feature-scope.md for the full reasoning.
+    The Risk Review Queue (modules/pregnancy/vitals/api/views.py,
+    RiskReviewQueueView) answers "whose vitals just crossed a threshold."
+    This answers "does this case have a gap that has nothing to do with
+    today's vitals being bad" - no reading in a while, no note logged, no
+    risk history ever answered, nobody accountable. Deliberately a separate
+    endpoint and never merged with the Risk Review Queue, the same way "not
+    assessed" stays visually distinct from "low risk" everywhere else in
+    this portal - see docs/worklist-feature-scope.md for the full reasoning.
 
     The two day thresholds below are administrative defaults, not clinically
     validated - the same honesty momcare_model applies to its own risk

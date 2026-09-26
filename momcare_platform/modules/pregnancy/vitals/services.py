@@ -87,7 +87,7 @@ def reassess_risk(pregnancy) -> RiskAssessment | None:
       effective_confidence_threshold``, 80% platform default) flags the row
       for review — no email fires for this, by design (see MEMORY.md §"no
       email leg"). The patient still sees the result; a flag means a doctor
-      should look again via the Attention Queue, not that anything is being
+      should look again via the Risk Review Queue, not that anything is being
       withheld.
 
     Scoring and alerting are one transaction: an assessment saying "high"

@@ -75,9 +75,9 @@ independently), so the two systems would need to special-case a "nothing to bump
 regardless, and conflating a clinician's manual triage note with the automated ladder's
 own tier state was judged more confusing than useful.
 
-## Attention Queue
+## Risk Review Queue
 
-`GET /attention-queue/` — patients whose current pregnancy has a flagged
+`GET /risk-review-queue/` — patients whose current pregnancy has a flagged
 (`flagged_for_review=True`), still-pending assessment: "whose vitals just crossed a
 threshold and nobody has looked yet." Patient-centric (one row per patient, with that
 patient's most recent qualifying assessment embedded), matching Neuro_RPM's own
@@ -88,6 +88,14 @@ convention. Scoped identically to `AlertListView`
 (`pregnancy__patient__location__organization` via `patient__location__organization` on
 Pregnancy directly, plus `?assigned_to=me` via the shared `scope_to_assigned_staff()`).
 
+**Named and renamed the same day.** Shipped first as `AttentionQueueView`/
+`/attention-queue/`, reusing a name a previous session had already coined in a
+`PatientWorklistView` docstring for this exact unbuilt concept. On review, that name sat
+oddly next to the rest of this feature — `review_status`, `review`/`escalate` — and,
+more importantly, risked being read as a rename of the separate, already-existing `Alert`
+model/endpoint, which this has nothing to do with. Renamed to `RiskReviewQueueView`/
+`/risk-review-queue/` to read as one coherent feature instead of two disconnected names.
+
 No separate counts-only endpoint (Neuro_RPM's `dashboard-kpis`). The pagination
 envelope's `count` already is the KPI number — the same convention `AlertListView` uses
 for its own `unacknowledged` badge. Neuro_RPM needed a second endpoint only because their
@@ -97,12 +105,12 @@ endpoint would just duplicate it.
 
 `flagged_for_review` vs. `needs_review`: kept as two distinct, non-interchangeable
 concepts. `needs_review` (pre-existing) is broad — any actionable, pending assessment,
-whatever its confidence. `flagged_for_review` is the narrower trigger the Attention Queue
-actually filters on — specifically low model confidence. "Out of range" was considered
-and rejected as an alternate name for `flagged_for_review` (raised by the user, who then
-asked for a recommendation): that phrase already means something else in Neuro_RPM (a
-*value* outside a bound) and would misdescribe MomCare's trigger, which fires on
-uncertainty, not on an extreme reading.
+whatever its confidence. `flagged_for_review` is the narrower trigger the Risk Review
+Queue actually filters on — specifically low model confidence. "Out of range" was
+considered and rejected as an alternate name for `flagged_for_review` (raised by the
+user, who then asked for a recommendation): that phrase already means something else in
+Neuro_RPM (a *value* outside a bound) and would misdescribe MomCare's trigger, which
+fires on uncertainty, not on an extreme reading.
 
 ## Bulk review
 
@@ -119,8 +127,8 @@ hospital-scoped `RiskAssessment` queryset — an id outside it reads as not-foun
 
 19 new/updated tests in `modules/pregnancy/vitals/tests/api/test_risk.py`: review,
 escalate-is-label-only (asserts the pregnancy's live Alert tier is untouched and no
-`AlertEvent` was written), the already-resolved guard, the Low-risk guard, four Attention
-Queue tests (lists a match, excludes resolved, excludes unflagged-but-actionable,
+`AlertEvent` was written), the already-resolved guard, the Low-risk guard, four Risk
+Review Queue tests (lists a match, excludes resolved, excludes unflagged-but-actionable,
 cross-tenant isolation), and three bulk-review tests (per-item status, all-or-nothing
 rollback, cross-tenant isolation). 773 backend tests total (whole suite), up from 767.
 
@@ -129,5 +137,5 @@ rollback, cross-tenant isolation). 773 backend tests total (whole suite), up fro
 - No Alert side effect from `escalate` (see above).
 - No `DataBound`-style configurable thresholds — the model's confidence is the only
   trigger, matching MomCare's existing "no rules engine" decision.
-- No separate `dashboard-kpis` endpoint — the Attention Queue's own pagination count
+- No separate `dashboard-kpis` endpoint — the Risk Review Queue's own pagination count
   serves that purpose.

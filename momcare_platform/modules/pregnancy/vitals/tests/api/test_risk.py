@@ -381,7 +381,7 @@ def test_risk_history_is_not_readable_across_hospitals(
     assert response.status_code == 404
 
 
-# ── Attention Queue ──────────────────────────────────────────────────────────
+# ── Risk Review Queue ────────────────────────────────────────────────────────
 def _flagged_assessment(pregnancy, *, review_status=RiskAssessment.REVIEW_PENDING):
     return RiskAssessment.objects.create(
         pregnancy=pregnancy,
@@ -392,17 +392,17 @@ def _flagged_assessment(pregnancy, *, review_status=RiskAssessment.REVIEW_PENDIN
     )
 
 
-def test_attention_queue_lists_a_patient_with_a_pending_flagged_assessment(
+def test_risk_review_queue_lists_a_patient_with_a_pending_flagged_assessment(
     client,
     make_hospital,
     pregnancy_for,
     auth,
 ):
-    hospital = make_hospital("Attention Queue Hospital")
+    hospital = make_hospital("Risk Review Queue Hospital")
     pregnancy = pregnancy_for(hospital)
     _flagged_assessment(pregnancy)
 
-    response = client.get("/api/attention-queue/", **auth(hospital.admin.email))
+    response = client.get("/api/risk-review-queue/", **auth(hospital.admin.email))
 
     assert response.status_code == 200
     body = response.json()
@@ -411,7 +411,7 @@ def test_attention_queue_lists_a_patient_with_a_pending_flagged_assessment(
     assert body["results"][0]["assessment"]["flagged_for_review"] is True
 
 
-def test_attention_queue_excludes_already_resolved_assessments(
+def test_risk_review_queue_excludes_already_resolved_assessments(
     client,
     make_hospital,
     pregnancy_for,
@@ -421,18 +421,18 @@ def test_attention_queue_excludes_already_resolved_assessments(
     pregnancy = pregnancy_for(hospital)
     _flagged_assessment(pregnancy, review_status=RiskAssessment.REVIEW_REVIEWED)
 
-    response = client.get("/api/attention-queue/", **auth(hospital.admin.email))
+    response = client.get("/api/risk-review-queue/", **auth(hospital.admin.email))
 
     assert response.json()["count"] == 0
 
 
-def test_attention_queue_excludes_unflagged_actionable_assessments(
+def test_risk_review_queue_excludes_unflagged_actionable_assessments(
     client,
     make_hospital,
     pregnancy_for,
     auth,
 ):
-    """needs_review is broader than the Attention Queue -- flagged_for_review
+    """needs_review is broader than the Risk Review Queue -- flagged_for_review
     (low model confidence) is a stricter trigger than plain non-Low/pending."""
     hospital = make_hospital("Unflagged Excluded Hospital")
     pregnancy = pregnancy_for(hospital)
@@ -443,18 +443,18 @@ def test_attention_queue_excludes_unflagged_actionable_assessments(
         flagged_for_review=False,
     )
 
-    response = client.get("/api/attention-queue/", **auth(hospital.admin.email))
+    response = client.get("/api/risk-review-queue/", **auth(hospital.admin.email))
 
     assert response.json()["count"] == 0
 
 
-def test_attention_queue_is_not_readable_across_hospitals(client, make_hospital, pregnancy_for, auth):
+def test_risk_review_queue_is_not_readable_across_hospitals(client, make_hospital, pregnancy_for, auth):
     alpha = make_hospital("Alpha Queue")
     beta = make_hospital("Beta Queue")
     beta_pregnancy = pregnancy_for(beta)
     _flagged_assessment(beta_pregnancy)
 
-    response = client.get("/api/attention-queue/", **auth(alpha.admin.email))
+    response = client.get("/api/risk-review-queue/", **auth(alpha.admin.email))
 
     assert response.json()["count"] == 0
 
