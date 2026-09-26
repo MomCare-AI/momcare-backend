@@ -2698,7 +2698,7 @@
           "response": []
         },
         {
-          "name": "Verify Risk Assessment",
+          "name": "Review Risk Assessment",
           "request": {
             "method": "POST",
             "header": [
@@ -2717,7 +2717,7 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/risk/{{assessment_id}}/verify/",
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/risk/{{assessment_id}}/review/",
               "host": [
                 "{{base_url}}"
               ],
@@ -2727,11 +2727,111 @@
                 "{{pregnancy_id}}",
                 "risk",
                 "{{assessment_id}}",
-                "verify",
+                "review",
                 ""
               ]
             },
-            "description": "Clinicians only (provider, nurse, care_manager) -- a hospital_admin cannot review a clinical assessment. `confirmed_risk_level` is required and must be one of low/medium/high. `review_status` is derived, not chosen: `confirmed` when it matches `final_risk_level`, `corrected` when it does not. The original `risk_level`/`final_risk_level` are never overwritten by a correction."
+            "description": "Clinicians only (provider, nurse, care_manager) -- a hospital_admin cannot review a clinical assessment. `confirmed_risk_level` is required and must be one of low/medium/high. Marks a pending, actionable (non-Low) assessment as reviewed -- no further action needed. Only pending assessments can be reviewed; calling this on an already-reviewed/escalated assessment is a 400. The original `risk_level`/`final_risk_level` are never overwritten."
+          },
+          "response": []
+        },
+        {
+          "name": "Escalate Risk Assessment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confirmed_risk_level\": \"high\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/risk/{{assessment_id}}/escalate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "risk",
+                "{{assessment_id}}",
+                "escalate",
+                ""
+              ]
+            },
+            "description": "Clinicians only. Marks a pending, actionable assessment as escalated -- a triage label only, no Alert side effect and no notification (MomCare's real escalation ladder is the separate Alert/AlertEvent system, which already runs independently). Same guards as Review: `confirmed_risk_level` required, only a still-pending assessment can be escalated."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Attention Queue",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/attention-queue/?assigned_to=me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "attention-queue",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "assigned_to",
+                  "value": "me",
+                  "description": "Optional -- only this clinician's own patients."
+                }
+              ]
+            },
+            "description": "Patients whose current pregnancy has at least one flagged (low model confidence), still-pending assessment -- whose vitals just crossed a threshold and nobody has looked yet. Paginated; the envelope's `count` doubles as the KPI number, same convention the Alerts list uses for its own `unacknowledged` badge. `?assigned_to=me` narrows to the caller's own care-team patients, same semantics as the Patients and Alerts lists."
+          },
+          "response": []
+        },
+        {
+          "name": "Bulk Review/Escalate Risk Assessments",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"assessment_id\": \"{{assessment_id}}\",\n      \"review_status\": \"reviewed\",\n      \"confirmed_risk_level\": \"high\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/risk/bulk-review/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "risk",
+                "bulk-review",
+                ""
+              ]
+            },
+            "description": "Review or escalate several pending assessments in one call. Each item picks its own target status, so one call can review some and escalate others. All-or-nothing: a bad `assessment_id` (not found, not accessible, already resolved, or not actionable) rolls back every write this call made."
           },
           "response": []
         }

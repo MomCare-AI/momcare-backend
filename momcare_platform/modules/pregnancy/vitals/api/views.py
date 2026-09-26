@@ -4,7 +4,10 @@ Everything here hangs off a pregnancy that is resolved through the caller's own
 hospital, so a reading can never be filed against another tenant's patient.
 """
 
+from collections.abc import Callable
+
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import OuterRef, Subquery
 from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
@@ -13,7 +16,10 @@ from rest_framework.views import APIView
 
 from momcare_platform.core.common.pagination import DefaultPagination
 from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
-from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
+from momcare_platform.core.common.scoping import (
+    OrganizationScopedQuerysetMixin,
+    scope_to_assigned_staff,
+)
 from momcare_platform.core.patients.models import Pregnancy
 from momcare_platform.modules.pregnancy.vitals.api.serializers import (
     DeviceAssignSerializer,
@@ -26,13 +32,16 @@ from momcare_platform.modules.pregnancy.vitals.models import Device, RiskAssessm
 from momcare_platform.modules.pregnancy.vitals.services import (
     MonitoringError,
     assign_device,
+    bulk_resolve_risk_reviews,
     compute_reading_statistics,
     compute_vitals_summary,
     current_risk,
+    escalate_risk,
     latest_readings,
     reassess_risk,
     resolve_custom_reading_range,
     resolve_reading_period,
+    review_risk,
     unassign_device,
 )
 
@@ -259,24 +268,23 @@ class RiskAssessmentView(MonitoringView):
         return Response(RiskAssessmentSerializer(assessment).data, status=status.HTTP_201_CREATED)
 
 
-class VerifyRiskView(MonitoringView):
-    """A clinician's review of one risk assessment: confirm the model's
-    answer, or correct it.
+class _RiskReviewActionView(MonitoringView):
+    """Shared body for ``ReviewRiskView``/``EscalateRiskView`` — same lookup
+    and ``confirmed_risk_level`` validation, differing only in which
+    ``review_status`` the resolver lands on. Split into two endpoints (rather
+    than one endpoint deriving the status) to match Neuro_RPM's own
+    ``review()``/``escalate()`` action split exactly — the clinician picks
+    which one applies, it isn't inferred from whether they agreed with the
+    model.
 
-    There is no "just seen, not confirmed" state — a ``confirmed_risk_level``
-    is required. An assessment nobody has agreed with or corrected has not
-    actually been reviewed, whatever a bare timestamp might imply.
-    ``review_status`` is derived here, not chosen by the caller: confirmed
-    when it matches ``final_risk_level``, corrected when it does not.
-
-    Clinicians only, which this docstring always claimed and the permissions
-    did not enforce. A hospital administrator is not required to have any
-    clinical training, and an assessment marked reviewed by somebody who could
-    not review it is worse than one left unreviewed — the queue would look
-    attended to.
+    Clinicians only. A hospital administrator is not required to have any
+    clinical training, and an assessment marked reviewed by somebody who
+    could not review it is worse than one left pending — the queue would
+    look attended to.
     """
 
     permission_classes = [IsAuthenticated, IsClinician]
+    resolver: Callable[..., RiskAssessment]
 
     def post(self, request, pregnancy_id, assessment_id):
         _, error = self.hospital_or_error(request)
@@ -299,19 +307,144 @@ class VerifyRiskView(MonitoringView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        assessment.confirmed_risk_level = confirmed
-        assessment.review_status = (
-            RiskAssessment.REVIEW_CONFIRMED
-            if confirmed == assessment.final_risk_level
-            else RiskAssessment.REVIEW_CORRECTED
-        )
-        assessment.verified_at = timezone.now()
-        assessment.verified_by = request.user
-        assessment.save(
-            update_fields=["confirmed_risk_level", "review_status", "verified_at", "verified_by"],
-        )
+        try:
+            assessment = self.resolver(assessment, confirmed_risk_level=confirmed, actor=request.user)
+        except MonitoringError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(RiskAssessmentSerializer(assessment).data)
+
+
+class ReviewRiskView(_RiskReviewActionView):
+    """Mark a pending assessment as reviewed — no further action needed."""
+
+    resolver = staticmethod(review_risk)
+
+
+class EscalateRiskView(_RiskReviewActionView):
+    """Mark a pending assessment as escalated — a triage label only. Matches
+    Neuro_RPM's own ``escalate()`` exactly: no Alert side effect, no
+    notification. MomCare's real escalation ladder (``Alert``/``AlertEvent``)
+    already runs independently of this field — see ``escalate_risk()``'s
+    docstring."""
+
+    resolver = staticmethod(escalate_risk)
+
+
+class AttentionQueueView(MonitoringView):
+    """Patients whose current pregnancy has at least one flagged, still-
+    pending assessment — "whose vitals just crossed a threshold and nobody
+    has looked yet." Adapted from Neuro_RPM's Reading Review Workflow
+    (``?workflow=reading_review`` on their Patient list + their
+    ``dashboard-kpis`` count) — one patient-centric list rather than a query
+    param on the Patient endpoint, since that's this project's own
+    convention for a standing queue (see ``AlertListView``, which the
+    scoping/pagination shape below mirrors exactly).
+
+    The ``count`` in the pagination envelope doubles as the KPI number —
+    same convention ``AlertListView`` already uses for its own
+    ``unacknowledged`` badge, so no separate counts-only endpoint is needed.
+    """
+
+    organization_lookup = "patient__location__organization"
+
+    def _scope_to_assigned(self, queryset, request):
+        return scope_to_assigned_staff(queryset, request, path_prefix="")
+
+    def get(self, request):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+
+        latest_flagged = RiskAssessment.objects.filter(
+            pregnancy=OuterRef("pk"),
+            flagged_for_review=True,
+            review_status=RiskAssessment.REVIEW_PENDING,
+        ).order_by("-assessed_at")
+
+        queryset = (
+            self.scope_to_organization(Pregnancy.objects.filter(status=Pregnancy.STATUS_ACTIVE))
+            .filter(
+                risk_assessments__flagged_for_review=True,
+                risk_assessments__review_status=RiskAssessment.REVIEW_PENDING,
+            )
+            .annotate(flagged_assessment_id=Subquery(latest_flagged.values("id")[:1]))
+            .select_related("patient")
+            .distinct()
+            .order_by("-created_at")
+        )
+        queryset = self._scope_to_assigned(queryset, request)
+
+        paginator = DefaultPagination()
+        page = list(paginator.paginate_queryset(queryset, request, view=self))
+
+        assessments = {
+            assessment.id: assessment
+            for assessment in RiskAssessment.objects.filter(
+                id__in=[pregnancy.flagged_assessment_id for pregnancy in page],
+            ).select_related("reading")
+        }
+        results = [
+            {
+                "patient_id": pregnancy.patient_id,
+                "patient_name": pregnancy.patient.full_name,
+                "pregnancy_id": pregnancy.id,
+                "assessment": RiskAssessmentSerializer(assessments[pregnancy.flagged_assessment_id]).data,
+            }
+            for pregnancy in page
+        ]
+        return paginator.get_paginated_response(results)
+
+
+class RiskBulkReviewView(MonitoringView):
+    """Review or escalate many pending assessments in one call — ported from
+    Neuro_RPM's ``bulk-review`` action. Body: ``{"items": [{"assessment_id":
+    <uuid>, "review_status": "reviewed" | "escalated", "confirmed_risk_level":
+    "low" | "medium" | "high"}, ...]}``.
+    """
+
+    permission_classes = [IsAuthenticated, IsClinician]
+    organization_lookup = "pregnancy__patient__location__organization"
+
+    def post(self, request):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+
+        raw_items = request.data.get("items")
+        if not isinstance(raw_items, list) or not raw_items:
+            return Response({"detail": "'items' must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+
+        status_targets = {"reviewed": RiskAssessment.REVIEW_REVIEWED, "escalated": RiskAssessment.REVIEW_ESCALATED}
+        valid_levels = {choice[0] for choice in RiskAssessment.LEVEL_CHOICES}
+        parsed_items = []
+        for index, entry in enumerate(raw_items):
+            if not isinstance(entry, dict) or "assessment_id" not in entry or "review_status" not in entry:
+                return Response(
+                    {"detail": f"Item {index}: must be an object with 'assessment_id' and 'review_status'."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            target = status_targets.get(str(entry.get("review_status")))
+            if target is None:
+                return Response(
+                    {"detail": f"Item {index}: review_status must be one of {sorted(status_targets)}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            confirmed = entry.get("confirmed_risk_level")
+            if confirmed not in valid_levels:
+                return Response(
+                    {"detail": f"Item {index}: confirmed_risk_level must be one of {sorted(valid_levels)}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            parsed_items.append((str(entry["assessment_id"]), target, confirmed))
+
+        queryset = self.scope_to_organization(RiskAssessment.objects.all())
+        try:
+            updated = bulk_resolve_risk_reviews(parsed_items, actor=request.user, queryset=queryset)
+        except MonitoringError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(RiskAssessmentSerializer(updated, many=True).data)
 
 
 class DeviceListCreateView(MonitoringView):

@@ -195,12 +195,20 @@ class RiskAssessment(UUIDPrimaryKeyModel):
     timing it drives), it never invents a 4th risk level the model cannot
     itself produce.
 
-    ``confirmed_risk_level`` is a doctor's correction, kept separate from
-    ``risk_level`` rather than overwriting it — the original automated
+    ``confirmed_risk_level`` is a doctor's own recorded answer, kept separate
+    from ``risk_level`` rather than overwriting it — the original automated
     judgement is never erased, even when it turns out to be wrong.
-    ``review_status`` names the three states of that process: unreviewed
-    (default, and the common permanent case for most assessments), confirmed
-    (a doctor agreed), or corrected (a doctor did not).
+    ``review_status`` is the triage state — pending (default, and the common
+    permanent case for most assessments), reviewed, or escalated — matching
+    Neuro_RPM's own ``PatientReading.ReviewStatus`` naming exactly (renamed
+    25 Sep 2026 from unreviewed/confirmed/corrected, which encoded a
+    different fact: whether the doctor agreed with the model, not how urgent
+    the case is). That "did they agree" fact isn't lost — it's still fully
+    recoverable by comparing ``confirmed_risk_level`` to ``final_risk_level``
+    whenever the former is set — it's just no longer what the status name
+    itself encodes. Which of the two terminal states an assessment lands in
+    is chosen by which action the clinician calls (``review`` or
+    ``escalate``), not derived from that comparison.
     """
 
     LEVEL_LOW = "low"
@@ -212,13 +220,13 @@ class RiskAssessment(UUIDPrimaryKeyModel):
         (LEVEL_HIGH, "High"),
     ]
 
-    REVIEW_UNREVIEWED = "unreviewed"
-    REVIEW_CONFIRMED = "confirmed"
-    REVIEW_CORRECTED = "corrected"
+    REVIEW_PENDING = "pending"
+    REVIEW_REVIEWED = "reviewed"
+    REVIEW_ESCALATED = "escalated"
     REVIEW_STATUS_CHOICES = [
-        (REVIEW_UNREVIEWED, "Unreviewed"),
-        (REVIEW_CONFIRMED, "Confirmed"),
-        (REVIEW_CORRECTED, "Corrected"),
+        (REVIEW_PENDING, "Pending"),
+        (REVIEW_REVIEWED, "Reviewed"),
+        (REVIEW_ESCALATED, "Escalated"),
     ]
 
     pregnancy = models.ForeignKey(
@@ -274,12 +282,14 @@ class RiskAssessment(UUIDPrimaryKeyModel):
     # The doctor's real, confirmed answer — never overwrites risk_level.
     confirmed_risk_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, blank=True)
     # Set only together with confirmed_risk_level, by the same action — there
-    # is no "seen but not confirmed" state. review_status is derived from
-    # comparing confirmed_risk_level to final_risk_level at that moment.
+    # is no "seen but not confirmed" state. Which terminal value this lands
+    # on (reviewed vs. escalated) is chosen by which action the clinician
+    # calls, not derived from comparing confirmed_risk_level to
+    # final_risk_level (see the class docstring).
     review_status = models.CharField(
         max_length=20,
         choices=REVIEW_STATUS_CHOICES,
-        default=REVIEW_UNREVIEWED,
+        default=REVIEW_PENDING,
         db_index=True,
     )
 
@@ -308,5 +318,6 @@ class RiskAssessment(UUIDPrimaryKeyModel):
 
     @property
     def needs_review(self) -> bool:
-        """An unreviewed non-low assessment is one no doctor has confirmed or corrected."""
-        return self.is_actionable and self.review_status == self.REVIEW_UNREVIEWED
+        """A pending non-low assessment is one nobody has reviewed or
+        escalated yet — the same rule the Attention Queue lists against."""
+        return self.is_actionable and self.review_status == self.REVIEW_PENDING

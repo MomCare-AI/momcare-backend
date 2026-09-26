@@ -87,12 +87,15 @@ from momcare_platform.modules.pregnancy.alerts.api.views import (
     AlertResolveView,
 )
 from momcare_platform.modules.pregnancy.vitals.api.views import (
+    AttentionQueueView,
     DeviceAssignView,
     DeviceListCreateView,
+    EscalateRiskView,
     LatestReadingsView,
     ReadingListCreateView,
+    ReviewRiskView,
     RiskAssessmentView,
-    VerifyRiskView,
+    RiskBulkReviewView,
     VitalsSummaryView,
 )
 
@@ -371,10 +374,20 @@ core_urlpatterns = [
         name="risk-assessments",
     ),
     re_path(
-        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/risk/(?P<assessment_id>[0-9a-f-]{36})/verify/?$",
-        VerifyRiskView.as_view(),
-        name="risk-verify",
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/risk/(?P<assessment_id>[0-9a-f-]{36})/review/?$",
+        ReviewRiskView.as_view(),
+        name="risk-review",
     ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/risk/(?P<assessment_id>[0-9a-f-]{36})/escalate/?$",
+        EscalateRiskView.as_view(),
+        name="risk-escalate",
+    ),
+    # Attention Queue -- patients with a flagged, still-pending assessment.
+    # Adapted from Neuro_RPM's Reading Review Workflow (see AttentionQueueView's
+    # own docstring for why this is a standing list rather than a query param).
+    re_path(r"^attention-queue/?$", AttentionQueueView.as_view(), name="attention-queue"),
+    re_path(r"^risk/bulk-review/?$", RiskBulkReviewView.as_view(), name="risk-bulk-review"),
     # Clinical contact logging -- hangs off a patient, not a pregnancy (see
     # core/monitoring/models.py's own docstring for why): a patient can
     # exist with no pregnancy yet, and a note logged between two pregnancies

@@ -84,10 +84,11 @@ def reassess_risk(pregnancy) -> RiskAssessment | None:
       and this hospital's population needs the more cautious reading — see
       ``core.common.regions``.
     - A confidence below this hospital's threshold (``Organization.
-      effective_confidence_threshold``, 70% platform default) flags the row
-      for review and emails the assigned clinician only — never the patient.
-      The patient still sees the result; a flag means a doctor should look
-      again, not that anything is being withheld.
+      effective_confidence_threshold``, 80% platform default) flags the row
+      for review — no email fires for this, by design (see MEMORY.md §"no
+      email leg"). The patient still sees the result; a flag means a doctor
+      should look again via the Attention Queue, not that anything is being
+      withheld.
 
     Scoring and alerting are one transaction: an assessment saying "high"
     with no alert to match is a state this system must not be able to reach.
@@ -142,6 +143,116 @@ def reassess_risk(pregnancy) -> RiskAssessment | None:
 def current_risk(pregnancy) -> RiskAssessment | None:
     """The standing judgement — the most recent assessment, whatever its level."""
     return pregnancy.risk_assessments.order_by("-assessed_at").first()
+
+
+# ── Risk review workflow ─────────────────────────────────────────────────────
+# Adapted from Neuro_RPM's Reading Review workflow (patients/services.py
+# resolve_reading()/review_reading()/escalate_reading()) — same pending ->
+# reviewed/escalated shape and the same "already resolved" guard, applied to
+# RiskAssessment instead of PatientReading since MomCare's trigger is the
+# trained model's confidence, not a configurable DataBound threshold (MomCare
+# deliberately has no such rules engine — see MEMORY.md's "no rules engine"
+# decision). Unlike Neuro_RPM, "escalated" here is still just a label — no
+# Alert side effect — matching what Neuro_RPM's own escalate() actually does
+# (nothing beyond the status), a deliberate choice confirmed with the user
+# rather than an oversight.
+
+
+def resolve_risk_review(assessment, *, new_status, confirmed_risk_level, actor) -> RiskAssessment:
+    """Move a pending, actionable assessment to reviewed or escalated.
+
+    Only actionable (non-Low) assessments still Pending can be resolved —
+    matching Neuro_RPM's ``resolve_reading()`` guard exactly. ``confirmed_risk_level``
+    is required on both actions, not optional the way Neuro_RPM's plain
+    review/escalate are — MomCare's own deliberate rule (see
+    ``VerifyRiskView``'s former docstring): there is no "just seen, not
+    confirmed" state.
+    """
+    if not assessment.is_actionable:
+        raise MonitoringError("Only actionable (non-Low) assessments can be reviewed.")
+    if assessment.review_status != RiskAssessment.REVIEW_PENDING:
+        raise MonitoringError("This assessment has already been resolved.")
+
+    assessment.confirmed_risk_level = confirmed_risk_level
+    assessment.review_status = new_status
+    assessment.verified_at = timezone.now()
+    assessment.verified_by = actor
+    assessment.save(
+        update_fields=["confirmed_risk_level", "review_status", "verified_at", "verified_by"],
+    )
+    return assessment
+
+
+def review_risk(assessment, *, confirmed_risk_level, actor=None) -> RiskAssessment:
+    """Mark a pending assessment as reviewed — no further action needed."""
+    return resolve_risk_review(
+        assessment,
+        new_status=RiskAssessment.REVIEW_REVIEWED,
+        confirmed_risk_level=confirmed_risk_level,
+        actor=actor,
+    )
+
+
+def escalate_risk(assessment, *, confirmed_risk_level, actor=None) -> RiskAssessment:
+    """Mark a pending assessment as escalated — a triage label only, exactly
+    matching what Neuro_RPM's own ``escalate_reading()`` does: no Alert side
+    effect, no notification. MomCare's real escalation ladder (``Alert``/
+    ``AlertEvent``) already runs independently of this field."""
+    return resolve_risk_review(
+        assessment,
+        new_status=RiskAssessment.REVIEW_ESCALATED,
+        confirmed_risk_level=confirmed_risk_level,
+        actor=actor,
+    )
+
+
+@transaction.atomic
+def bulk_resolve_risk_reviews(items, *, actor, queryset) -> list[RiskAssessment]:
+    """Resolve many pending assessments, each to its own target status, in one
+    atomic transaction — ported from Neuro_RPM's ``bulk_resolve_readings()``.
+
+    ``items`` is an iterable of ``(assessment_id, new_status, confirmed_risk_level)``
+    triples, ``new_status`` already resolved to ``RiskAssessment.REVIEW_REVIEWED``/
+    ``REVIEW_ESCALATED``. An ``assessment_id`` repeated with the same status
+    collapses to one write; repeated with a different status is an
+    unresolvable conflict and raises before anything is looked up. Any
+    failure (not pending, not actionable, or not found in ``queryset`` — the
+    caller's own hospital/assignment-scoped access) rolls back every write
+    this call made, matching Neuro_RPM's own all-or-nothing behaviour.
+    """
+    status_by_id: dict[str, str] = {}
+    confirmed_by_id: dict[str, str] = {}
+    ordered_ids: list[str] = []
+    conflicting_ids: list[str] = []
+    for assessment_id, new_status, confirmed_risk_level in items:
+        aid = str(assessment_id)
+        if aid not in status_by_id:
+            status_by_id[aid] = new_status
+            confirmed_by_id[aid] = confirmed_risk_level
+            ordered_ids.append(aid)
+        elif status_by_id[aid] != new_status:
+            conflicting_ids.append(aid)
+
+    if conflicting_ids:
+        msg = [f"Assessment {aid} was given more than one target status." for aid in dict.fromkeys(conflicting_ids)]
+        raise MonitoringError(" ".join(msg))
+
+    assessments = list(queryset.filter(pk__in=ordered_ids))
+    found_ids = {str(assessment.pk) for assessment in assessments}
+    missing_ids = [aid for aid in ordered_ids if aid not in found_ids]
+    if missing_ids:
+        msg = [f"Assessment not found or not accessible: {aid}" for aid in missing_ids]
+        raise MonitoringError(" ".join(msg))
+
+    assessments_by_id = {str(assessment.pk): assessment for assessment in assessments}
+    for aid in ordered_ids:
+        resolve_risk_review(
+            assessments_by_id[aid],
+            new_status=status_by_id[aid],
+            confirmed_risk_level=confirmed_by_id[aid],
+            actor=actor,
+        )
+    return [assessments_by_id[aid] for aid in ordered_ids]
 
 
 def latest_readings(pregnancy) -> VitalReading | None:

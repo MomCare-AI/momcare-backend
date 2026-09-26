@@ -200,7 +200,7 @@ def test_the_clinical_categories_are_reachable_via_the_risk_endpoint(
     assert current["hemoglobin_category"] == "Severe Anemia"
 
 
-def test_verifying_records_who_reviewed_it(
+def test_reviewing_records_who_reviewed_it(
     client,
     make_hospital,
     make_staff,
@@ -208,14 +208,14 @@ def test_verifying_records_who_reviewed_it(
     auth,
     _no_auto_scoring,
 ):
-    """A clinician, because verifying is a claim to have reviewed the case.
+    """A clinician, because reviewing is a claim to have looked at the case.
 
     A hospital administrator is not required to have clinical training, and an
     assessment marked reviewed by somebody who could not review it is worse than
-    one left unreviewed - the queue would look attended to.
+    one left pending - the queue would look attended to.
     """
-    hospital = make_hospital("Verify Hospital")
-    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@verifyrisk.test")
+    hospital = make_hospital("Review Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@reviewrisk.test")
     pregnancy = pregnancy_for(hospital)
     add_reading(pregnancy, HIGH_VITALS)
     assessment = reassess_risk(pregnancy)
@@ -223,7 +223,7 @@ def test_verifying_records_who_reviewed_it(
     assert assessment.needs_review is True
 
     response = client.post(
-        f"/api/pregnancies/{pregnancy.id}/risk/{assessment.id}/verify/",
+        f"/api/pregnancies/{pregnancy.id}/risk/{assessment.id}/review/",
         data=json.dumps({"confirmed_risk_level": "high"}),
         content_type="application/json",
         **auth(doctor.email),
@@ -232,7 +232,102 @@ def test_verifying_records_who_reviewed_it(
     assert response.status_code == 200
     assessment.refresh_from_db()
     assert assessment.verified_by == doctor
+    assert assessment.review_status == RiskAssessment.REVIEW_REVIEWED
     assert assessment.needs_review is False
+
+
+def test_escalating_is_a_label_only_no_alert_side_effect(
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
+    _no_auto_scoring,
+):
+    """Matches Neuro_RPM's own escalate() exactly: only the status changes.
+    The real Alert ladder is untouched by this action."""
+    hospital = make_hospital("Escalate Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@escalaterisk.test")
+    pregnancy = pregnancy_for(hospital, clinician=doctor)
+    add_reading(pregnancy, HIGH_VITALS)
+    assessment = reassess_risk(pregnancy)
+    assert assessment is not None
+    alert = Alert.objects.get(pregnancy=pregnancy)
+    tier_before = alert.tier
+
+    response = client.post(
+        f"/api/pregnancies/{pregnancy.id}/risk/{assessment.id}/escalate/",
+        data=json.dumps({"confirmed_risk_level": "high"}),
+        content_type="application/json",
+        **auth(doctor.email),
+    )
+
+    assert response.status_code == 200
+    assessment.refresh_from_db()
+    assert assessment.review_status == RiskAssessment.REVIEW_ESCALATED
+    alert.refresh_from_db()
+    assert alert.tier == tier_before
+    assert alert.events.filter(kind="escalated", actor=doctor).count() == 0
+
+
+def test_a_resolved_assessment_cannot_be_reviewed_again(
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
+    _no_auto_scoring,
+):
+    hospital = make_hospital("Already Resolved Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@resolved.test")
+    pregnancy = pregnancy_for(hospital)
+    add_reading(pregnancy, HIGH_VITALS)
+    assessment = reassess_risk(pregnancy)
+    assert assessment is not None
+    client.post(
+        f"/api/pregnancies/{pregnancy.id}/risk/{assessment.id}/review/",
+        data=json.dumps({"confirmed_risk_level": "high"}),
+        content_type="application/json",
+        **auth(doctor.email),
+    )
+
+    response = client.post(
+        f"/api/pregnancies/{pregnancy.id}/risk/{assessment.id}/escalate/",
+        data=json.dumps({"confirmed_risk_level": "high"}),
+        content_type="application/json",
+        **auth(doctor.email),
+    )
+
+    assert response.status_code == 400
+    assert "already been resolved" in response.json()["detail"]
+
+
+def test_a_low_risk_assessment_cannot_be_reviewed(
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
+    _no_auto_scoring,
+):
+    """Only actionable (non-Low) assessments enter the review workflow at all."""
+    hospital = make_hospital("Low Risk Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@lowrisk.test")
+    pregnancy = pregnancy_for(hospital)
+    add_reading(pregnancy, LOW_VITALS)
+    assessment = reassess_risk(pregnancy)
+    assert assessment is not None
+    assert assessment.is_actionable is False
+
+    response = client.post(
+        f"/api/pregnancies/{pregnancy.id}/risk/{assessment.id}/review/",
+        data=json.dumps({"confirmed_risk_level": "low"}),
+        content_type="application/json",
+        **auth(doctor.email),
+    )
+
+    assert response.status_code == 400
+    assert "actionable" in response.json()["detail"]
 
 
 def test_acknowledging_the_alert_records_who_looked(
@@ -284,3 +379,202 @@ def test_risk_history_is_not_readable_across_hospitals(
     )
 
     assert response.status_code == 404
+
+
+# ── Attention Queue ──────────────────────────────────────────────────────────
+def _flagged_assessment(pregnancy, *, review_status=RiskAssessment.REVIEW_PENDING):
+    return RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=RiskAssessment.LEVEL_HIGH,
+        final_risk_level=RiskAssessment.LEVEL_HIGH,
+        flagged_for_review=True,
+        review_status=review_status,
+    )
+
+
+def test_attention_queue_lists_a_patient_with_a_pending_flagged_assessment(
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
+):
+    hospital = make_hospital("Attention Queue Hospital")
+    pregnancy = pregnancy_for(hospital)
+    _flagged_assessment(pregnancy)
+
+    response = client.get("/api/attention-queue/", **auth(hospital.admin.email))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+    assert body["results"][0]["pregnancy_id"] == str(pregnancy.id)
+    assert body["results"][0]["assessment"]["flagged_for_review"] is True
+
+
+def test_attention_queue_excludes_already_resolved_assessments(
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
+):
+    hospital = make_hospital("Resolved Excluded Hospital")
+    pregnancy = pregnancy_for(hospital)
+    _flagged_assessment(pregnancy, review_status=RiskAssessment.REVIEW_REVIEWED)
+
+    response = client.get("/api/attention-queue/", **auth(hospital.admin.email))
+
+    assert response.json()["count"] == 0
+
+
+def test_attention_queue_excludes_unflagged_actionable_assessments(
+    client,
+    make_hospital,
+    pregnancy_for,
+    auth,
+):
+    """needs_review is broader than the Attention Queue -- flagged_for_review
+    (low model confidence) is a stricter trigger than plain non-Low/pending."""
+    hospital = make_hospital("Unflagged Excluded Hospital")
+    pregnancy = pregnancy_for(hospital)
+    RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=RiskAssessment.LEVEL_HIGH,
+        final_risk_level=RiskAssessment.LEVEL_HIGH,
+        flagged_for_review=False,
+    )
+
+    response = client.get("/api/attention-queue/", **auth(hospital.admin.email))
+
+    assert response.json()["count"] == 0
+
+
+def test_attention_queue_is_not_readable_across_hospitals(client, make_hospital, pregnancy_for, auth):
+    alpha = make_hospital("Alpha Queue")
+    beta = make_hospital("Beta Queue")
+    beta_pregnancy = pregnancy_for(beta)
+    _flagged_assessment(beta_pregnancy)
+
+    response = client.get("/api/attention-queue/", **auth(alpha.admin.email))
+
+    assert response.json()["count"] == 0
+
+
+# ── Bulk review ──────────────────────────────────────────────────────────────
+def test_bulk_review_resolves_each_item_to_its_own_status(
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
+):
+    hospital = make_hospital("Bulk Review Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@bulkreview.test")
+    pregnancy_a = pregnancy_for(hospital, first_name="Amina")
+    pregnancy_b = pregnancy_for(hospital, first_name="Bushra")
+    assessment_a = _flagged_assessment(pregnancy_a)
+    assessment_b = _flagged_assessment(pregnancy_b)
+
+    response = client.post(
+        "/api/risk/bulk-review/",
+        data=json.dumps(
+            {
+                "items": [
+                    {
+                        "assessment_id": str(assessment_a.id),
+                        "review_status": "reviewed",
+                        "confirmed_risk_level": "high",
+                    },
+                    {
+                        "assessment_id": str(assessment_b.id),
+                        "review_status": "escalated",
+                        "confirmed_risk_level": "high",
+                    },
+                ],
+            },
+        ),
+        content_type="application/json",
+        **auth(doctor.email),
+    )
+
+    assert response.status_code == 200
+    assessment_a.refresh_from_db()
+    assessment_b.refresh_from_db()
+    assert assessment_a.review_status == RiskAssessment.REVIEW_REVIEWED
+    assert assessment_b.review_status == RiskAssessment.REVIEW_ESCALATED
+    assert assessment_a.verified_by == doctor
+    assert assessment_b.verified_by == doctor
+
+
+def test_bulk_review_rolls_back_entirely_on_one_bad_item(
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
+):
+    hospital = make_hospital("Bulk Rollback Hospital")
+    doctor = make_staff(hospital.org, settings.ROLE_PROVIDER, email="doctor@bulkrollback.test")
+    pregnancy_a = pregnancy_for(hospital, first_name="Amina")
+    pregnancy_b = pregnancy_for(hospital, first_name="Bushra")
+    assessment_a = _flagged_assessment(pregnancy_a)
+    already_resolved = _flagged_assessment(pregnancy_b, review_status=RiskAssessment.REVIEW_REVIEWED)
+
+    response = client.post(
+        "/api/risk/bulk-review/",
+        data=json.dumps(
+            {
+                "items": [
+                    {
+                        "assessment_id": str(assessment_a.id),
+                        "review_status": "reviewed",
+                        "confirmed_risk_level": "high",
+                    },
+                    {
+                        "assessment_id": str(already_resolved.id),
+                        "review_status": "reviewed",
+                        "confirmed_risk_level": "high",
+                    },
+                ],
+            },
+        ),
+        content_type="application/json",
+        **auth(doctor.email),
+    )
+
+    assert response.status_code == 400
+    assessment_a.refresh_from_db()
+    assert assessment_a.review_status == RiskAssessment.REVIEW_PENDING
+
+
+def test_bulk_review_cannot_touch_another_hospitals_assessment(
+    client,
+    make_hospital,
+    make_staff,
+    pregnancy_for,
+    auth,
+):
+    alpha = make_hospital("Alpha Bulk")
+    beta = make_hospital("Beta Bulk")
+    doctor = make_staff(alpha.org, settings.ROLE_PROVIDER, email="doctor@alphabulk.test")
+    beta_pregnancy = pregnancy_for(beta)
+    beta_assessment = _flagged_assessment(beta_pregnancy)
+
+    response = client.post(
+        "/api/risk/bulk-review/",
+        data=json.dumps(
+            {
+                "items": [
+                    {
+                        "assessment_id": str(beta_assessment.id),
+                        "review_status": "reviewed",
+                        "confirmed_risk_level": "high",
+                    },
+                ],
+            },
+        ),
+        content_type="application/json",
+        **auth(doctor.email),
+    )
+
+    assert response.status_code == 400
+    assert "not found" in response.json()["detail"]
