@@ -399,7 +399,9 @@ PASSWORD_RESET_TIMEOUT = 3600
 # again after the config row's first creation.
 OPENROUTER_API_KEY = env("DJANGO_OPENROUTER_API_KEY", default="")
 # Seed values only -- used the first time AIProviderConfig's row is created.
-MOMCARE_AI_SUMMARY_DEFAULT_MODEL = env("DJANGO_MOMCARE_AI_SUMMARY_DEFAULT_MODEL", default="google/gemini-2.0-flash-001")
+MOMCARE_AI_SUMMARY_DEFAULT_MODEL = env(
+    "DJANGO_MOMCARE_AI_SUMMARY_DEFAULT_MODEL", default="google/gemini-2.0-flash-001"
+)
 MOMCARE_AI_SUMMARY_DEFAULT_MAX_WORDS = env.int("DJANGO_MOMCARE_AI_SUMMARY_DEFAULT_MAX_WORDS", default=150)
 # How stale an AISummary must be before the periodic refresh command touches
 # it. Low-stakes, easy to tune once real cost data exists.

@@ -4,7 +4,6 @@ call in this suite, same posture as core.common.mail's own tests."""
 from unittest.mock import patch
 
 import httpx
-import pytest
 
 from momcare_platform.core.ai.openrouter_client import generate, list_available_models
 

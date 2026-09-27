@@ -61,7 +61,7 @@ def test_patch_with_a_valid_model_succeeds(client, platform_admin_auth):
         )
 
     assert response.status_code == 200
-    assert AIProviderConfig.objects.first().current_model == "deepseek/deepseek-chat"
+    assert AIProviderConfig.objects.get().current_model == "deepseek/deepseek-chat"
 
 
 def test_patch_with_a_model_not_in_the_live_catalog_is_rejected(client, platform_admin_auth):
@@ -76,7 +76,7 @@ def test_patch_with_a_model_not_in_the_live_catalog_is_rejected(client, platform
         )
 
     assert response.status_code == 400
-    assert AIProviderConfig.objects.first().current_model == "google/gemini-2.0-flash-001"
+    assert AIProviderConfig.objects.get().current_model == "google/gemini-2.0-flash-001"
 
 
 def test_a_hospital_admin_is_refused(client, make_hospital, auth):

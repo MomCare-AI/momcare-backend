@@ -115,9 +115,7 @@ _DEACTIVATED_CLOSING = (
 
 
 def _build_prompt(snapshot: dict, config: AIProviderConfig, org_instructions: str, *, deactivated: bool) -> str:
-    data_lines = "\n".join(
-        f"- {key}: {value}" for key, value in snapshot.items() if value not in (None, "", [], {})
-    )
+    data_lines = "\n".join(f"- {key}: {value}" for key, value in snapshot.items() if value not in (None, "", [], {}))
     sections = [
         _BASE_PROMPT.format(
             max_words=config.max_words,
@@ -196,10 +194,14 @@ def maybe_regenerate_for_risk_change(risk_assessment) -> None:
     stale value.
     """
     patient_id = risk_assessment.pregnancy.patient_id
-    stored_level = AISummary.objects.filter(patient_id=patient_id).values_list(
-        "risk_level_at_generation",
-        flat=True,
-    ).first()
+    stored_level = (
+        AISummary.objects.filter(patient_id=patient_id)
+        .values_list(
+            "risk_level_at_generation",
+            flat=True,
+        )
+        .first()
+    )
     if stored_level == risk_assessment.final_risk_level:
         return
     generate_patient_summary(risk_assessment.pregnancy.patient)

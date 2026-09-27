@@ -15,6 +15,8 @@ Safe to run as often as you like: a summary generated moments ago is simply
 skipped until it goes stale again.
 """
 
+from datetime import timedelta
+
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db.models import Q
@@ -29,7 +31,7 @@ class Command(BaseCommand):
     help = "Refresh any active patient's AI Summary that is missing or older than the configured staleness window."
 
     def handle(self, *args, **options):
-        cutoff = timezone.now() - timezone.timedelta(hours=settings.MOMCARE_AI_SUMMARY_REFRESH_HOURS)
+        cutoff = timezone.now() - timedelta(hours=settings.MOMCARE_AI_SUMMARY_REFRESH_HOURS)
 
         # This command sweeps every hospital's active patients in one pass,
         # by design -- same sanctioned bypass escalate_alerts already uses.
