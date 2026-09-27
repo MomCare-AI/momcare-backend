@@ -176,3 +176,30 @@ def generate_patient_summary(patient, *, deactivated: bool = False) -> None:
                 "risk_level_at_generation": snapshot["current_risk_level"] or "",
             },
         )
+
+
+def maybe_regenerate_for_risk_change(risk_assessment) -> None:
+    """Connected to RiskAssessment's post_save in AiConfig.ready() (see
+    apps.py) -- fires on every reading (reassess_risk() writes one row per
+    reading, unconditionally), but only actually regenerates when the level
+    genuinely moved since the cached summary was written. Most routine
+    readings don't change the risk level, so this stays cheap.
+
+    Reads the stored level via a plain queryset lookup keyed on patient_id,
+    not `patient.ai_summary` -- a reverse OneToOne accessor Django caches on
+    the Patient instance the first time it's read (including implicitly,
+    e.g. inside AISummary.objects.update_or_create(patient=patient, ...)).
+    Any later out-of-band write to that same AISummary row (a queryset
+    .update(), or a second generate_patient_summary() call reached through a
+    different Patient object earlier in the same request) never invalidates
+    that cache, so reading through it here could silently compare against a
+    stale value.
+    """
+    patient_id = risk_assessment.pregnancy.patient_id
+    stored_level = AISummary.objects.filter(patient_id=patient_id).values_list(
+        "risk_level_at_generation",
+        flat=True,
+    ).first()
+    if stored_level == risk_assessment.final_risk_level:
+        return
+    generate_patient_summary(risk_assessment.pregnancy.patient)
