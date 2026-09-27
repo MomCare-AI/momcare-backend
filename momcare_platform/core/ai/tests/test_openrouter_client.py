@@ -13,7 +13,8 @@ def _mock_response(json_data, status_code=200):
     return httpx.Response(status_code, json=json_data, request=request)
 
 
-def test_generate_returns_the_model_text_on_success():
+def test_generate_returns_the_model_text_on_success(settings):
+    settings.OPENROUTER_API_KEY = "test-key"
     payload = {"choices": [{"message": {"content": "A short summary."}}]}
     with patch("httpx.post", return_value=_mock_response(payload)):
         result = generate("some prompt", model="google/gemini-2.0-flash-001", max_tokens=400)
@@ -21,18 +22,29 @@ def test_generate_returns_the_model_text_on_success():
     assert result == "A short summary."
 
 
-def test_generate_returns_none_on_http_error_and_never_raises():
+def test_generate_returns_none_on_http_error_and_never_raises(settings):
+    settings.OPENROUTER_API_KEY = "test-key"
     with patch("httpx.post", side_effect=httpx.ConnectTimeout("timed out")):
         result = generate("some prompt", model="google/gemini-2.0-flash-001", max_tokens=400)
 
     assert result is None
 
 
-def test_generate_returns_none_on_malformed_response():
+def test_generate_returns_none_on_malformed_response(settings):
+    settings.OPENROUTER_API_KEY = "test-key"
     with patch("httpx.post", return_value=_mock_response({"unexpected": "shape"})):
         result = generate("some prompt", model="google/gemini-2.0-flash-001", max_tokens=400)
 
     assert result is None
+
+
+def test_generate_short_circuits_when_no_api_key_is_configured(settings):
+    settings.OPENROUTER_API_KEY = ""
+    with patch("httpx.post") as mock_post:
+        result = generate("some prompt", model="google/gemini-2.0-flash-001", max_tokens=400)
+
+    assert result is None
+    assert not mock_post.called
 
 
 def test_list_available_models_returns_ids_and_metadata():

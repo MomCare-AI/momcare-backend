@@ -7,6 +7,7 @@ tells you nothing about isolation.
 
 from collections.abc import Generator
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from django.conf import settings
@@ -22,6 +23,23 @@ DEFAULT_PASSWORD = "TestPass!2026"
 @pytest.fixture(autouse=True)
 def _media_storage(settings, tmpdir) -> None:
     settings.MEDIA_ROOT = tmpdir.strpath
+
+
+@pytest.fixture(autouse=True)
+def _no_real_openrouter_calls() -> Generator[None]:
+    """The AI Summary feature's enrollment trigger fires on every Patient
+    creation, unconditionally -- so without this, every test in the whole
+    suite that creates a patient (not just core.ai's own tests) would make a
+    real outbound HTTP call, or crash on an unconfigured MagicMock response
+    (see core/ai/tests/test_never_hits_real_network.py). A test that wants
+    a specific return value patches the same target explicitly inside its
+    own body -- that patch nests correctly on top of this one.
+    """
+    with (
+        patch("momcare_platform.core.ai.openrouter_client.generate", return_value=None),
+        patch("momcare_platform.core.ai.openrouter_client.list_available_models", return_value=None),
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

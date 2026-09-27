@@ -23,6 +23,9 @@ def generate(prompt: str, *, model: str, max_tokens: int) -> str | None:
     the caller (read from AIProviderConfig) -- this function has zero
     model-specific branching, which is what makes switching models a
     zero-logic-change operation."""
+    if not settings.OPENROUTER_API_KEY:
+        logger.warning("OPENROUTER_API_KEY is not set -- skipping generate() call")
+        return None
     try:
         response = httpx.post(
             f"{_BASE_URL}/chat/completions",
