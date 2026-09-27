@@ -12,6 +12,11 @@ class AIProviderConfig(UUIDPrimaryKeyModel, TimeStampedModel):
     prompt. See docs/design/2026-09-27-ai-summary-design.md.
     """
 
+    # Standard Django singleton pattern: every row is forced to the same
+    # value, so a unique constraint on it makes a second row impossible at
+    # the database level (a race that two concurrent first-callers of
+    # get_ai_config() could otherwise both win, each creating their own row).
+    singleton_id = models.PositiveSmallIntegerField(default=1, unique=True, editable=False)
     current_model = models.CharField(
         max_length=200,
         help_text="An OpenRouter model id, e.g. 'google/gemini-2.0-flash-001'.",

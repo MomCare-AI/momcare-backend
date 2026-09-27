@@ -1,8 +1,16 @@
-"""Two of the four ways an AI Summary generation can be triggered -- see
+"""One of the four ways an AI Summary generation can be triggered -- see
 docs/design/2026-09-27-ai-summary-design.md's Triggers section. The other
-two are core/ai/management/commands/refresh_ai_summaries.py (periodic) and a
-direct call inside core.patients.services.deactivate_patient() (one-time,
-core-to-core, no signal needed there).
+three are core/ai/management/commands/refresh_ai_summaries.py (periodic) and
+direct calls inside core.patients.services.onboard_patient() (enrollment)
+and deactivate_patient() (deactivation) -- both core-to-core, no signal
+needed there.
+
+Enrollment is a direct call, not a Patient post_save signal, on purpose: a
+post_save signal fires the instant Patient.objects.create() runs, which is
+*before* onboard_patient() creates the pregnancy for a patient onboarded
+with obstetric data -- so the very first summary would always describe her
+as having no pregnancy at all. Calling generate_patient_summary() explicitly
+at the end of onboard_patient(), after the pregnancy exists, avoids that.
 
 There is deliberately no manual "regenerate" endpoint -- these triggers, plus
 the periodic command, are the only paths that may call generate_patient_summary().
@@ -10,21 +18,7 @@ the periodic command, are the only paths that may call generate_patient_summary(
 
 import logging
 
-from django.db.models.signals import post_save
-from django.dispatch import receiver
-
-from momcare_platform.core.patients.models import Patient
-
 logger = logging.getLogger(__name__)
-
-
-@receiver(post_save, sender=Patient, dispatch_uid="ai_generate_summary_on_patient_creation")
-def generate_summary_on_patient_creation(sender, instance, created, **kwargs):
-    if not created:
-        return
-    from momcare_platform.core.ai.services import generate_patient_summary  # noqa: PLC0415
-
-    generate_patient_summary(instance)
 
 
 def on_risk_assessment_saved(sender, instance, created, **kwargs):

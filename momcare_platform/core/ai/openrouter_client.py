@@ -12,10 +12,12 @@ import logging
 
 import httpx
 from django.conf import settings
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://openrouter.ai/api/v1"
+_CATALOG_CACHE_KEY = "ai.openrouter_client.last_known_catalog"
 
 
 def generate(prompt: str, *, model: str, max_tokens: int) -> str | None:
@@ -35,7 +37,11 @@ def generate(prompt: str, *, model: str, max_tokens: int) -> str | None:
                 "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
             },
-            timeout=30.0,
+            # Kept short (matching list_available_models()'s own timeout) --
+            # no lock or transaction is held during this call (see
+            # generate_patient_summary()), but a 2-worker gunicorn still ties
+            # up one whole worker for as long as this runs.
+            timeout=10.0,
         )
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
@@ -47,15 +53,22 @@ def generate(prompt: str, *, model: str, max_tokens: int) -> str | None:
 def list_available_models() -> list[dict] | None:
     """The live model catalog -- used to validate AIProviderConfig.current_model
     on write (see core.platform_admin's config endpoint) and to power the
-    platform-admin picker UI. Never trust a cached/hardcoded model list here;
-    the whole point is catching a model that stopped being served."""
+    platform-admin picker UI. Always fetched fresh, never served from cache
+    on a successful call -- the whole point is catching a model that stopped
+    being served. Only on failure does it fall back to whatever catalog was
+    last fetched successfully (design doc: 'falls back to whatever was
+    fetched most recently rather than blocking the page'), rather than
+    treating a brief OpenRouter outage as an outright empty catalog.
+    """
     try:
         response = httpx.get(f"{_BASE_URL}/models", timeout=10.0)
         response.raise_for_status()
-        return [
+        catalog = [
             {"id": m["id"], "pricing": m.get("pricing"), "context_length": m.get("context_length")}
             for m in response.json()["data"]
         ]
+        cache.set(_CATALOG_CACHE_KEY, catalog, timeout=None)
+        return catalog
     except Exception:
         logger.exception("OpenRouter list_available_models() call failed")
-        return None
+        return cache.get(_CATALOG_CACHE_KEY)

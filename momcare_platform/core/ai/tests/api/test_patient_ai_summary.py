@@ -68,3 +68,17 @@ def test_another_hospitals_admin_gets_404_not_403(client, make_hospital, patient
     response = client.get(summary_url(patient.id), **auth(other_hospital.admin.email))
 
     assert response.status_code == 404
+
+
+def test_a_provider_with_no_location_assignment_can_still_read_it(client, patient, auth, make_staff):
+    """Important review finding: this view used LocationScopedQuerysetMixin
+    while PatientDetailView (and every other patient-detail-adjacent view)
+    uses organization scoping -- so a provider with no location assigned, or
+    assigned to a different location than this patient's, could read the
+    patient's own detail page but get a 404 on her AI summary."""
+    provider = make_staff(patient.organization, settings.ROLE_PROVIDER, "noloc@aisummaryendpoint.test")
+
+    response = client.get(summary_url(patient.id), **auth(provider.email))
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "Enrollment summary."

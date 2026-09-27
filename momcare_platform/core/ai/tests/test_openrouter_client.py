@@ -68,3 +68,24 @@ def test_list_available_models_returns_none_on_failure():
         result = list_available_models()
 
     assert result is None
+
+
+def test_list_available_models_falls_back_to_the_last_successful_catalog(settings):
+    """Design doc: 'If the catalog is briefly unreachable, the endpoint falls
+    back to whatever was fetched most recently rather than blocking the
+    page.' The client had no such fallback -- every failure returned None
+    regardless of a previous success."""
+    from django.core.cache import cache
+
+    cache.clear()
+    payload = {
+        "data": [{"id": "google/gemini-2.0-flash-001", "pricing": {"prompt": "0.0001"}, "context_length": 128000}],
+    }
+    with patch("httpx.get", return_value=_mock_response(payload)):
+        first_call = list_available_models()
+    assert first_call is not None
+
+    with patch("httpx.get", side_effect=httpx.ConnectTimeout("timed out")):
+        second_call = list_available_models()
+
+    assert second_call == first_call

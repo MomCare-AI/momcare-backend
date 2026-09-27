@@ -35,14 +35,24 @@ class Command(BaseCommand):
 
         # This command sweeps every hospital's active patients in one pass,
         # by design -- same sanctioned bypass escalate_alerts already uses.
+        # The bypass scope is per-patient, not one covering the whole sweep:
+        # generate_patient_summary() calls OpenRouter with no transaction
+        # open, and a transaction spanning every patient's HTTP call in the
+        # run would hold every one of their row locks for its entire
+        # duration.
         with bypass_rls():
-            patients = Patient.objects.filter(is_active=True).filter(
-                Q(ai_summary__isnull=True) | Q(ai_summary__generated_at__lt=cutoff),
+            patient_ids = list(
+                Patient.objects.filter(is_active=True)
+                .filter(Q(ai_summary__isnull=True) | Q(ai_summary__generated_at__lt=cutoff))
+                .values_list("pk", flat=True),
             )
-            refreshed = 0
-            for patient in patients:
-                generate_patient_summary(patient)
-                refreshed += 1
+
+        refreshed = 0
+        for patient_id in patient_ids:
+            with bypass_rls():
+                patient = Patient.objects.get(pk=patient_id)
+            generate_patient_summary(patient, use_rls_bypass=True)
+            refreshed += 1
 
         if refreshed:
             self.stdout.write(self.style.SUCCESS(f"Refreshed {refreshed} AI summary(ies)."))

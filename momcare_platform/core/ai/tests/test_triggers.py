@@ -58,6 +58,26 @@ def test_creating_a_patient_generates_the_first_summary(make_hospital):
     assert AISummary.objects.get(patient=patient).content == "Newly enrolled, no data yet."
 
 
+def test_enrollment_summary_includes_pregnancy_data_when_provided_at_onboarding(make_hospital):
+    """Important review finding: the enrollment trigger used to fire from a
+    Patient post_save signal, which runs before onboard_patient() creates
+    the pregnancy -- so a patient onboarded WITH obstetric data always got a
+    first summary describing her as having no pregnancy at all."""
+    hospital = make_hospital("Enrollment With Pregnancy Hospital")
+
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
+        onboard_patient(
+            organization=hospital.org,
+            patient_data={"first_name": "Farah", "last_name": "Baig"},
+            pregnancy_data={"lmp": timezone.now().date() - timedelta(weeks=28)},
+        )
+
+    assert mock_generate.called
+    sent_prompt = mock_generate.call_args.args[0]
+    assert "gestational_age" in sent_prompt
+    assert "not on file" not in sent_prompt.split("gestational_age")[1].split("\n")[0]
+
+
 def test_a_risk_level_change_triggers_a_regeneration(make_hospital):
     hospital = make_hospital("Risk Change Trigger Hospital")
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="Enrollment summary."):

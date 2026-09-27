@@ -57,6 +57,20 @@ def onboard_patient(
     if pregnancy_data:
         create_pregnancy(patient=patient, data=pregnancy_data)
 
+    # core.ai is another core app -- no import-linter concern reaching it
+    # directly, unlike modules.pregnancy.vitals elsewhere in this file.
+    # Local import purely to avoid a hard top-level circular dependency
+    # between core.patients and core.ai (core.ai's own services module
+    # imports Patient from here for its select_for_update() lock).
+    #
+    # Called here, after the pregnancy above, rather than from a Patient
+    # post_save signal: a signal fires before this function creates the
+    # pregnancy, so the very first summary would always describe a patient
+    # onboarded with obstetric data as having none.
+    from momcare_platform.core.ai.services import generate_patient_summary  # noqa: PLC0415
+
+    generate_patient_summary(patient)
+
     return patient
 
 
