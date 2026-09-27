@@ -58,10 +58,14 @@ def test_skips_deactivated_patients(make_hospital, settings):
     AISummary.objects.filter(patient=patient).update(
         generated_at=timezone.now() - timedelta(hours=10),
     )
-    deactivate_patient(patient, by=hospital.admin)
+    # deactivate_patient() itself now triggers one final generation (Task
+    # 10) -- mocked here too, so this test stays network-free regardless of
+    # that call succeeding or failing for real.
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="Deactivation summary."):
+        deactivate_patient(patient, by=hospital.admin)
 
     with patch("momcare_platform.core.ai.openrouter_client.generate") as mock_generate:
         call_command("refresh_ai_summaries")
 
     assert not mock_generate.called
-    assert AISummary.objects.get(patient=patient).content == "Original."
+    assert AISummary.objects.get(patient=patient).content == "Deactivation summary."

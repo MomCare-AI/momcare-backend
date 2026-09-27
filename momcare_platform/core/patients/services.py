@@ -84,6 +84,14 @@ def create_pregnancy(*, patient: Patient, data: dict) -> Pregnancy:
 def deactivate_patient(patient: Patient, *, by=None, reason: str = "") -> Patient:
     """Deactivate a patient — never delete. Clinical records survive."""
     patient.deactivate(by=by, reason=reason)
+    # core.ai is another core app -- no import-linter concern reaching it
+    # directly, unlike modules.pregnancy.vitals elsewhere in this file.
+    # Local import purely to avoid a hard top-level circular dependency
+    # between core.patients and core.ai (core.ai's own services module
+    # imports Patient from here for its select_for_update() lock).
+    from momcare_platform.core.ai.services import generate_patient_summary  # noqa: PLC0415
+
+    generate_patient_summary(patient, deactivated=True)
     return patient
 
 
