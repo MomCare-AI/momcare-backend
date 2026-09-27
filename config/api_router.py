@@ -2,6 +2,7 @@ from django.conf import settings
 from django.urls import re_path
 from rest_framework.routers import DefaultRouter, SimpleRouter
 
+from momcare_platform.core.ai.api.views import PatientAISummaryView
 from momcare_platform.core.common.programs import iter_programs
 from momcare_platform.core.locations.api.views import (
     LocationAssignmentStatusView,
@@ -40,10 +41,12 @@ from momcare_platform.core.patients.api.views import (
     JoinRequestDecisionView,
     JoinRequestReviewView,
     JoinRequestWithdrawView,
+    PatientDashboardKpisView,
     PatientDeactivateView,
     PatientDetailView,
     PatientJoinRequestView,
     PatientListCreateView,
+    PatientQuickLookupKpisView,
     PatientReactivateView,
     PatientWorklistView,
     PregnancyDetailView,
@@ -95,7 +98,6 @@ from momcare_platform.modules.pregnancy.vitals.api.views import (
     ReviewRiskView,
     RiskAssessmentView,
     RiskBulkReviewView,
-    RiskReviewQueueView,
     VitalsSummaryView,
 )
 
@@ -315,9 +317,24 @@ core_urlpatterns = [
     re_path(r"^patients/?$", PatientListCreateView.as_view(), name="patient-list"),
     re_path(r"^patients/worklist/?$", PatientWorklistView.as_view(), name="patient-worklist"),
     re_path(
+        r"^patients/dashboard-kpis/?$",
+        PatientDashboardKpisView.as_view(),
+        name="patient-dashboard-kpis",
+    ),
+    re_path(
+        r"^patients/quick-lookup-kpis/?$",
+        PatientQuickLookupKpisView.as_view(),
+        name="patient-quick-lookup-kpis",
+    ),
+    re_path(
         r"^patients/(?P<patient_id>[0-9a-f-]{36})/?$",
         PatientDetailView.as_view(),
         name="patient-detail",
+    ),
+    re_path(
+        r"^patients/(?P<patient_id>[0-9a-f-]{36})/ai-summary/?$",
+        PatientAISummaryView.as_view(),
+        name="patient-ai-summary",
     ),
     # Deactivate, never delete — the same soft-deactivation Locations and
     # Staff already use.
@@ -383,10 +400,14 @@ core_urlpatterns = [
         EscalateRiskView.as_view(),
         name="risk-escalate",
     ),
-    # Risk Review Queue -- patients with a flagged, still-pending assessment.
-    # Adapted from Neuro_RPM's Reading Review Workflow (see RiskReviewQueueView's
-    # own docstring for why this is a standing list rather than a query param).
-    re_path(r"^risk-review-queue/?$", RiskReviewQueueView.as_view(), name="risk-review-queue"),
+    # Risk Review/Low Confidence/Monitoring Follow-up/Unseen Readings/Reading
+    # Reminder used to each be their own standing endpoint here -- collapsed
+    # into `?workflow=`/`?care_activity=` query params on GET /api/patients/
+    # instead, matching Neuro_RPM's own one-endpoint convention. See
+    # PatientListCreateView._apply_workflow_and_care_activity and CLAUDE.md's
+    # "Care Activities" section for the history. review/escalate/bulk-review
+    # are unaffected -- those are POST actions in Neuro_RPM too, not query
+    # params, so only the GET/listing side was ever in scope for this move.
     re_path(r"^risk/bulk-review/?$", RiskBulkReviewView.as_view(), name="risk-bulk-review"),
     # Clinical contact logging -- hangs off a patient, not a pregnancy (see
     # core/monitoring/models.py's own docstring for why): a patient can
