@@ -149,6 +149,16 @@ class OrganizationConfidenceThresholdSerializer(serializers.ModelSerializer):
         fields = ["confidence_threshold"]
 
 
+class OrganizationAIInstructionsSerializer(serializers.ModelSerializer):
+    """This hospital's own free-text AI Summary steering, appended after the
+    platform-wide instructions on every generation for this hospital's
+    patients only. See docs/design/2026-09-27-ai-summary-design.md."""
+
+    class Meta:
+        model = Organization
+        fields = ["ai_custom_instructions"]
+
+
 class AuditLogSerializer(serializers.ModelSerializer):
     """One PHI-access record — read-only everywhere; nothing about this
     trail is ever written through the API. See AuditLogMiddleware for the

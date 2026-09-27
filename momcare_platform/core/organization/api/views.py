@@ -9,6 +9,7 @@ from momcare_platform.core.common.permissions import IsHospitalAdmin, IsHospital
 from momcare_platform.core.organization.api.serializers import (
     AuditLogSerializer,
     NotificationSerializer,
+    OrganizationAIInstructionsSerializer,
     OrganizationConfidenceThresholdSerializer,
     OrganizationDeactivationRequestCreateSerializer,
     OrganizationDeactivationRequestSerializer,
@@ -137,6 +138,26 @@ class OrganizationConfidenceThresholdView(APIView):
             return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
 
         serializer = OrganizationConfidenceThresholdSerializer(org, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(OrganizationSerializer(org, context={"request": request}).data)
+
+
+class OrganizationAIInstructionsView(APIView):
+    """Change this hospital's own AI Summary steering text. Only
+    hospital_admin may change it — same restriction as
+    OrganizationConfidenceThresholdView above, for the same reason: a
+    setting that shapes a clinical-facing output shouldn't be editable by
+    every staff role."""
+
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def patch(self, request):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = OrganizationAIInstructionsSerializer(org, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(OrganizationSerializer(org, context={"request": request}).data)
