@@ -2,12 +2,15 @@ import importlib
 
 from django.apps import apps as django_apps
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
-from momcare_platform.core.ai.models import AIProviderConfig
+from momcare_platform.core.ai import openrouter_client
+from momcare_platform.core.ai.models import AIProviderConfig, AISummary
 from momcare_platform.core.analytics.models import PatientAnalytics
 from momcare_platform.core.common.formatting import humanize_days_ago
 from momcare_platform.core.monitoring.services import format_duration
+from momcare_platform.core.patients.models import Patient
 
 
 def get_ai_config() -> AIProviderConfig:
@@ -94,3 +97,82 @@ def _build_data_snapshot(patient) -> dict:
         snapshot["monitoring_time_display"] = format_duration(analytics_row.monitoring_seconds)
 
     return snapshot
+
+
+_BASE_PROMPT = """You are writing a short clinical summary for a hospital staff member about one pregnant patient. Use only the data given below -- never invent a value, a name, or an event that is not present. If something is missing (no care team assigned, no readings this period, no recent note), state that plainly instead of omitting it. Write in plain prose, no bullet points, no markdown. Keep the entire summary to at most {max_words} words.
+
+Patient data:
+{data_lines}
+
+{closing_instruction}"""
+
+_ACTIVE_CLOSING = "Close with exactly one recommendation, grounded specifically in the data above."
+_DEACTIVATED_CLOSING = (
+    "This patient has just been deactivated. Close the summary by stating that clearly, "
+    "instead of a forward-looking recommendation -- recommending future monitoring for "
+    "someone no longer being monitored would not make sense."
+)
+
+
+def _build_prompt(snapshot: dict, config: AIProviderConfig, org_instructions: str, *, deactivated: bool) -> str:
+    data_lines = "\n".join(
+        f"- {key}: {value}" for key, value in snapshot.items() if value not in (None, "", [], {})
+    )
+    sections = [
+        _BASE_PROMPT.format(
+            max_words=config.max_words,
+            data_lines=data_lines,
+            closing_instruction=_DEACTIVATED_CLOSING if deactivated else _ACTIVE_CLOSING,
+        ),
+    ]
+    if config.custom_instructions:
+        sections.append(config.custom_instructions)
+    if org_instructions:
+        sections.append(org_instructions)
+    return "\n\n".join(sections)
+
+
+def _max_tokens_for(max_words: int) -> int:
+    """Generous backstop, not a length target -- roughly 2 tokens per word
+    plus headroom, so it only catches a model that truly ignores the
+    word-count instruction rather than shaping length on its own."""
+    return max_words * 2 + 100
+
+
+def generate_patient_summary(patient, *, deactivated: bool = False) -> None:
+    """The single entry point every trigger (patient creation, a risk-level
+    change, deactivation, the periodic refresh command) calls. Best-effort:
+    on any client failure the existing cached AISummary row, if any, is left
+    untouched -- see openrouter_client.generate()'s own docstring."""
+    with transaction.atomic():
+        # Locks this patient's row for the duration of the call, so a cron
+        # sweep and a risk-level-change signal landing at the same moment
+        # cannot both proceed and race each other into two OpenRouter calls.
+        Patient.objects.select_for_update().get(pk=patient.pk)
+
+        snapshot = _build_data_snapshot(patient)
+        config = get_ai_config()
+        prompt = _build_prompt(
+            snapshot,
+            config,
+            patient.organization.ai_custom_instructions,
+            deactivated=deactivated,
+        )
+
+        content = openrouter_client.generate(
+            prompt,
+            model=config.current_model,
+            max_tokens=_max_tokens_for(config.max_words),
+        )
+        if content is None:
+            return
+
+        AISummary.objects.update_or_create(
+            patient=patient,
+            defaults={
+                "content": content,
+                "generated_at": timezone.now(),
+                "model_used": config.current_model,
+                "risk_level_at_generation": snapshot["current_risk_level"] or "",
+            },
+        )
