@@ -80,10 +80,12 @@ def _no_auto_scoring():
     it returns. The signal now runs that same function automatically on
     every ``VitalReading.objects.create()`` — left connected here, each
     reading would be scored twice: once automatically, once by the test's
-    own call. Since ``reassess_risk()`` only writes a new row when the level
-    actually changed, the second (explicit) call would then see "no change"
-    and wrongly return None. The signal itself is proven separately, in
-    test_signals.py — this file stays a clean unit test of the function.
+    own call. ``reassess_risk()`` writes a row unconditionally now (one per
+    reading, no "unchanged level" guard), so a double call would double-write
+    every single test's rows rather than merely mis-return one value — an
+    even sharper reason to keep this disconnected here than before. The
+    signal itself is proven separately, in test_signals.py — this file stays
+    a clean unit test of the function.
     """
     from django.db.models.signals import post_save
 
@@ -236,7 +238,13 @@ def test_a_hospitals_own_threshold_overrides_the_platform_default(make_hospital,
     assert assessment.flagged_for_review is True
 
 
-def test_unchanged_level_writes_no_second_assessment(make_hospital, pregnancy_for):
+def test_an_unchanged_level_still_writes_its_own_row(make_hospital, pregnancy_for):
+    """Every reading gets its own ``RiskAssessment`` row, even when its level
+    matches the previous one -- a deliberate reversal of the earlier
+    "transitions only" design (see MEMORY.md's per-reading risk history
+    decision). The full per-reading record is the point: a doctor asking
+    "what did this specific reading show" must never come up empty just
+    because the level didn't change from the reading before it."""
     hospital = make_hospital("Steady Hospital")
     pregnancy = pregnancy_for(hospital)
     add_reading(pregnancy, LOW_VITALS, minutes_ago=10)
@@ -245,8 +253,10 @@ def test_unchanged_level_writes_no_second_assessment(make_hospital, pregnancy_fo
     second = reassess_risk(pregnancy)
 
     assert first is not None
-    assert second is None
-    assert RiskAssessment.objects.filter(pregnancy=pregnancy).count() == 1
+    assert second is not None
+    assert second.previous_risk_level == RiskAssessment.LEVEL_LOW
+    assert second.final_risk_level == RiskAssessment.LEVEL_LOW
+    assert RiskAssessment.objects.filter(pregnancy=pregnancy).count() == 2
 
 
 def test_worsening_creates_a_new_row_with_previous_level_recorded(make_hospital, pregnancy_for):

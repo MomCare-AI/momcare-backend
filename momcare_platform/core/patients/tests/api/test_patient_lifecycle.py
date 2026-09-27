@@ -7,6 +7,7 @@ A patient's clinical record is never physically deleted.
 import json
 
 import pytest
+from django.conf import settings
 
 from momcare_platform.core.patients.services import onboard_patient
 
@@ -102,3 +103,69 @@ def test_another_hospital_cannot_reactivate_our_patient(client, make_hospital, a
     assert response.status_code == 404
     patient.refresh_from_db()
     assert patient.is_active is False
+
+
+# ── Permission: hospital_admin or care_manager only, matching Neuro_RPM's own
+# MANAGE = IsAdmin | IsCareManager on the identical action. Found via a
+# permission audit -- this view had inherited the base PatientScopedView's
+# plain "any staff" permission, which is correct for read/create/update but
+# was too broad here.
+def test_a_care_manager_can_deactivate_a_patient(client, make_hospital, make_staff, auth, patient_for):
+    hospital = make_hospital("Care Manager Deactivate Hospital")
+    care_manager = make_staff(hospital.org, settings.ROLE_CARE_MANAGER, email="cm@deactivate.test")
+    patient = patient_for(hospital)
+
+    response = post(client, auth(care_manager.email), f"{PATIENTS}{patient.id}/deactivate/", {"reason": "Left"})
+
+    assert response.status_code == 200
+    patient.refresh_from_db()
+    assert patient.is_active is False
+
+
+def test_a_provider_cannot_deactivate_a_patient(client, make_hospital, make_staff, auth, patient_for):
+    """Fault injection: Provider and Nurse are clinicians, but Neuro_RPM's
+    own equivalent action still excludes them -- deactivation is an
+    administrative/care-management call, not a clinical one."""
+    hospital = make_hospital("Provider Cannot Deactivate Hospital")
+    provider = make_staff(hospital.org, settings.ROLE_PROVIDER, email="provider@deactivate.test")
+    patient = patient_for(hospital)
+
+    response = post(client, auth(provider.email), f"{PATIENTS}{patient.id}/deactivate/", {"reason": "Left"})
+
+    assert response.status_code == 403
+    patient.refresh_from_db()
+    assert patient.is_active is True
+
+
+def test_a_nurse_cannot_deactivate_a_patient(client, make_hospital, make_staff, auth, patient_for):
+    hospital = make_hospital("Nurse Cannot Deactivate Hospital")
+    nurse = make_staff(hospital.org, settings.ROLE_NURSE, email="nurse@deactivate.test")
+    patient = patient_for(hospital)
+
+    response = post(client, auth(nurse.email), f"{PATIENTS}{patient.id}/deactivate/", {"reason": "Left"})
+
+    assert response.status_code == 403
+
+
+def test_a_care_manager_can_reactivate_a_patient(client, make_hospital, make_staff, auth, patient_for):
+    hospital = make_hospital("Care Manager Reactivate Hospital")
+    care_manager = make_staff(hospital.org, settings.ROLE_CARE_MANAGER, email="cm@reactivate.test")
+    patient = patient_for(hospital)
+    post(client, auth(hospital.admin.email), f"{PATIENTS}{patient.id}/deactivate/")
+
+    response = post(client, auth(care_manager.email), f"{PATIENTS}{patient.id}/reactivate/")
+
+    assert response.status_code == 200
+    patient.refresh_from_db()
+    assert patient.is_active is True
+
+
+def test_a_provider_cannot_reactivate_a_patient(client, make_hospital, make_staff, auth, patient_for):
+    hospital = make_hospital("Provider Cannot Reactivate Hospital")
+    provider = make_staff(hospital.org, settings.ROLE_PROVIDER, email="provider@reactivate.test")
+    patient = patient_for(hospital)
+    post(client, auth(hospital.admin.email), f"{PATIENTS}{patient.id}/deactivate/")
+
+    response = post(client, auth(provider.email), f"{PATIENTS}{patient.id}/reactivate/")
+
+    assert response.status_code == 403

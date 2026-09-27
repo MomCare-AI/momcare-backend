@@ -732,14 +732,16 @@ def test_listing_more_patients_does_not_cost_more_queries(
     once per request from the JWT's own org claim by TenantAwareJWTAuthentication
     - a fixed cost, not one that grows with the page - plus one more fixed
     cost for the status-history prefetch (see patients/api/views.py's
-    ``_statuses_prefetch``, added alongside ``_active_pregnancy_prefetch``).
+    ``_statuses_prefetch``, added alongside ``_active_pregnancy_prefetch``),
+    and one more again for ``_monitoring_analytics_prefetch`` (this month's
+    ``PatientAnalytics`` row per patient, for ``monitoring_seconds_this_month``).
     """
     hospital = make_hospital("Volume Hospital")
     headers = auth(hospital.admin.email)
     for index in range(6):
         post_patient(client, headers, first_name=f"Patient{index}", cnic=f"61101-000000{index}-1")
 
-    with django_assert_max_num_queries(14):
+    with django_assert_max_num_queries(15):
         response = client.get(PATIENTS, **headers)
 
     assert response.status_code == 200

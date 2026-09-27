@@ -70,3 +70,35 @@ def calculate_gestational_age(edd: date | None, on_date: date | None = None) -> 
 def is_term(age: GestationalAge | None) -> bool:
     """37 weeks or more — the threshold below which a birth is preterm."""
     return age is not None and age.weeks >= 37
+
+
+def gestational_age_long_display(age: GestationalAge | None) -> str | None:
+    """A friendlier breakdown for dashboard summaries -- "7 months 2 weeks 4
+    days" -- distinct from ``GestationalAge.__str__``'s plain "Xw Yd", which
+    stays the clinical convention used everywhere else (Pregnancy detail,
+    the risk engine, reports). Never replaces the short form -- only an
+    additional display for a summary list where a lay reading is more useful
+    than clinical shorthand.
+
+    "Month" here means a 4-week (28-day) unit, not a calendar month -- the
+    same informal "10 lunar months" convention behind PREGNANCY_LENGTH_DAYS
+    (280 = 28 x 10) dividing evenly, and unambiguous the way a calendar
+    month (28-31 days) is not. Under one month, falls back to the plain
+    "Xw Yd" form -- there is nothing to break down yet.
+    """
+    if age is None:
+        return None
+
+    total_days = age.total_days
+    if total_days < 28:
+        return str(age)
+
+    months, remainder = divmod(total_days, 28)
+    weeks, days = divmod(remainder, 7)
+
+    parts = [f"{months} month{'s' if months != 1 else ''}"]
+    if weeks:
+        parts.append(f"{weeks} week{'s' if weeks != 1 else ''}")
+    if days:
+        parts.append(f"{days} day{'s' if days != 1 else ''}")
+    return " ".join(parts)

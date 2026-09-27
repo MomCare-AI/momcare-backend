@@ -6,10 +6,11 @@ tenant membership is taken from the authenticated user, so there is no
 identifier a caller could tamper with to reach another hospital's patients.
 """
 
+import importlib
 from datetime import timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import OuterRef, Prefetch, Q, Subquery, Value
+from django.db.models import Count, IntegerField, OuterRef, Prefetch, Q, Subquery, Value
 from django.db.models.functions import Concat
 from django.utils import timezone
 from rest_framework import status
@@ -17,8 +18,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from momcare_platform.core.analytics.services import (
+    patients_needing_monitoring_follow_up,
+    patients_needing_reading_reminder,
+    patients_with_unseen_readings,
+)
 from momcare_platform.core.common.pagination import DefaultPagination
-from momcare_platform.core.common.permissions import IsHospitalStaff, IsPatient
+from momcare_platform.core.common.permissions import IsCareManager, IsHospitalAdmin, IsHospitalStaff, IsPatient
 from momcare_platform.core.common.rls import bypass_rls
 from momcare_platform.core.common.scoping import (
     OrganizationScopedQuerysetMixin,
@@ -43,6 +49,7 @@ from momcare_platform.core.patients.services import (
     onboard_patient,
     reactivate_patient,
 )
+from momcare_platform.core.staff.models import Staff
 
 NO_HOSPITAL = {"detail": "This account is not attached to a hospital."}
 
@@ -62,6 +69,39 @@ class PatientScopedView(OrganizationScopedQuerysetMixin, APIView):
 
     def patients(self):
         return self.scope_to_organization(Patient.objects.all())
+
+    def apply_roster_filters(self, queryset, request):
+        """``?location=``/``?is_active=``/``?care_manager=``/``?provider=``/
+        ``?nurse=`` -- shared by the Patient List and Dashboard KPIs so the
+        two can never disagree about which patients are even in scope,
+        matching Neuro_RPM's own ``_scoped_queryset()`` reuse between its
+        Patient List and ``dashboard_kpis`` action for the identical reason.
+
+        ``care_manager``/``provider``/``nurse`` reach through the active
+        pregnancy (that's where the care team actually lives -- see
+        CLAUDE.md's "why staff attaches to Pregnancy, not Patient" for why),
+        the same ``pregnancies__`` join ``?assigned_to=me`` already uses.
+        """
+        params = request.query_params
+        location = params.get("location")
+        if location:
+            queryset = queryset.filter(location_id=location)
+
+        is_active = params.get("is_active")
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() in ("true", "1", "yes"))
+
+        needs_distinct = False
+        for role_field in ("care_manager", "provider", "nurse"):
+            value = params.get(role_field)
+            if value:
+                queryset = queryset.filter(
+                    pregnancies__status=Pregnancy.STATUS_ACTIVE,
+                    **{f"pregnancies__{role_field}_id": value},
+                )
+                needs_distinct = True
+
+        return queryset.distinct() if needs_distinct else queryset
 
     def get_patient_or_404(self, patient_id):
         """Scope first, then look up.
@@ -102,18 +142,68 @@ def _active_pregnancy_prefetch() -> Prefetch:
     RiskAssessment = django_apps.get_model("monitoring", "RiskAssessment")
 
     latest = RiskAssessment.objects.filter(pregnancy=OuterRef("pk")).order_by("-assessed_at")
+    # Same "needs attention" condition the old RiskReviewQueueView/
+    # LowConfidenceQueueView used before they were consolidated into
+    # ?workflow= query params -- see PatientListSerializer's own
+    # pending_risk_count/needs_risk_review/needs_low_confidence_review for
+    # why these are annotated unconditionally on every row, matching
+    # Neuro_RPM's own "merge everything onto every row" convention.
+    pending_actionable = RiskAssessment.objects.filter(
+        pregnancy=OuterRef("pk"),
+        review_status=RiskAssessment.REVIEW_PENDING,
+        final_risk_level__in=[RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH],
+    )
+    pending_flagged = RiskAssessment.objects.filter(
+        pregnancy=OuterRef("pk"),
+        review_status=RiskAssessment.REVIEW_PENDING,
+        flagged_for_review=True,
+    )
+    pending_either = RiskAssessment.objects.filter(
+        Q(final_risk_level__in=[RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH]) | Q(flagged_for_review=True),
+        pregnancy=OuterRef("pk"),
+        review_status=RiskAssessment.REVIEW_PENDING,
+    )
+
+    def _count_subquery(qs):
+        return Subquery(
+            qs.order_by().values("pregnancy").annotate(_count=Count("id")).values("_count"),
+            output_field=IntegerField(),
+        )
 
     active = (
         Pregnancy.objects.filter(status=Pregnancy.STATUS_ACTIVE)
+        .select_related("provider__user", "nurse__user", "care_manager__user")
         .annotate(
             # final_risk_level: the level actually acted on, not the model's
             # pre-escalation answer.
             latest_risk_level=Subquery(latest.values("final_risk_level")[:1]),
             latest_risk_at=Subquery(latest.values("assessed_at")[:1]),
+            pending_actionable_count=_count_subquery(pending_actionable),
+            pending_flagged_count=_count_subquery(pending_flagged),
+            pending_risk_count=_count_subquery(pending_either),
         )
         .order_by("-created_at")
     )
     return Prefetch("pregnancies", queryset=active, to_attr="active_pregnancies")
+
+
+def _monitoring_analytics_prefetch() -> Prefetch:
+    """This calendar month's ``PatientAnalytics`` row for each listed
+    patient, so ``PatientListSerializer`` can show
+    ``monitoring_seconds_this_month`` without a query per row -- same
+    reasoning as ``_active_pregnancy_prefetch`` above. A plain import, not
+    the app-registry lookup that model needs: ``core.analytics`` is a core
+    app, so ``core.patients`` importing it directly doesn't touch the
+    `core must not import modules` contract at all.
+    """
+    from momcare_platform.core.analytics.models import PatientAnalytics  # noqa: PLC0415
+
+    current_period = timezone.now().date().replace(day=1)
+    return Prefetch(
+        "analytics_periods",
+        queryset=PatientAnalytics.objects.filter(period_month=current_period),
+        to_attr="current_period_analytics",
+    )
 
 
 def _statuses_prefetch():
@@ -137,6 +227,43 @@ class PatientListCreateView(PatientScopedView):
         """
         return scope_to_assigned_staff(queryset, request, path_prefix="pregnancies__")
 
+    def _apply_workflow_and_care_activity(self, queryset, request):
+        """``?workflow=risk_review``/``?workflow=low_confidence`` and
+        ``?care_activity=monitoring_follow_up``/``unseen_readings``/
+        ``reading_reminder`` -- one endpoint, five filters, matching
+        Neuro_RPM's own query-param-on-one-endpoint convention (the five
+        standing queue endpoints this replaced are gone -- see CLAUDE.md's
+        "Care Activities" section for the history). The two are
+        independent, parallel filters, like Neuro_RPM's own -- never
+        combined into one condition, and only one of each may be passed.
+
+        ``risk_review``/``low_confidence`` are resolved via
+        ``importlib``, not a static import: their condition lives in
+        ``modules.pregnancy.vitals``, which `core` must never import.
+        """
+        workflow = request.query_params.get("workflow")
+        if workflow:
+            vitals_services = importlib.import_module("momcare_platform.modules.pregnancy.vitals.services")
+            if workflow == "risk_review":
+                queryset = vitals_services.patients_needing_risk_review(queryset)
+            elif workflow == "low_confidence":
+                queryset = vitals_services.patients_needing_low_confidence_review(queryset)
+
+        care_activity = request.query_params.get("care_activity")
+        if care_activity == "monitoring_follow_up":
+            queryset = patients_needing_monitoring_follow_up(queryset)
+        elif care_activity in ("unseen_readings", "reading_reminder"):
+            # Both require an active pregnancy -- a VitalReading always has
+            # one, unlike MonitoringSession/MonitoringNote above.
+            queryset = queryset.filter(pregnancies__status=Pregnancy.STATUS_ACTIVE).distinct()
+            queryset = (
+                patients_with_unseen_readings(queryset)
+                if care_activity == "unseen_readings"
+                else patients_needing_reading_reminder(queryset)
+            )
+
+        return queryset
+
     def get(self, request):
         _, error = self.hospital_or_error(request)
         if error:
@@ -148,9 +275,12 @@ class PatientListCreateView(PatientScopedView):
             .prefetch_related(
                 _active_pregnancy_prefetch(),
                 _statuses_prefetch(),
+                _monitoring_analytics_prefetch(),
             )
         )
         queryset = self._scope_to_assigned(queryset, request)
+        queryset = self.apply_roster_filters(queryset, request)
+        queryset = self._apply_workflow_and_care_activity(queryset, request)
 
         search = request.query_params.get("search", "").strip()
         if search:
@@ -192,6 +322,122 @@ class PatientListCreateView(PatientScopedView):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(PatientDetailSerializer(patient).data, status=status.HTTP_201_CREATED)
+
+
+class PatientDashboardKpisView(PatientScopedView):
+    """The single Dashboard KPIs endpoint -- MomCare's own three
+    workflows/care-activities plus the roster's total/active/inactive
+    split, matching Neuro_RPM's own single ``dashboard-kpis`` surface. No
+    Priority Patients (their billing-cycle Priority Score has no MomCare
+    equivalent and was explicitly declined) and no Manage Care Plans
+    (MomCare has no CCM care-plan concept).
+
+    ``total_patients``/``active_patients``/``inactive_patients`` and all
+    five counts below share the identical scoping the Patient List uses --
+    ``apply_roster_filters`` (``?location=``/``?is_active=``/
+    ``?care_manager=``/``?provider=``/``?nurse=``) plus ``?assigned_to=me``
+    -- via the same underlying condition functions
+    ``?workflow=``/``?care_activity=`` filter the list by, so a number here
+    can never disagree with what actually shows up if you applied that same
+    filter on the list itself.
+
+    ``risk_review``/``low_confidence`` are resolved via ``importlib``, not
+    a static import: their condition lives in ``modules.pregnancy.vitals``,
+    which `core` must never import (the `core must not import modules`
+    contract); the three Care Activity conditions are plain static imports
+    since ``core.analytics`` is itself a core app.
+
+    ``pending_join_requests`` is a top-level sibling, not nested in
+    ``workflow``/``care_activities`` -- a ``PatientJoinRequest`` isn't a
+    ``Patient`` at all yet (no row exists until a hospital approves it), so
+    it doesn't belong to either the workflow (no ``RiskAssessment``) or
+    Care Activity (no `Patient` to filter) shape. Deliberately NOT run
+    through ``apply_roster_filters``/``?assigned_to=me`` either -- those
+    filters narrow the existing patient roster, and a join request has no
+    location/care-team assignment yet for them to apply to. Scoped only by
+    organization, same as ``JoinRequestReviewView``'s own queue.
+    """
+
+    def get(self, request):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+
+        roster = self.apply_roster_filters(self.patients(), request)
+        roster = scope_to_assigned_staff(roster, request, path_prefix="pregnancies__")
+        counts = roster.aggregate(
+            active_patients=Count("pk", filter=Q(is_active=True)),
+            inactive_patients=Count("pk", filter=Q(is_active=False)),
+        )
+        active_patients = counts["active_patients"]
+        inactive_patients = counts["inactive_patients"]
+        pending_join_requests = PatientJoinRequest.objects.filter(
+            organization=org,
+            status=PatientJoinRequest.STATUS_PENDING,
+        ).count()
+
+        vitals_services = importlib.import_module("momcare_platform.modules.pregnancy.vitals.services")
+
+        return Response(
+            {
+                "total_patients": active_patients + inactive_patients,
+                "active_patients": active_patients,
+                "inactive_patients": inactive_patients,
+                "pending_join_requests": pending_join_requests,
+                "workflow": {
+                    "risk_review": vitals_services.patients_needing_risk_review(roster).count(),
+                    "low_confidence": vitals_services.patients_needing_low_confidence_review(roster).count(),
+                },
+                "care_activities": {
+                    "monitoring_follow_up": patients_needing_monitoring_follow_up(roster).count(),
+                    "unseen_readings": patients_with_unseen_readings(
+                        roster.filter(pregnancies__status=Pregnancy.STATUS_ACTIVE).distinct(),
+                    ).count(),
+                    "reading_reminder": patients_needing_reading_reminder(
+                        roster.filter(pregnancies__status=Pregnancy.STATUS_ACTIVE).distinct(),
+                    ).count(),
+                },
+            },
+        )
+
+
+class PatientQuickLookupKpisView(PatientScopedView):
+    """``{"staff": {"total","active","inactive"}, "patients":
+    {"total","active","inactive"}}`` -- organization-wide counts across
+    every location, matching Neuro_RPM's own ``quick-lookup-kpis``.
+
+    Deliberately separate from ``dashboard-kpis`` above, which is always
+    scoped to the caller's own ``?location=``/``?assigned_to=me`` selection
+    -- this one never is, for any caller, regardless of role or location
+    assignment. **Adapted for multi-tenancy, not ported literally**:
+    Neuro_RPM's own version applies *zero* scoping at all
+    (``Patient.objects.aggregate(...)``, no organization filter), because
+    that codebase is single-tenant -- one hospital per deployment, no
+    `Organization` model to filter by. MomCare is shared-schema
+    multi-tenant, so "no location/role scoping" here means skip
+    ``apply_roster_filters``/``?assigned_to=me`` only -- the organization
+    filter itself is never optional, dropping it would be a cross-tenant
+    PHI leak, the one thing this project treats as non-negotiable
+    regardless of what a reference platform's own single-tenant version
+    does.
+    """
+
+    def get(self, request):
+        org, error = self.hospital_or_error(request)
+        if error:
+            return error
+
+        patient_counts = Patient.objects.filter(organization=org).aggregate(
+            total=Count("pk"),
+            active=Count("pk", filter=Q(is_active=True)),
+            inactive=Count("pk", filter=Q(is_active=False)),
+        )
+        staff_counts = Staff.objects.filter(user__organization=org).aggregate(
+            total=Count("pk"),
+            active=Count("pk", filter=Q(is_active=True)),
+            inactive=Count("pk", filter=Q(is_active=False)),
+        )
+        return Response({"staff": staff_counts, "patients": patient_counts})
 
 
 class PatientWorklistView(PatientScopedView):
@@ -410,7 +656,19 @@ class PregnancyDetailView(PatientScopedView):
 
 
 class PatientDeactivateView(PatientScopedView):
-    """Deactivate a patient — never delete. Clinical records survive."""
+    """Deactivate a patient — never delete. Clinical records survive.
+
+    Hospital admin or care manager only — matches Neuro_RPM's own permission
+    for the identical action exactly (``MANAGE = IsAdmin | IsCareManager`` on
+    their ``deactivate``/``reactivate``/``bulk_reassign``). Found via
+    permission audit to be a real gap: this view had inherited the base
+    ``PatientScopedView``'s plain ``IsHospitalStaff`` (any staff), which is
+    correct for read/create/update but too broad for deactivation — a
+    Provider or Nurse could otherwise take a patient off an active roster
+    unilaterally.
+    """
+
+    permission_classes = [IsAuthenticated, (IsHospitalAdmin | IsCareManager)]
 
     def post(self, request, patient_id):
         _, error = self.hospital_or_error(request)
@@ -425,7 +683,10 @@ class PatientDeactivateView(PatientScopedView):
 
 
 class PatientReactivateView(PatientScopedView):
-    """Undo a deactivation."""
+    """Undo a deactivation. Same permission as deactivate — see its own
+    docstring."""
+
+    permission_classes = [IsAuthenticated, (IsHospitalAdmin | IsCareManager)]
 
     def post(self, request, patient_id):
         _, error = self.hospital_or_error(request)

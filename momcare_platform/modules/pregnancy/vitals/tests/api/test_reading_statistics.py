@@ -8,7 +8,7 @@ import pytest
 from django.utils import timezone
 
 from momcare_platform.core.patients.services import onboard_patient
-from momcare_platform.modules.pregnancy.vitals.models import VitalReading
+from momcare_platform.modules.pregnancy.vitals.models import RiskAssessment, VitalReading
 
 pytestmark = pytest.mark.django_db
 
@@ -170,6 +170,30 @@ def test_vitals_summary_returns_last_30_days_average(client, make_hospital, preg
     averages = response.json()["last_30_days_average"]
     assert averages["systolic_bp"] == 125.0
     assert averages["blood_glucose"] is None
+
+
+def test_vitals_summary_includes_this_calendar_months_risk_breakdown(client, make_hospital, pregnancy_for, auth):
+    """One RiskAssessment row per reading now (see MEMORY.md's per-reading
+    risk history decision), so a straightforward tally of ``final_risk_level``
+    across this calendar month is enough -- no model re-run."""
+    hospital = make_hospital("Vitals Summary Risk API Hospital")
+    pregnancy = pregnancy_for(hospital)
+    RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=RiskAssessment.LEVEL_HIGH,
+        final_risk_level=RiskAssessment.LEVEL_HIGH,
+    )
+    RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=RiskAssessment.LEVEL_LOW,
+        final_risk_level=RiskAssessment.LEVEL_LOW,
+    )
+
+    response = client.get(vitals_summary_url(pregnancy.id), **auth(hospital.admin.email))
+
+    risk_this_month = response.json()["risk_this_month"]
+    assert risk_this_month["total_count"] == 2
+    assert risk_this_month["percentages"] == {"low": 50, "medium": 0, "high": 50}
 
 
 def test_vitals_summary_another_hospitals_pregnancy_resolves_to_404(client, make_hospital, pregnancy_for, auth):

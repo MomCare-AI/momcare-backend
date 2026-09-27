@@ -7,7 +7,6 @@ hospital, so a reading can never be filed against another tenant's patient.
 from collections.abc import Callable
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import OuterRef, Q, Subquery
 from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
@@ -15,10 +14,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from momcare_platform.core.common.pagination import DefaultPagination
-from momcare_platform.core.common.permissions import IsClinician, IsHospitalStaff
+from momcare_platform.core.common.permissions import IsClinician, IsHospitalAdmin, IsHospitalStaff
 from momcare_platform.core.common.scoping import (
     OrganizationScopedQuerysetMixin,
-    scope_to_assigned_staff,
 )
 from momcare_platform.core.patients.models import Pregnancy
 from momcare_platform.modules.pregnancy.vitals.api.serializers import (
@@ -227,7 +225,24 @@ class VitalsSummaryView(MonitoringView):
 
 
 class RiskAssessmentView(MonitoringView):
-    """A pregnancy's risk history — a record of transitions, not of readings."""
+    """A pregnancy's risk history — one row per reading, not just per
+    transition (see ``reassess_risk()``'s own docstring for the reversal of
+    the earlier "transitions only" design).
+
+    ``current`` is always the true current assessment, whatever ``history``
+    is filtered down to — clicking into a patient from either queue should
+    still show what's actually going on right now, not just the filtered
+    slice. ``history`` accepts ``review_status``/``actionable``/
+    ``flagged_for_review`` query params, matching Neuro_RPM's own generic
+    reading-list filters (``filterset_fields = ["patient", "reading_type",
+    "is_out_of_range"]`` plus their own hand-rolled ``review_status``) —
+    this is how their frontend gets "this patient's outstanding out-of-range
+    readings" when a doctor clicks into a patient from their Reading Review
+    workflow, and the equivalent call here is
+    ``?review_status=pending&actionable=true`` (from the Risk Review Queue)
+    or ``?review_status=pending&flagged_for_review=true`` (from the Low
+    Confidence Queue).
+    """
 
     def get(self, request, pregnancy_id):
         _, error = self.hospital_or_error(request)
@@ -237,13 +252,29 @@ class RiskAssessmentView(MonitoringView):
         if missing:
             return missing
 
-        assessments = pregnancy.risk_assessments.select_related("verified_by")[:50]
-        current = assessments[0] if assessments else None
+        assessments = pregnancy.risk_assessments.select_related("verified_by")
+        current = assessments.first()
+
+        history = assessments
+        review_status = request.query_params.get("review_status")
+        if review_status:
+            history = history.filter(review_status=review_status)
+        actionable = request.query_params.get("actionable")
+        if actionable is not None:
+            is_actionable = actionable.lower() in ("true", "1", "yes")
+            history = (
+                history.exclude(final_risk_level=RiskAssessment.LEVEL_LOW)
+                if is_actionable
+                else history.filter(final_risk_level=RiskAssessment.LEVEL_LOW)
+            )
+        flagged_for_review = request.query_params.get("flagged_for_review")
+        if flagged_for_review is not None:
+            history = history.filter(flagged_for_review=flagged_for_review.lower() in ("true", "1", "yes"))
 
         return Response(
             {
                 "current": RiskAssessmentSerializer(current).data if current else None,
-                "history": RiskAssessmentSerializer(assessments, many=True).data,
+                "history": RiskAssessmentSerializer(history[:50], many=True).data,
             },
         )
 
@@ -258,10 +289,14 @@ class RiskAssessmentView(MonitoringView):
 
         assessment = reassess_risk(pregnancy)
         if assessment is None:
+            # reassess_risk() only declines to write now when there is no
+            # reading to score at all, or the model itself refused (every
+            # vital on the latest reading missing) -- not "unchanged level",
+            # since every reading gets its own row.
             current = current_risk(pregnancy)
             return Response(
                 {
-                    "detail": "No change in risk level.",
+                    "detail": "No reading available to score.",
                     "current": RiskAssessmentSerializer(current).data if current else None,
                 },
             )
@@ -277,13 +312,23 @@ class _RiskReviewActionView(MonitoringView):
     which one applies, it isn't inferred from whether they agreed with the
     model.
 
-    Clinicians only. A hospital administrator is not required to have any
-    clinical training, and an assessment marked reviewed by somebody who
-    could not review it is worse than one left pending — the queue would
-    look attended to.
+    Clinicians (Provider/Nurse/Care Manager) or hospital_admin — matches
+    Neuro_RPM's own permission for the identical action exactly:
+    ``MANAGE = IsAdmin | IsCareManager`` on their reading review/escalate/
+    bulk_review. Found via permission audit to be a real, unintentional
+    divergence: this view originally reused the plain ``IsClinician`` class
+    (excludes admin), whose reasoning was written for *Alert* acknowledgment
+    specifically (an admin silencing the escalation ladder the moment it
+    would reach them) — a concern that doesn't transfer to resolving a
+    ``RiskAssessment``'s own ``review_status``, which never touches the
+    Alert's escalation clock. Alert acknowledge/resolve (``modules/pregnancy/
+    alerts/api/views.py``) keep plain ``IsClinician`` unchanged, since that
+    reasoning is still valid there. This is additive relative to Neuro_RPM,
+    not a narrowing to match them exactly — Provider/Nurse keep the access
+    they already had; only hospital_admin's access was ever missing.
     """
 
-    permission_classes = [IsAuthenticated, IsClinician]
+    permission_classes = [IsAuthenticated, (IsClinician | IsHospitalAdmin)]
     resolver: Callable[..., RiskAssessment]
 
     def post(self, request, pregnancy_id, assessment_id):
@@ -331,109 +376,19 @@ class EscalateRiskView(_RiskReviewActionView):
     resolver = staticmethod(escalate_risk)
 
 
-class RiskReviewQueueView(MonitoringView):
-    """Patients whose current pregnancy has at least one pending assessment
-    that needs attention — either the risk level itself is actionable
-    (Medium/High), or the model's own confidence was below the hospital's
-    threshold, whatever the level came out as (see
-    ``RiskAssessment.needs_attention`` — the single OR condition this query
-    and ``resolve_risk_review()``'s guard both key off of, kept in one place
-    so they can't drift apart). Adapted from Neuro_RPM's Reading Review
-    Workflow (``?workflow=reading_review`` on their Patient list + their
-    ``dashboard-kpis`` count) — one patient-centric list rather than a query
-    param on the Patient endpoint, since that's this project's own
-    convention for a standing queue (see ``AlertListView``, which the
-    scoping/pagination shape below mirrors exactly). Named to match the rest
-    of the risk review workflow (``review_status``, ``review``/``escalate``)
-    rather than the unrelated, already-existing ``Alert`` model/endpoint.
-
-    Neuro_RPM has no equivalent of this dual condition — their trigger
-    (``is_out_of_range``) is a single raw-value threshold with no confidence
-    score behind it, since they have no trained model gating this workflow.
-    Kept as one combined workflow rather than two separate ones: both
-    triggers resolve through the identical ``review``/``escalate`` action,
-    so a second queue/endpoint would only duplicate that resolution logic
-    for no behavioural difference. Each entry's ``reasons`` field says which
-    of the two conditions applied, so a clinician can tell why a given
-    patient is here without needing two lists.
-
-    The ``count`` in the pagination envelope doubles as the KPI number —
-    same convention ``AlertListView`` already uses for its own
-    ``unacknowledged`` badge, so no separate counts-only endpoint is needed.
-    """
-
-    organization_lookup = "patient__location__organization"
-
-    def _scope_to_assigned(self, queryset, request):
-        return scope_to_assigned_staff(queryset, request, path_prefix="")
-
-    @staticmethod
-    def _reasons(assessment):
-        reasons = []
-        if assessment.is_actionable:
-            reasons.append("actionable")
-        if assessment.flagged_for_review:
-            reasons.append("low_confidence")
-        return reasons
-
-    def get(self, request):
-        _, error = self.hospital_or_error(request)
-        if error:
-            return error
-
-        needs_attention = Q(flagged_for_review=True) | Q(
-            final_risk_level__in=[RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH],
-        )
-        latest_relevant = RiskAssessment.objects.filter(
-            needs_attention,
-            pregnancy=OuterRef("pk"),
-            review_status=RiskAssessment.REVIEW_PENDING,
-        ).order_by("-assessed_at")
-
-        queryset = (
-            self.scope_to_organization(Pregnancy.objects.filter(status=Pregnancy.STATUS_ACTIVE))
-            .filter(
-                Q(risk_assessments__flagged_for_review=True)
-                | Q(risk_assessments__final_risk_level__in=[RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH]),
-                risk_assessments__review_status=RiskAssessment.REVIEW_PENDING,
-            )
-            .annotate(relevant_assessment_id=Subquery(latest_relevant.values("id")[:1]))
-            .select_related("patient")
-            .distinct()
-            .order_by("-created_at")
-        )
-        queryset = self._scope_to_assigned(queryset, request)
-
-        paginator = DefaultPagination()
-        page = list(paginator.paginate_queryset(queryset, request, view=self))
-
-        assessments = {
-            assessment.id: assessment
-            for assessment in RiskAssessment.objects.filter(
-                id__in=[pregnancy.relevant_assessment_id for pregnancy in page],
-            ).select_related("reading")
-        }
-        results = [
-            {
-                "patient_id": pregnancy.patient_id,
-                "patient_name": pregnancy.patient.full_name,
-                "pregnancy_id": pregnancy.id,
-                "reasons": self._reasons(assessments[pregnancy.relevant_assessment_id]),
-                "assessment": RiskAssessmentSerializer(assessments[pregnancy.relevant_assessment_id]).data,
-            }
-            for pregnancy in page
-        ]
-        return paginator.get_paginated_response(results)
-
-
 class RiskBulkReviewView(MonitoringView):
     """Review or escalate many pending assessments in one call — ported from
     Neuro_RPM's ``bulk-review`` action. Body: ``{"items": [{"assessment_id":
     <uuid>, "review_status": "reviewed" | "escalated", "confirmed_risk_level":
     "low" | "medium" | "high"}, ...]}``.
+
+    Same permission as the single-assessment actions — see
+    ``_RiskReviewActionView``'s own docstring for why hospital_admin is
+    included here (matching Neuro_RPM's ``MANAGE``) but not on Alert
+    acknowledge/resolve.
     """
 
-    permission_classes = [IsAuthenticated, IsClinician]
+    permission_classes = [IsAuthenticated, (IsClinician | IsHospitalAdmin)]
     organization_lookup = "pregnancy__patient__location__organization"
 
     def post(self, request):
@@ -478,7 +433,9 @@ class RiskBulkReviewView(MonitoringView):
 
 
 class DeviceListCreateView(MonitoringView):
-    """The hospital's devices. Registering stock is an admin task."""
+    """The hospital's devices. Open to any hospital staff role, matching
+    Neuro_RPM's own DeviceViewSet (IsAdmin | IsProvider | IsCareManager |
+    IsNurse) -- confirmed during the 2026-09-26 permission audit."""
 
     organization_lookup = "organization"
 

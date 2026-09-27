@@ -1672,7 +1672,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/patients/?search=&assigned_to=&page=1&page_size=20",
+              "raw": "{{base_url}}/api/patients/?search=&assigned_to=&location=&is_active=&care_manager=&provider=&nurse=&workflow=&care_activity=&page=1&page_size=20",
               "host": [
                 "{{base_url}}"
               ],
@@ -1682,7 +1682,49 @@
                 ""
               ]
             },
-            "description": "This hospital's patients only -- scoped through `location__organization`, so another hospital's patient is never in the list.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`search` matches first name, last name, full name, phone, CNIC or MRN (case-insensitive, server-side).\n\n`assigned_to=me` narrows to the caller's own caseload: a provider sees pregnancies where they hold the `provider` slot, a nurse the `nurse` slot, a care_manager the `care_manager` slot. For a hospital_admin it returns an honest EMPTY list -- 'my patients' is not a concept that applies to them, and silently returning everyone under that label would be wrong.\n\nEach row carries the current risk level so the deteriorating patient can be sorted to the top rather than buried alphabetically. Standard pagination envelope: {count, page, page_size, total_pages, next, previous, results}."
+            "description": "This hospital's patients only -- scoped through `location__organization`, so another hospital's patient is never in the list.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`search` matches first name, last name, full name, phone, CNIC or MRN (case-insensitive, server-side).\n\n`assigned_to=me` narrows to the caller's own caseload: a provider sees pregnancies where they hold the `provider` slot, a nurse the `nurse` slot, a care_manager the `care_manager` slot. For a hospital_admin it returns an honest EMPTY list -- 'my patients' is not a concept that applies to them, and silently returning everyone under that label would be wrong.\n\n`location`/`is_active`/`care_manager`/`provider`/`nurse` are roster filters matching Neuro_RPM's own `_scoped_queryset()` filter set -- the three staff filters reach through the active pregnancy (that's where care team actually lives). Shared with Get Dashboard KPIs below so the two can never disagree about which patients are in scope.\n\n`workflow=risk_review` / `workflow=low_confidence` and `care_activity=monitoring_follow_up` / `unseen_readings` / `reading_reminder` narrow the roster the same way Neuro_RPM's own `?workflow=`/`?care_activity=` params do -- one endpoint, five filters, replacing what used to be five separate standing queue endpoints. `unseen_readings`/`reading_reminder` only return patients with an active pregnancy (a reading always requires one).\n\nEvery row carries the current risk level, `pending_risk_count`/`needs_risk_review`/`needs_low_confidence_review` (unconditionally, not just when filtered by `workflow=`), care-team names, language, gestational age (short and long display), and the Monitoring Follow-up / Unseen Readings / Reading Reminder signals (`last_monitoring_contact_at`, `last_reading_at`, `monitoring_seconds_this_month`) -- all embedded read-only, ownership stays on Pregnancy/User. `last_reading_display`/`last_monitoring_contact_display` give the humanized \"Today\"/\"Yesterday\"/\"N days ago\" form of the two timestamps above, in the patient's own Location timezone -- `null` when she's never had one, never a fabricated value. Standard pagination envelope: {count, page, page_size, total_pages, next, previous, results}."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Dashboard KPIs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/dashboard-kpis/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "dashboard-kpis",
+                ""
+              ]
+            },
+            "description": "The single combined Dashboard KPIs endpoint, matching Neuro_RPM's own `dashboard-kpis` shape with MomCare's own three workflows/care-activities instead of theirs: `{total_patients, active_patients, inactive_patients, pending_join_requests, workflow: {risk_review, low_confidence}, care_activities: {monitoring_follow_up, unseen_readings, reading_reminder}}`.\n\nNo `priority_list`/`manage_careplans` keys -- Neuro_RPM's Priority Patients is a billing-cycle compliance score with no MomCare equivalent (explicitly declined), and MomCare has no CCM care-plan concept either.\n\n`total_patients`/`active_patients`/`inactive_patients` and both `workflow`/`care_activities` counts respect the same `location`/`is_active`/`care_manager`/`provider`/`nurse` filters as List / Search Patients above (`apply_roster_filters`, shared so the two can never disagree about scope), via the same underlying condition functions the `?workflow=`/`?care_activity=` filters on that same endpoint use -- a number here can never disagree with what that filter actually returns.\n\n`pending_join_requests` is a top-level sibling, not nested in `workflow`/`care_activities` -- a `PatientJoinRequest` isn't a `Patient` yet (no row exists until a hospital approves it). Scoped only by organization, not affected by the roster filters above (a join request has no location/care-team assignment for those to narrow). No Neuro_RPM equivalent."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Quick Lookup KPIs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/patients/quick-lookup-kpis/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "quick-lookup-kpis",
+                ""
+              ]
+            },
+            "description": "Organization-wide Staff/Patient totals across EVERY location, matching Neuro_RPM's own `quick-lookup-kpis`: `{staff: {total, active, inactive}, patients: {total, active, inactive}}`.\n\nDeliberately separate from Get Dashboard KPIs above -- that one always respects `?location=`/`?assigned_to=me`; this one never does, for any caller, even if you pass `?location=` it has no effect at all. The point is a whole-hospital total that doesn't move when a dashboard's own location filter changes.\n\nAdapted for multi-tenancy, not ported literally: Neuro_RPM's own version applies zero scoping at all (no organization filter), because that codebase is single-tenant -- one hospital per deployment. MomCare is shared-schema multi-tenant, so here 'no location/role scoping' means skip the roster filters only -- the organization filter itself always applies; dropping it would be a cross-tenant PHI leak."
           },
           "response": []
         },
@@ -2770,33 +2812,6 @@
               ]
             },
             "description": "Clinicians only. Marks a pending assessment as escalated -- a triage label only, no Alert side effect and no notification (MomCare's real escalation ladder is the separate Alert/AlertEvent system, which already runs independently). Same guards as Review: `confirmed_risk_level` required, only an assessment that needs attention (actionable, flagged, or both) and is still pending can be escalated."
-          },
-          "response": []
-        },
-        {
-          "name": "Get Risk Review Queue",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/risk-review-queue/?assigned_to=me",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "risk-review-queue",
-                ""
-              ],
-              "query": [
-                {
-                  "key": "assigned_to",
-                  "value": "me",
-                  "description": "Optional -- only this clinician's own patients."
-                }
-              ]
-            },
-            "description": "Patients whose current pregnancy has at least one pending assessment that needs attention -- either the risk level itself is actionable (Medium/High), or the model's own confidence was below the hospital's threshold, whatever the level came out as. These are two independent signals (severity and model certainty don't move together), so a flagged Low shows up here too, not just Medium/High cases. Each result carries a `reasons` array (`actionable` and/or `low_confidence`) saying which condition applied. Paginated; the envelope's `count` doubles as the KPI number, same convention the Alerts list uses for its own `unacknowledged` badge. `?assigned_to=me` narrows to the caller's own care-team patients, same semantics as the Patients and Alerts lists."
           },
           "response": []
         },

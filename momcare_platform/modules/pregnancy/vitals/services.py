@@ -13,6 +13,8 @@ from rest_framework import serializers
 
 from momcare_model import clinical_categories
 from momcare_model.statistics import allocate_percentages, round_metric_value
+from momcare_platform.core.monitoring.services import month_bounds
+from momcare_platform.core.patients.models import Pregnancy
 from momcare_platform.modules.pregnancy.vitals.models import Device, RiskAssessment, VitalReading
 
 
@@ -72,10 +74,16 @@ def reassess_risk(pregnancy) -> RiskAssessment | None:
     reading yet, or ``predict()`` itself refused (every vital on the latest
     reading is missing — see its own docstring).
 
-    A new row is written only when ``final_risk_level`` changed from the
-    pregnancy's last assessment — this is a history of transitions, not one
-    row per reading. The very first assessment for a pregnancy always
-    counts as a transition, since there was no prior level to match.
+    A row is written for every reading, unconditionally — one
+    ``RiskAssessment`` per ``VitalReading``, never re-running the model to
+    reconstruct history later. This reverses an earlier "transitions only"
+    design (a row only when ``final_risk_level`` changed) — kept the
+    pregnancy's full risk history one call away without a second inference,
+    but the user explicitly decided the complete per-reading record matters
+    more than the smaller table: see MEMORY.md's per-reading risk history
+    decision. ``previous_risk_level`` still records what the level was
+    immediately before this row, so a transition is always recoverable by
+    comparing consecutive rows even though every row is now stored.
 
     Two postprocessing steps run on the model's raw answer, per the decisions
     in MEMORY.md's ML design doc:
@@ -113,8 +121,6 @@ def reassess_risk(pregnancy) -> RiskAssessment | None:
 
     previous = current_risk(pregnancy)
     previous_final_level = previous.final_risk_level if previous else ""
-    if previous is not None and previous_final_level == final_risk_level:
-        return None
 
     threshold = pregnancy.patient.location.organization.effective_confidence_threshold
     confidence = Decimal(str(round(result["confidence"], 3)))
@@ -143,6 +149,35 @@ def reassess_risk(pregnancy) -> RiskAssessment | None:
 def current_risk(pregnancy) -> RiskAssessment | None:
     """The standing judgement — the most recent assessment, whatever its level."""
     return pregnancy.risk_assessments.order_by("-assessed_at").first()
+
+
+# ── Patient-list roster filters ──────────────────────────────────────────────
+# ``?workflow=risk_review``/``?workflow=low_confidence`` on GET /api/patients/,
+# matching Neuro_RPM's own query-param-on-one-endpoint convention. Root on
+# Patient (via the ``pregnancies__`` join), not Pregnancy directly, since the
+# caller is always the patient list. Resolved from core.patients via
+# importlib, never a static import -- core must not import modules.
+
+
+def patients_needing_risk_review(patients):
+    """Patients with a pending, actionable (Medium/High) assessment on their
+    active pregnancy -- same condition ``RiskReviewQueueView`` used before
+    the endpoints were consolidated into query params."""
+    return patients.filter(
+        pregnancies__status=Pregnancy.STATUS_ACTIVE,
+        pregnancies__risk_assessments__review_status=RiskAssessment.REVIEW_PENDING,
+        pregnancies__risk_assessments__final_risk_level__in=[RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH],
+    ).distinct()
+
+
+def patients_needing_low_confidence_review(patients):
+    """Patients with a pending assessment the model itself was unsure about
+    -- same condition ``LowConfidenceQueueView`` used before consolidation."""
+    return patients.filter(
+        pregnancies__status=Pregnancy.STATUS_ACTIVE,
+        pregnancies__risk_assessments__review_status=RiskAssessment.REVIEW_PENDING,
+        pregnancies__risk_assessments__flagged_for_review=True,
+    ).distinct()
 
 
 # ── Risk review workflow ─────────────────────────────────────────────────────
@@ -443,4 +478,57 @@ def compute_vitals_summary(pregnancy) -> dict:
     for field in VITALS_SUMMARY_FIELDS:
         value = result[f"{field}__avg"]
         averages[field] = round_metric_value(field, float(value)) if value is not None else None
-    return {"last_30_days_average": averages}
+    return {
+        "last_30_days_average": averages,
+        "risk_this_month": compute_month_risk_breakdown(pregnancy),
+    }
+
+
+def compute_month_risk_breakdown(pregnancy) -> dict | None:
+    """Percentage of Low/Medium/High among every ``RiskAssessment`` row this
+    pregnancy has for the current **calendar month** (Jan/Feb/Mar, not a
+    rolling 30-day window like the rest of this endpoint) -- explicitly
+    requested to match, e.g., ``monitoring_seconds_this_month``'s own
+    calendar-month convention rather than ``last_30_days_average``'s.
+
+    Straightforward now that ``reassess_risk()`` writes one row per reading
+    instead of one row per transition (see its own docstring) -- no need to
+    reconstruct anything or re-run the model; this just tallies
+    ``final_risk_level`` (the level actually acted on, not the model's raw
+    answer) on rows already sitting in the table.
+
+    ``None`` when there were no assessments in the month at all -- "never
+    assessed this month" must not be confused with "assessed and found
+    every reading Low", same "an honest gap beats a fabricated normal-looking
+    value" rule ``compute_vitals_summary`` itself already follows.
+    """
+    tzinfo = pregnancy.patient.location.timezone
+    now_local = timezone.localtime(timezone.now(), timezone=tzinfo)
+    start, end = month_bounds(year=now_local.year, month=now_local.month, tzinfo=tzinfo)
+
+    counts = dict.fromkeys([RiskAssessment.LEVEL_LOW, RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH], 0)
+    levels = pregnancy.risk_assessments.filter(assessed_at__gte=start, assessed_at__lte=end).values_list(
+        "final_risk_level",
+        flat=True,
+    )
+    for level in levels:
+        counts[level] += 1
+
+    total = sum(counts.values())
+    if not total:
+        return None
+
+    # On a tie, break toward the more severe level -- a month split evenly
+    # between Low and High must never silently surface as "Low", which is
+    # the wrong side to round a genuinely mixed month towards for a doctor
+    # scanning for who needs attention. Severity order, not dict/insertion
+    # order, decides ties.
+    severity_order = [RiskAssessment.LEVEL_LOW, RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH]
+    most_common = max(severity_order, key=lambda level: (counts[level], severity_order.index(level)))
+
+    return {
+        "counts": counts,
+        "percentages": allocate_percentages(counts, total),
+        "most_common": most_common,
+        "total_count": total,
+    }

@@ -109,6 +109,43 @@ def test_bulk_create_does_not_trigger_it(pregnancy):
     assert not RiskAssessment.objects.filter(pregnancy=pregnancy).exists()
 
 
+def test_creating_a_reading_updates_the_patients_last_reading_at(pregnancy):
+    patient = pregnancy.patient
+    assert patient.last_reading_at is None
+    recorded_at = timezone.now()
+
+    VitalReading.objects.create(
+        pregnancy=pregnancy,
+        recorded_at=recorded_at,
+        source=VitalReading.SOURCE_MANUAL,
+        **HIGH_VITALS,
+    )
+
+    patient.refresh_from_db()
+    assert patient.last_reading_at == recorded_at
+
+
+def test_an_older_backfilled_reading_does_not_move_last_reading_at_backwards(pregnancy):
+    patient = pregnancy.patient
+    now = timezone.now()
+    VitalReading.objects.create(
+        pregnancy=pregnancy,
+        recorded_at=now,
+        source=VitalReading.SOURCE_MANUAL,
+        **HIGH_VITALS,
+    )
+
+    VitalReading.objects.create(
+        pregnancy=pregnancy,
+        recorded_at=now - timedelta(days=3),
+        source=VitalReading.SOURCE_MANUAL,
+        **HIGH_VITALS,
+    )
+
+    patient.refresh_from_db()
+    assert patient.last_reading_at == now
+
+
 def test_disconnecting_the_signal_proves_it_was_doing_the_work(pregnancy):
     """Fault injection: with the receiver removed, the exact same create()
     call that scores a reading everywhere else in this file must not."""

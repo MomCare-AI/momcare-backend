@@ -12,9 +12,10 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from momcare_platform.core.patients.services import onboard_patient
-from momcare_platform.modules.pregnancy.vitals.models import VitalReading
+from momcare_platform.modules.pregnancy.vitals.models import RiskAssessment, VitalReading
 from momcare_platform.modules.pregnancy.vitals.services import (
     READING_PERIODS,
+    compute_month_risk_breakdown,
     compute_reading_statistics,
     compute_vitals_summary,
     resolve_custom_reading_range,
@@ -269,3 +270,102 @@ def test_vitals_summary_is_null_not_zero_for_a_vital_with_no_readings(make_hospi
 
     assert summary["last_30_days_average"]["blood_glucose"] is None
     assert summary["last_30_days_average"]["hemoglobin"] is None
+
+
+# ── compute_month_risk_breakdown ─────────────────────────────────────────────
+# Percentage of Low/Medium/High among every RiskAssessment row this calendar
+# month, straightforward now that reassess_risk() writes one row per reading
+# instead of one per transition -- no model re-run needed. Calendar month
+# (Jan/Feb/Mar), not the 30-day window compute_vitals_summary's own averages
+# use -- explicitly requested to match monitoring_seconds_this_month's own
+# convention instead.
+
+
+def _assessment(pregnancy, level, *, assessed_at=None):
+    assessment = RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=level,
+        final_risk_level=level,
+    )
+    if assessed_at is not None:
+        RiskAssessment.objects.filter(pk=assessment.pk).update(assessed_at=assessed_at)
+        assessment.refresh_from_db()
+    return assessment
+
+
+def test_month_risk_breakdown_is_none_with_no_assessments(make_hospital, pregnancy_for):
+    hospital = make_hospital("No Risk History Hospital")
+    pregnancy = pregnancy_for(hospital)
+
+    assert compute_month_risk_breakdown(pregnancy) is None
+
+
+def test_month_risk_breakdown_tallies_final_risk_level(make_hospital, pregnancy_for):
+    hospital = make_hospital("Risk Breakdown Hospital")
+    pregnancy = pregnancy_for(hospital)
+    _assessment(pregnancy, RiskAssessment.LEVEL_HIGH)
+    _assessment(pregnancy, RiskAssessment.LEVEL_HIGH)
+    _assessment(pregnancy, RiskAssessment.LEVEL_MEDIUM)
+    _assessment(pregnancy, RiskAssessment.LEVEL_LOW)
+
+    breakdown = compute_month_risk_breakdown(pregnancy)
+
+    assert breakdown is not None
+    assert breakdown["total_count"] == 4
+    assert breakdown["counts"] == {"low": 1, "medium": 1, "high": 2}
+    assert breakdown["percentages"] == {"low": 25, "medium": 25, "high": 50}
+    assert breakdown["most_common"] == RiskAssessment.LEVEL_HIGH
+
+
+def test_month_risk_breakdown_breaks_a_tie_toward_the_more_severe_level(make_hospital, pregnancy_for):
+    """Low:2/High:2 is a genuine tie -- must resolve to High, not silently
+    default to whichever level happens to iterate first. A doctor scanning
+    for who needs attention must never see a mixed Low/High month reported
+    as "Low"."""
+    hospital = make_hospital("Risk Breakdown Tie Hospital")
+    pregnancy = pregnancy_for(hospital)
+    _assessment(pregnancy, RiskAssessment.LEVEL_LOW)
+    _assessment(pregnancy, RiskAssessment.LEVEL_LOW)
+    _assessment(pregnancy, RiskAssessment.LEVEL_HIGH)
+    _assessment(pregnancy, RiskAssessment.LEVEL_HIGH)
+
+    breakdown = compute_month_risk_breakdown(pregnancy)
+
+    assert breakdown is not None
+    assert breakdown["most_common"] == RiskAssessment.LEVEL_HIGH
+
+
+def test_month_risk_breakdown_excludes_a_different_calendar_month(make_hospital, pregnancy_for):
+    hospital = make_hospital("Risk Breakdown Old Month Hospital")
+    pregnancy = pregnancy_for(hospital)
+    last_month = timezone.now() - timedelta(days=45)
+    _assessment(pregnancy, RiskAssessment.LEVEL_HIGH, assessed_at=last_month)
+    _assessment(pregnancy, RiskAssessment.LEVEL_LOW)
+
+    breakdown = compute_month_risk_breakdown(pregnancy)
+
+    assert breakdown is not None
+    assert breakdown["total_count"] == 1
+    assert breakdown["counts"] == {"low": 1, "medium": 0, "high": 0}
+
+
+def test_vitals_summary_embeds_the_month_risk_breakdown(make_hospital, pregnancy_for):
+    hospital = make_hospital("Vitals Summary Risk Hospital")
+    pregnancy = pregnancy_for(hospital)
+    _assessment(pregnancy, RiskAssessment.LEVEL_MEDIUM)
+
+    summary = compute_vitals_summary(pregnancy)
+    risk_this_month = summary["risk_this_month"]
+
+    assert risk_this_month is not None
+    assert risk_this_month["most_common"] == RiskAssessment.LEVEL_MEDIUM
+    assert risk_this_month["total_count"] == 1
+
+
+def test_vitals_summary_risk_this_month_is_none_with_no_history(make_hospital, pregnancy_for):
+    hospital = make_hospital("Vitals Summary No Risk History Hospital")
+    pregnancy = pregnancy_for(hospital)
+
+    summary = compute_vitals_summary(pregnancy)
+
+    assert summary["risk_this_month"] is None

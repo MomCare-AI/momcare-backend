@@ -1,6 +1,9 @@
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import serializers
 
+from momcare_platform.core.common.formatting import humanize_days_ago
+from momcare_platform.core.monitoring.services import format_duration
 from momcare_platform.core.patients.models import Patient, PatientJoinRequest, Pregnancy
 from momcare_platform.core.staff.api.serializers import SecondaryProviderBriefSerializer
 from momcare_platform.core.staff.models import Staff
@@ -204,10 +207,22 @@ class PatientListSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(read_only=True)
     pregnancy_id = serializers.SerializerMethodField()
     gestational_age_display = serializers.SerializerMethodField()
+    gestational_age_long_display = serializers.SerializerMethodField()
     pregnancy_status = serializers.SerializerMethodField()
     risk_level = serializers.SerializerMethodField()
     risk_assessed_at = serializers.SerializerMethodField()
     statuses = serializers.SerializerMethodField()
+    provider_name = serializers.SerializerMethodField()
+    nurse_name = serializers.SerializerMethodField()
+    care_manager_name = serializers.SerializerMethodField()
+    language = serializers.SerializerMethodField()
+    monitoring_seconds_this_month = serializers.SerializerMethodField()
+    monitoring_time_display = serializers.SerializerMethodField()
+    pending_risk_count = serializers.SerializerMethodField()
+    needs_risk_review = serializers.SerializerMethodField()
+    needs_low_confidence_review = serializers.SerializerMethodField()
+    last_reading_display = serializers.SerializerMethodField()
+    last_monitoring_contact_display = serializers.SerializerMethodField()
 
     class Meta:
         model = Patient
@@ -218,12 +233,26 @@ class PatientListSerializer(serializers.ModelSerializer):
             "phone",
             "cnic",
             "date_of_birth",
+            "language",
             "pregnancy_id",
             "gestational_age_display",
+            "gestational_age_long_display",
             "pregnancy_status",
             "risk_level",
             "risk_assessed_at",
+            "pending_risk_count",
+            "needs_risk_review",
+            "needs_low_confidence_review",
+            "provider_name",
+            "nurse_name",
+            "care_manager_name",
             "statuses",
+            "last_monitoring_contact_at",
+            "last_monitoring_contact_display",
+            "last_reading_at",
+            "last_reading_display",
+            "monitoring_seconds_this_month",
+            "monitoring_time_display",
             "is_active",
             "created_at",
         ]
@@ -250,6 +279,14 @@ class PatientListSerializer(serializers.ModelSerializer):
         pregnancy = self._pregnancy(obj)
         return pregnancy.gestational_age_display if pregnancy else None
 
+    def get_gestational_age_long_display(self, obj) -> str | None:
+        """Dashboard-friendly "7 months 2 weeks 4 days" form -- see
+        ``Pregnancy.gestational_age_long_display``'s own docstring for why
+        this is a second field rather than a change to the short one
+        above, which stays the clinical convention used everywhere else."""
+        pregnancy = self._pregnancy(obj)
+        return pregnancy.gestational_age_long_display if pregnancy else None
+
     def get_pregnancy_status(self, obj) -> str | None:
         pregnancy = self._pregnancy(obj)
         return pregnancy.status if pregnancy else None
@@ -265,6 +302,27 @@ class PatientListSerializer(serializers.ModelSerializer):
         assessed_at = getattr(pregnancy, "latest_risk_at", None) if pregnancy else None
         return assessed_at.isoformat() if assessed_at else None
 
+    def get_pending_risk_count(self, obj) -> int:
+        """How many pending assessments need attention (actionable OR
+        flagged), regardless of reason -- matches the old Risk Review/Low
+        Confidence queues' own ``pending_count``, now shown unconditionally
+        on every row instead of only inside a dedicated queue endpoint.
+        """
+        pregnancy = self._pregnancy(obj)
+        return getattr(pregnancy, "pending_risk_count", None) or 0 if pregnancy else 0
+
+    def get_needs_risk_review(self, obj) -> bool:
+        """Any pending, actionable (Medium/High) assessment -- same
+        condition ``?workflow=risk_review`` filters the list by."""
+        pregnancy = self._pregnancy(obj)
+        return bool(getattr(pregnancy, "pending_actionable_count", 0)) if pregnancy else False
+
+    def get_needs_low_confidence_review(self, obj) -> bool:
+        """Any pending assessment the model itself was unsure about -- same
+        condition ``?workflow=low_confidence`` filters the list by."""
+        pregnancy = self._pregnancy(obj)
+        return bool(getattr(pregnancy, "pending_flagged_count", 0)) if pregnancy else False
+
     def _statuses(self, obj):
         """Prefer the prefetched queryset over a fresh per-row query -- same
         reasoning as ``_pregnancy`` above. Full history, newest first
@@ -277,6 +335,64 @@ class PatientListSerializer(serializers.ModelSerializer):
 
     def get_statuses(self, obj) -> list[dict]:
         return [{"name": s.name, "description": s.description, "color": s.color} for s in self._statuses(obj)]
+
+    def _care_team_name(self, obj, role: str) -> str | None:
+        """``provider``/``nurse``/``care_manager`` live on the current
+        pregnancy, not on Patient directly -- see CLAUDE.md's "why staff
+        attaches to Pregnancy, not Patient" for why. Embedded here purely
+        as a read-only display convenience, the same "ownership stays on
+        Pregnancy, the Patient row gets a flattened copy" pattern
+        ``gestational_age_display`` above already uses.
+        """
+        pregnancy = self._pregnancy(obj)
+        staff = getattr(pregnancy, role, None) if pregnancy else None
+        return staff.user.get_full_name() if staff else None
+
+    def get_provider_name(self, obj) -> str | None:
+        return self._care_team_name(obj, "provider")
+
+    def get_nurse_name(self, obj) -> str | None:
+        return self._care_team_name(obj, "nurse")
+
+    def get_care_manager_name(self, obj) -> str | None:
+        return self._care_team_name(obj, "care_manager")
+
+    def get_language(self, obj) -> str | None:
+        """Only present when she has an app account -- language lives on
+        ``User``, and ``Patient.user`` is optional (a rural patient may
+        never have one)."""
+        return obj.user.language if obj.user_id else None
+
+    def get_monitoring_seconds_this_month(self, obj) -> int:
+        """Prefer the prefetched current-period row over a fresh query --
+        same reasoning as ``_pregnancy``/``_statuses`` above."""
+        prefetched = getattr(obj, "current_period_analytics", None)
+        if prefetched is not None:
+            return prefetched[0].monitoring_seconds if prefetched else 0
+        current_period = timezone.now().date().replace(day=1)
+        row = obj.analytics_periods.filter(period_month=current_period).first()
+        return row.monitoring_seconds if row else 0
+
+    def get_monitoring_time_display(self, obj) -> str:
+        """ "26m 3s"/"1h 15m 8s"/"7d 4h 45m 12s" -- ``format_duration()``
+        (``core.monitoring.services``), already used for the Staff Audit
+        Report. Additive alongside the raw ``monitoring_seconds_this_month``,
+        same "raw field stays, a display convenience gets added" pattern as
+        ``last_reading_display``."""
+        return format_duration(self.get_monitoring_seconds_this_month(obj))
+
+    def get_last_reading_display(self, obj) -> str | None:
+        """ "Today"/"Yesterday"/"N days ago" -- ``None`` when she's never had
+        a reading at all (from either a device or a manual entry -- see
+        ``modules.pregnancy.vitals.signals.update_last_reading_at``, which
+        doesn't distinguish between the two). Additive alongside
+        ``last_reading_at``, the same "raw field stays, a display
+        convenience gets added" pattern as ``gestational_age_long_display``.
+        """
+        return humanize_days_ago(obj.last_reading_at, obj.location.timezone)
+
+    def get_last_monitoring_contact_display(self, obj) -> str | None:
+        return humanize_days_ago(obj.last_monitoring_contact_at, obj.location.timezone)
 
 
 class PatientDetailSerializer(serializers.ModelSerializer):

@@ -3,7 +3,11 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from momcare_platform.core.common.models import Deactivatable, TimeStampedModel, UUIDPrimaryKeyModel
-from momcare_platform.core.common.obstetrics import calculate_gestational_age, edd_from_lmp
+from momcare_platform.core.common.obstetrics import (
+    calculate_gestational_age,
+    edd_from_lmp,
+    gestational_age_long_display,
+)
 
 BLOOD_GROUP_CHOICES = [
     ("A+", "A+"),
@@ -116,6 +120,17 @@ class Patient(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
         blank=True,
         related_name="patients",
     )
+
+    # ── Denormalized recency caches ─────────────────────────────────────────
+    # Running "most recent" values, not calendar-month-scoped like
+    # core.analytics.PatientAnalytics.monitoring_seconds -- there is no
+    # meaning to "what was last_reading_at last March", so these live here
+    # directly rather than on a per-period row. Kept correct by signals in
+    # core.monitoring (sessions/notes) and modules.pregnancy.vitals
+    # (readings) -- see each app's own signals.py. Feed the Monitoring
+    # Follow-up / Unseen Readings / Reading Reminder care activities.
+    last_monitoring_contact_at = models.DateTimeField(null=True, blank=True)
+    last_reading_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]
@@ -351,6 +366,14 @@ class Pregnancy(UUIDPrimaryKeyModel, TimeStampedModel):
     def gestational_age_display(self) -> str:
         age = self.gestational_age
         return str(age) if age else "Unknown"
+
+    @property
+    def gestational_age_long_display(self) -> str | None:
+        """Dashboard-friendly "7 months 2 weeks 4 days" form -- see
+        ``gestational_age_long_display``'s own docstring. ``None``, not
+        "Unknown", when there's no EDD yet -- callers already treat a
+        missing pregnancy the same way they treat a missing value here."""
+        return gestational_age_long_display(self.gestational_age)
 
     @property
     def is_active(self) -> bool:

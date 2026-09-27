@@ -21,9 +21,11 @@ explicitly per pregnancy; this signal only covers the ordinary
 ``.create()``/``.save()`` path.
 """
 
+from django.db.models import Q
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+from momcare_platform.core.patients.models import Patient
 from momcare_platform.modules.pregnancy.vitals.models import VitalReading
 from momcare_platform.modules.pregnancy.vitals.services import reassess_risk
 
@@ -33,3 +35,20 @@ def score_reading_on_save(sender, instance, created, **kwargs):
     if not created:
         return
     reassess_risk(instance.pregnancy)
+
+
+@receiver(post_save, sender=VitalReading, dispatch_uid="analytics_update_last_reading_at")
+def update_last_reading_at(sender, instance, created, **kwargs):
+    """Feeds ``Patient.last_reading_at`` -- the Unseen Readings / Reading
+    Reminder care activities' own source field (see core.analytics). Readings
+    are never edited or deleted (see this app's own "not editable" rule), so
+    unlike core.analytics.signals this only ever needs the create path: a
+    reading's ``recorded_at`` can only move the cached value forward, never
+    require reconciling an edit or a delete.
+    """
+    if not created:
+        return
+    patient_id = instance.pregnancy.patient_id
+    Patient.objects.filter(pk=patient_id).filter(
+        Q(last_reading_at__isnull=True) | Q(last_reading_at__lt=instance.recorded_at),
+    ).update(last_reading_at=instance.recorded_at)

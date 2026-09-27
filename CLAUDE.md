@@ -152,9 +152,10 @@ The platform is built and running. Eight capabilities are complete, tested and p
 | 6 | Risk assessment — a real trained model (`momcare_model/`, XGBoost, 88.4% test accuracy), not a rules engine — see "The clinical modules" below |
 | 7 | Alerts and escalation — three-tier ladder, in-portal notifications only (no email leg — removed deliberately, see below), append-only audit trail |
 | 8 | Clinical contact logging — sessions, notes, and a tenant-scoped tag catalogue (`core/monitoring`, `app_label="clinical_notes"`) — see "Apps and what each owns" below |
+| 9 | Care Activities — live recency/threshold roster signals distinct from the review-status workflows above, backed by a new `core/analytics` app. Three built: Monitoring Follow-up, Unseen Readings, Reading Reminder — see "Care Activities" below |
 
-**776 backend tests (4 skipped, whole suite — `uv run pytest`) as of the 26 Sep 2026 revision,
-30 frontend.** `momcare_platform/core` alone is 620 of those — see the `Testing` section below
+**878 backend tests (4 skipped, whole suite — `uv run pytest`) as of the 27 Sep 2026 revision,
+30 frontend.** `momcare_platform/core` alone is 715 of those — see the `Testing` section below
 for that narrower, faster command.
 Security-critical tests validated by fault injection: each protection was
 deliberately removed and the corresponding test confirmed to fail.
@@ -293,10 +294,11 @@ Read `../docs/PLAN.md` first — current status, decisions not to revisit, known
 | App | Models | The thing to know |
 |---|---|---|
 | `staff` | `Staff` `SecondaryProvider` | `SecondaryProvider` is an **external** clinician — no login, no role, never in `/api/staff/`. It is a table rather than columns on Patient because one referring doctor is shared across many patients. Unlike the reference platform's version it carries an `organization` FK: Neuro_RPM is single-tenant, MomCare is not, and without it every hospital would read every other hospital's referral list. **`GET /api/staff/{id}/audit-report/`** (added 25 Sep 2026, inspired by a competitor's staff-activity dashboard — see `docs/design/2026-09-25-staff-audit-report-design.md`) is a read-only aggregation over `Staff`/`MonitoringSession`/`MonitoringNote`/`Alert` — caseload, monitoring time, call outcomes, alerts handled — for a preset rolling window (`?period=2d\|week\|month\|3month\|6month\|year\|2year`, no free-form dates). Deliberately has no RPM/CCM split or "compliance %" — neither concept exists in MomCare's single-programme model. Access reuses `can_manage_staff()` unchanged: self, hospital_admin, or a manager of at least one of the staff member's locations; anyone else in the same hospital gets 403, another hospital's `staff_id` gets 404. |
-| `patients` | `Patient` `Pregnancy` `PatientJoinRequest` | `Patient.user` is **optional** (`SET_NULL`) — a rural patient may have no email and must still have a record. The care team is three direct columns on `Pregnancy` — `provider` (the accountable lead, what alert escalation routes to), `nurse`, `care_manager` — one of each at a time. **`Pregnancy` is the enrol→discharge episode** — there is no separate programme-enrollment table, and a `PatientProgramEnrollment` was deliberately removed for duplicating that role (see `patients/migrations/0011`). MomCare runs one programme; if a second ever arrives, that table earns its place back then. The seven obstetric-history answers and `Patient.consent_date` are plain columns, not satellite tables — `PregnancyRiskFactors` and `Consent` were folded in by `patients/migrations/0012`: one was answered only per-pregnancy, the other became a single date matching the reference platform. Consent is therefore **no longer mandatory** at onboarding. `PatientJoinRequest` is the self-registration path (Part B, built 2026-09-15): a woman registers in the app with `User.organization = NULL`, browses approved hospitals, and sends a request carrying a `draft` of her own details. **No `Patient` row exists until a hospital approves** — and approval calls the same `onboard_patient()` a walk-in uses, so there is exactly one creation path. Her own two endpoints run inside `bypass_rls()` with a `user=request.user` filter, because an org-less token makes the fail-closed policy hide her own rows from her. `ClinicalNote` was also removed (`patients/migrations/0013`) — notes are monitoring, not onboarding, and will be designed fresh alongside the reference platform's tags/templates/sessions rather than half-existing as a text field. |
-| `modules/pregnancy/vitals` | `Device` `VitalReading` `RiskAssessment` | Readings attach to a **pregnancy**, not a patient — a heart rate of 110 means different things at 12 and 38 weeks. Lives under `modules/`, not `core/`, since 16 Sep 2026 (see "Devices, readings, risk and alerts" above) — the Django `app_label` is still `monitoring`, unchanged from its former `core/` home, so table names and RLS policies didn't move with it. **Reading statistics and Vitals Summary added 25 Sep 2026** (see `docs/design/2026-09-25-reading-statistics-design.md`), adapted from Neuro_RPM's own two independently-built features, both plain arithmetic — no AI/ML involved (that's `momcare_model`, a separate, unrelated feature). `GET /readings/` gained `period`/`start_date`+`end_date` window filters and a `reading_type` param that both scopes and triggers a `statistics` block (average/min/max/count/category-percentages) — no separate flag, matching Neuro_RPM's own implicit trigger. `reading_type` is one of `blood_pressure` (bundles `heart_rate` with it, matching Neuro_RPM's own grouping) / `temperature` / `blood_glucose` / `hemoglobin` / `wellness` — statistics are always scoped to exactly one group, never all 9 vitals at once, since `VitalReading`'s flat schema (unlike Neuro_RPM's per-vital-type tables) has no natural single-type filter otherwise. Category percentages classify raw readings directly via the existing `momcare_model/clinical_categories.py` functions — never `RiskAssessment`, whose rows are transition-only, not one per reading. `allocate_percentages()` (`momcare_model/statistics.py`) is Neuro_RPM's largest-remainder rounding algorithm, ported verbatim. Displayed averages/min/max use `round_metric_value()` (same module) — **per-metric decimal places, not a uniform 2 decimals**: BP and heart rate round to the nearest whole number and return `int` (125.9 → `126`, never bucketed to a nearest-ten value like 130); temperature, glucose, hemoglobin and the two wellness scores keep 1 decimal and return `float`. `METRIC_ROUNDING` is Neuro_RPM's own convention, extended for the two vitals it doesn't have (hemoglobin, wellness scores → 1 decimal, matching its "continuous measurement" tier). New `GET /vitals-summary/` is the separate, simpler "quick glance" endpoint: fixed rolling 30-day average across every vital, no filters, same per-metric rounding — MomCare's version has none of Neuro_RPM's cross-table weighted-merge complexity, since `heart_rate` is one column here, not duplicated across two reading-type tables. Neuro_RPM's "previous period comparison" was deliberately not built (most complex piece, least obviously useful, nothing asked for it). **Risk review workflow (`review`/`escalate`/`bulk-review`/`risk-review-queue`) added 26 Sep 2026** — see its own section below, "Risk review workflow — pending/reviewed/escalated". |
+| `patients` | `Patient` `Pregnancy` `PatientJoinRequest` | `Patient.user` is **optional** (`SET_NULL`) — a rural patient may have no email and must still have a record. The care team is three direct columns on `Pregnancy` — `provider` (the accountable lead, what alert escalation routes to), `nurse`, `care_manager` — one of each at a time. **`Pregnancy` is the enrol→discharge episode** — there is no separate programme-enrollment table, and a `PatientProgramEnrollment` was deliberately removed for duplicating that role (see `patients/migrations/0011`). MomCare runs one programme; if a second ever arrives, that table earns its place back then. The seven obstetric-history answers and `Patient.consent_date` are plain columns, not satellite tables — `PregnancyRiskFactors` and `Consent` were folded in by `patients/migrations/0012`: one was answered only per-pregnancy, the other became a single date matching the reference platform. Consent is therefore **no longer mandatory** at onboarding. `PatientJoinRequest` is the self-registration path (Part B, built 2026-09-15): a woman registers in the app with `User.organization = NULL`, browses approved hospitals, and sends a request carrying a `draft` of her own details. **No `Patient` row exists until a hospital approves** — and approval calls the same `onboard_patient()` a walk-in uses, so there is exactly one creation path. Her own two endpoints run inside `bypass_rls()` with a `user=request.user` filter, because an org-less token makes the fail-closed policy hide her own rows from her. `ClinicalNote` was also removed (`patients/migrations/0013`) — notes are monitoring, not onboarding, and will be designed fresh alongside the reference platform's tags/templates/sessions rather than half-existing as a text field. **`PatientListSerializer` enriched 26 Sep 2026** with `gestational_age_long_display`, `provider_name`/`nurse_name`/`care_manager_name` (embedded from `current_pregnancy` — see "Why the care team lives on Pregnancy, not Patient" above), `language` (from `Patient.user.language`, null with no app account), `pending_risk_count`/`needs_risk_review`/`needs_low_confidence_review` (unconditional, on every row — see "Risk review workflow" below), and the three Care Activity signals (`last_monitoring_contact_at`, `last_reading_at`, `monitoring_seconds_this_month`) — all read-only display convenience, ownership unchanged. **`last_reading_display`/`last_monitoring_contact_display` added 27 Sep 2026** — "Today"/"Yesterday"/"N days ago", via a new `core/common/formatting.py::humanize_days_ago()` ported verbatim from Neuro_RPM's own function of the same name (`None` in, `None` out, so "never" stays visibly distinct from "today" rather than a fabricated value), resolved in the patient's own Location timezone. Additive alongside the raw `_at` timestamps, same "raw field stays, add a display convenience" pattern as `gestational_age_long_display`. **`monitoring_time_display` added 27 Sep 2026**, same pattern again: `format_duration()` (`core/monitoring/services.py`, already used for the Staff Audit Report) formats `monitoring_seconds_this_month` as "26m 3s"/"1h 15m 8s"/"7d 4h 45m 12s" instead of a bare integer. `GET /api/patients/` gained `?location=`/`?is_active=`/`?care_manager=`/`?provider=`/`?nurse=` filters the same day (`PatientScopedView.apply_roster_filters`, shared with `dashboard-kpis` below so the two can never disagree about scope) — the three staff filters join through `pregnancies__`, same mechanism `?assigned_to=me` already used. It also gained `?workflow=risk_review`/`low_confidence` and `?care_activity=monitoring_follow_up`/`unseen_readings`/`reading_reminder` (`PatientListCreateView._apply_workflow_and_care_activity`) — these **replaced five separate standing endpoints** that shipped first and were consolidated the same day; see "Risk review workflow" and "Care Activities" below for the full reversal and why. **`GET /api/patients/dashboard-kpis/`** is the single combined KPI surface, matching Neuro_RPM's own `dashboard-kpis` shape with MomCare's own workflows/care-activities: `{total_patients, active_patients, inactive_patients, pending_join_requests, workflow: {risk_review, low_confidence}, care_activities: {monitoring_follow_up, unseen_readings, reading_reminder}}`. No `priority_list`/`manage_careplans` keys (Neuro_RPM's Priority Patients was proposed and explicitly declined — see "Care Activities" below; MomCare has no CCM care-plan concept either). All five workflow/care-activity counts share the identical roster (`apply_roster_filters` + `?assigned_to=me`) the query-param filters use, via the same underlying condition functions — a number here can never disagree with what that filter actually returns. **`pending_join_requests` added 26 Sep 2026**, a top-level sibling rather than nested in `workflow`/`care_activities` — a `PatientJoinRequest` isn't a `Patient` yet (no row exists until a hospital approves it), so it fits neither shape; scoped only by organization, deliberately not run through `apply_roster_filters`/`?assigned_to=me` since a join request has no location/care-team assignment for those to narrow. No Neuro_RPM equivalent — MomCare's `PatientJoinRequest` self-registration flow (see this row's own entry above) has none in that codebase to port from. **`GET /api/patients/quick-lookup-kpis/` added 27 Sep 2026** (`PatientQuickLookupKpisView`), matching Neuro_RPM's own `quick-lookup-kpis`: `{staff: {total, active, inactive}, patients: {total, active, inactive}}`, organization-wide across every location, never narrowed by `?location=`/`?assigned_to=me` even if passed — the whole point is a total that doesn't move when a hospital admin changes their dashboard's location filter, unlike `dashboard-kpis` above. **Adapted for multi-tenancy, not ported literally**: Neuro_RPM's own version applies *zero* scoping (`Patient.objects.aggregate(...)`, no organization filter at all), because that codebase is single-tenant — one hospital per deployment, no `Organization` model to filter by. MomCare is shared-schema multi-tenant, so here "no location/role scoping" means skip `apply_roster_filters`/`?assigned_to=me` only; the organization filter itself stays mandatory — dropping it would be a cross-tenant PHI leak, non-negotiable regardless of what the reference platform's own single-tenant version does. |
+| `modules/pregnancy/vitals` | `Device` `VitalReading` `RiskAssessment` | Readings attach to a **pregnancy**, not a patient — a heart rate of 110 means different things at 12 and 38 weeks. Lives under `modules/`, not `core/`, since 16 Sep 2026 (see "Devices, readings, risk and alerts" above) — the Django `app_label` is still `monitoring`, unchanged from its former `core/` home, so table names and RLS policies didn't move with it. **Reading statistics and Vitals Summary added 25 Sep 2026** (see `docs/design/2026-09-25-reading-statistics-design.md`), adapted from Neuro_RPM's own two independently-built features, both plain arithmetic — no AI/ML involved (that's `momcare_model`, a separate, unrelated feature). `GET /readings/` gained `period`/`start_date`+`end_date` window filters and a `reading_type` param that both scopes and triggers a `statistics` block (average/min/max/count/category-percentages) — no separate flag, matching Neuro_RPM's own implicit trigger. `reading_type` is one of `blood_pressure` (bundles `heart_rate` with it, matching Neuro_RPM's own grouping) / `temperature` / `blood_glucose` / `hemoglobin` / `wellness` — statistics are always scoped to exactly one group, never all 9 vitals at once, since `VitalReading`'s flat schema (unlike Neuro_RPM's per-vital-type tables) has no natural single-type filter otherwise. Category percentages classify raw readings directly via the existing `momcare_model/clinical_categories.py` functions, not `RiskAssessment` rows — a reading's vitals fall into a band regardless of whether that reading's own assessment changed the pregnancy's risk level. `allocate_percentages()` (`momcare_model/statistics.py`) is Neuro_RPM's largest-remainder rounding algorithm, ported verbatim. Displayed averages/min/max use `round_metric_value()` (same module) — **per-metric decimal places, not a uniform 2 decimals**: BP and heart rate round to the nearest whole number and return `int` (125.9 → `126`, never bucketed to a nearest-ten value like 130); temperature, glucose, hemoglobin and the two wellness scores keep 1 decimal and return `float`. `METRIC_ROUNDING` is Neuro_RPM's own convention, extended for the two vitals it doesn't have (hemoglobin, wellness scores → 1 decimal, matching its "continuous measurement" tier). New `GET /vitals-summary/` is the separate, simpler "quick glance" endpoint: fixed rolling 30-day average across every vital, no filters, same per-metric rounding — MomCare's version has none of Neuro_RPM's cross-table weighted-merge complexity, since `heart_rate` is one column here, not duplicated across two reading-type tables. Neuro_RPM's "previous period comparison" was deliberately not built (most complex piece, least obviously useful, nothing asked for it). **Risk review workflow (`review`/`escalate`/`bulk-review`, plus `?workflow=risk_review`/`low_confidence` on `GET /api/patients/`) added 26 Sep 2026** — see its own section below, "Risk review workflow — pending/reviewed/escalated". **`reassess_risk()` changed 27 Sep 2026 to write one `RiskAssessment` row per reading, unconditionally** — see "One `RiskAssessment` row per reading" above for the reversal of the original transitions-only design. `GET /vitals-summary/` gained a `risk_this_month` field the same day (`compute_month_risk_breakdown()`): percentage of Low/Medium/High among every `final_risk_level` this **calendar month** (Jan/Feb/Mar, not the endpoint's own rolling-30-day window used for `last_30_days_average`) — explicitly requested to match `monitoring_seconds_this_month`'s own calendar-month convention instead, and only practical to build without a model re-run because of the same-day per-reading storage change. `None` when there were no assessments that month, not an all-zero breakdown. |
 | `modules/pregnancy/alerts` | `Alert` `AlertEvent` | The push side. `AlertEvent` is append-only: escalation not written down is escalation that never happened. Same `core/`→`modules/` move, `app_label` still `alerts`. |
 | `core/monitoring` | `ClinicalTag` `MonitoringSession` `MonitoringNote` `StatusLabel` `PatientStatus` `NoteTemplate` | Built 23 Sep 2026 — clinical contact logging (calls, chart reviews, notes), adapted from the reference platform's own `core.monitoring` with three deliberate departures: no RPM/CCM program split (MomCare has exactly one programme, so `MonitoringSession` carries a single `duration_seconds`, not a per-billing-program breakdown); attaches to **`Patient`** with an optional **`pregnancy`** FK auto-filled from `patient.current_pregnancy` (not `Pregnancy` alone — `onboard_patient()` allows a patient with no pregnancy yet, unlike readings/alerts which always have one); `ClinicalTag` is tenant-scoped (`organization` XOR `location`, exactly one) where the reference platform's own tag list is global, because MomCare is multi-tenant and it isn't. A new `Location` auto-copies its hospital's org-level tags down as independent rows (`monitoring/signals.py`), the same `post_save` pattern the reference platform uses for `NoteTemplate`/`ChronicCondition`/`Medication`, applied here to a model that platform never scoped this way. **`app_label` is `clinical_notes`, not `monitoring`** — that label already belongs to `modules/pregnancy/vitals` (kept from its own former `core/` home), so this app, despite being the thing `core/monitoring`'s *name* was freed for, needed a different label. Endpoints are flat/patient-nested APIViews matching the rest of this project's convention, not the reference platform's `ModelViewSet`s. **`StatusLabel`/`PatientStatus` added 24 Sep 2026** (see `docs/design/2026-09-24-patient-statuses-design.md`), adapted from the reference platform's `GlobalStatus`/`PatientStatus`: `StatusLabel` is a hospital-invented, freely-colored status catalogue, scoped and copied to new locations exactly like `ClinicalTag`; `PatientStatus` is an append-only, editable/hard-deletable log entry on a patient (same shape as `MonitoringNote`, including `IsOwnerOrHospitalAdmin` on edit/delete). Two deliberate departures from the reference: no `(patient, name)` uniqueness — a status can recur over a pregnancy's months — and `PatientStatus` carries no FK to `StatusLabel` at all (matches the reference's own decoupling: the catalogue powers a picker, logging a status accepts free text regardless of what's in it). `PatientListSerializer`/`PatientDetailSerializer` embed a patient's **entire** status history (`name`/`description`/`color`, newest first) unconditionally, matching the reference platform's own unconditional embed rather than trimming to just the current entry. **`NoteTemplate` added 25 Sep 2026** (see `docs/design/2026-09-25-note-templates-design.md`), adapted from the reference platform's own `NoteTemplate`: reusable canned note text (`title`+`content`), scoped and copied to new locations exactly like `ClinicalTag`. Placed here rather than the reference platform's `organization` app — confirmed that placement there was pure historical migration baggage (a former standalone `core/notes` app folded in, table name pinned), not a meaningful design choice. **Confirmed via investigation that the reference platform never built a server-side "apply a template" mechanism** — no `template_id`/`source_template` field anywhere, no linkage to their note model at all; the frontend just copies a template's `content` into a new note's text field, and the resulting note is a plain, independent note with no record of which template (if any) it came from. `MonitoringNote` gets no new field for this. Two deliberate departures from the reference: `title` is unique per scope (the reference has no such constraint) — two templates with the same name in a picker is confusing, and this app's other catalogues already enforce it; no separate "for-location" dropdown endpoint — the plain list endpoint's existing `visible_*`-style scoping already answers the same question the reference platform needed a second endpoint for. |
+| `core/analytics` | `PatientAnalytics` | Added 26 Sep 2026 — see "Care Activities" below for the full design. One model, `PatientAnalytics(patient, period_month, monitoring_seconds)`, deliberately narrower than the reference platform's own `PatientAnalytics`: only the genuinely calendar-month-scoped field lives here. `Patient.last_monitoring_contact_at`/`last_reading_at` are plain denormalized columns on `Patient` itself, not on this table — they're running "most recent" values with no month boundary, and putting them on a per-period row (as the reference platform does) is ambiguous about which period's copy is authoritative. Its own app (not folded into `core/monitoring` or `core/patients`) matching the reference platform's identical reasoning: it aggregates data owned by multiple other apps. Kept correct by signals in the *consumer*, not the source — `core/analytics/signals.py` listens to `MonitoringSession`/`MonitoringNote` (from `core/monitoring`), and a small addition to `modules/pregnancy/vitals/signals.py` updates `last_reading_at` on every `VitalReading` save — same ownership pattern `core/monitoring/signals.py` already uses for Location's tag/status/template copy-down (the app that needs the derived data owns the signal, not the app being observed). Recompute is always a full recompute from source data, never an incremental delta — `MonitoringSession`/`MonitoringNote` are editable and backdatable (unlike `VitalReading`), so a delta could silently drift from the truth; an edit that moves a record's `recorded_at` across a month boundary refreshes both the old and new month's rows via a `pre_save`-captured old value. Two more Care Activities followed the same day, both scoped to patients with an active pregnancy (unlike Monitoring Follow-up): `patients_with_unseen_readings` (a reading arrived after the last monitoring contact, within `UNSEEN_READINGS_WINDOW_DAYS`) and `patients_needing_reading_reminder` (no reading in `READING_REMINDER_GAP_DAYS`), both reusing `last_reading_at`/`last_monitoring_contact_at` with no new model fields or migrations needed. |
 
 ### The risk model lives outside `momcare_platform/` entirely
 
@@ -362,6 +364,48 @@ read, **never stored** — a stored column is wrong the next day. Never recomput
 anywhere else, or the list, the chart and the risk engine will disagree about how
 pregnant someone is.
 
+A second, dashboard-friendly display exists alongside the clinical "28w 3d" form:
+`gestational_age_long_display()` (same module) and `Pregnancy.gestational_age_long_display`
+render "7 months 2 weeks 4 days" — a "month" here is a 4-week (28-day) unit, not a
+calendar month, chosen because `PREGNANCY_LENGTH_DAYS` (280 = 28 × 10) divides evenly by
+it and a calendar month (28-31 days) does not. This is **additive, not a replacement** —
+the short weeks+days form stays the clinical convention everywhere else (Pregnancy
+detail, the risk engine, reports); the long form exists only on `PatientListSerializer`
+for a lay-readable dashboard summary.
+
+### Why the care team lives on Pregnancy, not Patient
+
+`Pregnancy.provider`/`nurse`/`care_manager` — not `Patient` — even though Neuro_RPM
+assigns staff to its Patient directly. This is not an inconsistency to fix; it follows
+from the same reasoning as gestational age above, applied to accountability instead of
+vitals interpretation.
+
+Neuro_RPM monitors people with **ongoing, unbounded conditions** (diabetes,
+hypertension) — there is no natural episode boundary, so "who is this patient's
+provider" is a single, continuously-true fact with nothing that could silently
+overwrite it later. Maternal health is structurally different: **pregnancy is a
+bounded, repeatable episode.** The same woman can have several pregnancies at the same
+hospital, and `provider` is "the accountable lead, what alert escalation routes to"
+(see the `patients` app row below) — a historical fact about who was responsible for
+*that pregnancy's* alerts, not a standing fact about the woman in general.
+
+If care team lived on `Patient` instead: a woman reassigned to a different provider for
+her *second* pregnancy would retroactively change who's on record as having been
+accountable for her *first* pregnancy's alerts the moment that reassignment happened —
+silently rewriting a historical accountability fact for an unrelated, earlier episode.
+Keeping it on `Pregnancy` freezes that fact correctly. Confirmed directly against
+Neuro_RPM's actual code before writing this: their `PatientSerializer.to_representation()`
+merges `compute_dashboard_analytics()` (reading days, monitoring seconds, last
+call/reading, RPM/CCM progress) onto every patient row unconditionally, and further adds
+`priority_score` only when `?workflow=priority_list` is requested — so their own patient
+list isn't uniformly-shaped either; the two systems just draw the line differently based
+on what each domain's data actually needs.
+
+**The solution for showing care team on the frontend is embedding, not moving the
+data** — the same "ownership stays on Pregnancy, the Patient row gets a flattened
+read-only copy" pattern `gestational_age_display` already uses. See `PatientListSerializer`
+below.
+
 ### Scoping paths
 
 ```
@@ -382,6 +426,7 @@ StatusLabel       → organization XOR location__organization   (exactly one col
 PatientStatus     → patient__organization     (same shape as MonitoringNote; see core/monitoring app row)
 NoteTemplate      → organization XOR location__organization   (exactly one column set; same shape as ClinicalTag)
 Notification      → organization            (direct column, like Device)
+PatientAnalytics  → patient__organization     (same shape as MonitoringNote; see core/analytics app row)
 ```
 
 The one deliberate exception: `platform_admin`'s own views (`core/platform_admin/`) read
@@ -421,6 +466,30 @@ would spend the same quota a real emergency needs. The in-portal alert (and the
 `AlertEvent` audit trail recording who was notified) is unaffected — only the email leg
 is gone, permanently, by design. **Do not re-add an email leg for alerts or low-confidence
 flags without re-reading that commit message first** — this is not an oversight to "fix".
+
+### One `RiskAssessment` row per reading — reversed 27 Sep 2026, do not re-narrow this
+
+`reassess_risk()` writes a row for **every** reading, unconditionally — never re-running
+`predict()`, just never skipping the write either. This reverses the original "transitions
+only" design (a row written only when `final_risk_level` changed from the pregnancy's last
+assessment), which held from the model's launch until this date and was described
+elsewhere in this file and in `MEMORY.md` as settled. It was not a bug fix — the user
+explicitly decided the complete per-reading clinical record matters more than the smaller
+table, overriding the tradeoffs laid out for them: a much larger `risk_assessments` table
+over time, and a bigger `pending_risk_count`/Risk Review Queue/Low Confidence Queue per
+patient once a patient sits at an unreviewed actionable or flagged level for many
+consecutive readings (each now its own pending row, not one row covering the whole
+stretch) — `bulk-review` is the intended way to clear a run of these at once, not a
+second design change layered on top.
+
+`previous_risk_level` still records what the level was immediately before each row, so a
+transition is always recoverable by comparing consecutive rows even though every row is
+now stored — nothing about *reading* the history changed, only *how much* of it exists.
+`sync_alert_for()` needed no change: it already keys off the *current* alert's own state
+(`live.level`, not "did the assessment change since last time"), so calling it on every
+reading — including many consecutive unchanged-level ones — is already idempotent: an
+unchanged actionable level just repoints the live alert's `assessment` FK to the latest
+evidence, no re-notify, no clock reset.
 
 ### Risk review workflow — pending/reviewed/escalated
 
@@ -463,39 +532,232 @@ label-only actions: there is no "just seen, not confirmed" state here:
   one atomic call, ported from Neuro_RPM's `bulk-review`. All-or-nothing: one bad item
   rolls back every write.
 
-`GET /risk-review-queue/` — patients whose current pregnancy has at least one pending
-assessment matching `needs_attention`: **actionable (Medium/High) OR flagged for low
-model confidence**, regardless of level — a flagged Low still shows up, since confidence
-and severity are independent signals that don't move together. Each result carries a
-`reasons` array (`actionable`/`low_confidence`, either or both) so a clinician can tell at
-a glance why a patient is there without needing two separate lists. Neuro_RPM has no
-equivalent of this dual condition — their trigger (`is_out_of_range`) is a single raw-value
-threshold with no confidence score behind it, since they have no trained model gating this
-workflow; this is a MomCare-specific design, not a port. Kept as **one** combined workflow
-rather than two, since both triggers resolve through the identical `review`/`escalate`
-action — a second queue/endpoint would only duplicate that resolution logic. Named to
-match the rest of this workflow (`review_status`, `review`/`escalate`) rather than the
-unrelated, already-existing `Alert` model/endpoint — briefly shipped as `attention-queue`
-before this rename the same day. Patient-centric (one row per patient, not per
-assessment), matching Neuro_RPM's own `?workflow=reading_review` roster filter — but
-built as its own standing endpoint rather than a query param on the Patient list,
-matching this project's own convention for a queue (`AlertListView`). Supports
-`?assigned_to=me`. No separate counts-only endpoint: the pagination envelope's `count`
-doubles as the KPI number, the same convention `AlertListView` already uses for its own
-`unacknowledged` badge — Neuro_RPM needed a second `dashboard-kpis` endpoint only because
-their list and their count are scoped differently; here they aren't.
+All three (`review`/`escalate`/`bulk-review`) are gated to **clinicians (Provider/Nurse/
+Care Manager) or hospital_admin** — `IsClinician | IsHospitalAdmin`. Admin access was
+added after a permission audit (requested by the user, comparing MomCare's role model
+against Neuro_RPM's role-by-role) found a real, unintentional gap: these views had reused
+the plain `IsClinician` class (which excludes admin) from the old `VerifyRiskView`, but
+`IsClinician`'s own reasoning was written specifically for *Alert acknowledgment* (an
+admin silencing the escalation ladder the instant it would reach them) — a concern that
+doesn't transfer to resolving a `RiskAssessment`'s own `review_status`, which never
+touches the Alert's clock. Matches Neuro_RPM's own permission for the identical action
+exactly (`MANAGE = IsAdmin | IsCareManager` on their reading review/escalate/
+bulk_review) — additive relative to Neuro_RPM, not a narrowing: Provider/Nurse keep the
+access they already had, only hospital_admin's access was ever missing. Alert acknowledge/
+resolve itself (`modules/pregnancy/alerts/api/views.py`) is unchanged — still
+`IsClinician`-only, since that reasoning is still valid there.
 
-`RiskAssessment.needs_attention` (actionable OR flagged) is the one place this OR
-condition is defined — both the Queue's query and the `review`/`escalate` guard read off
-it, so they can't drift out of sync. `needs_review` (the property MomCare already had) is
-just `needs_attention and review_status == pending`, re-pointed at the new property rather
-than redefined from scratch.
+The same audit found a second gap, this time in `core/patients`: `PatientDeactivateView`/
+`PatientReactivateView` had inherited the base `PatientScopedView`'s plain
+`IsHospitalStaff` (any staff — correct for read/create/update), letting a Provider or
+Nurse take a patient off the active roster unilaterally. Neuro_RPM's identical action
+gates to `MANAGE = IsAdmin | IsCareManager`; MomCare's two views now use
+`IsHospitalAdmin | IsCareManager` to match. Most of the rest of the audit — Organization
+settings, Location create/reactivate/update/deactivate, StatusLabel/ClinicalTag/
+NoteTemplate writes, Staff onboarding, Users/Auth — was already correct (several had
+already been built to explicitly match Neuro_RPM's own split in an earlier session; see
+`core/locations/api/views.py`'s own module docstring). A follow-up pass (26 Sep 2026)
+went through every remaining area — Staff CRUD (profile edit/delete, deactivate/
+reactivate), `SecondaryProvider`, `core/monitoring` session/note edit-delete, Device
+list/create/assign, and Alert list/detail/acknowledge/resolve — and found no further
+gaps: Staff and `SecondaryProvider` were already confirmed correct in an earlier
+session; `MonitoringSessionDetailView`/`MonitoringNoteDetailView`'s `IsOwnerOrHospitalAdmin`
+matches Neuro_RPM's own `IsOwnerOrAdmin` on both its `MonitoringSessionViewSet` and
+`MonitoringNoteViewSet` exactly; Device views' `IsHospitalStaff` matches Neuro_RPM's
+`DeviceViewSet`/`DeviceEnrollmentViewSet` (`IsAdmin | IsProvider | IsCareManager |
+IsNurse`, i.e. any staff role); Alert list/detail's `IsHospitalStaff` matches the same
+any-staff set on Neuro_RPM's `AlertViewSet`, and Alert acknowledge/resolve's
+`IsClinician`-only restriction (see above) was already a deliberate, unchanged decision
+from the first pass. `platform_admin` remains a deliberate, documented stub (see
+"core/ vs modules/" above) with nothing to audit yet. Two permission gaps total were
+found and fixed across the whole audit — the risk-review actions and patient
+deactivate/reactivate, both above.
+
+**Two independent conditions, not one combined list** — **severity** (actionable,
+Medium/High, regardless of confidence) and **confidence** (flagged for low model
+confidence, regardless of level — a flagged Low counts). A patient can match both. Both
+resolve through the identical `review`/`escalate`/`bulk-review` actions, so nothing about
+*acting* on an entry duplicates between the two, only the *listing* condition differs.
+
+A patient stays listed for **any** outstanding pending match, not only their current
+(latest) assessment — every reading gets its own `RiskAssessment` row (see "Risk scoring
+has exactly one producer" below for the one-row-per-reading reversal), and an older,
+never-touched row keeps counting even after a newer reading has already superseded it.
+Matches Neuro_RPM's own `reading_review_patient_condition()` exactly: "a pending reading
+from any past month still counts until it is reviewed/escalated." Each result's `pending_risk_count`
+says how many qualifying assessments are still outstanding for that patient — a manual
+30-reading, 3-patient end-to-end run (requested explicitly after the two-condition split
+shipped) briefly led to a wrong "fix" narrowing this to current-state-only, which was
+reverted the same day once cross-checked against the Neuro_RPM precedent above.
+
+`GET /pregnancies/{id}/risk/` (the assessment history endpoint) accepts
+`review_status`/`actionable`/`flagged_for_review` query params on `history` — `current` is
+always the true current assessment, unaffected. This mirrors Neuro_RPM's real pattern:
+their frontend gets "this patient's outstanding out-of-range readings" from their generic
+reading list's own filters (`filterset_fields = ["patient", "reading_type",
+"is_out_of_range"]` plus their hand-rolled `review_status`), not a bespoke per-workflow
+endpoint.
+
+**Exposed on the API as `?workflow=risk_review`/`?workflow=low_confidence` on
+`GET /api/patients/`, not as separate standing endpoints — this was a deliberate reversal,
+not the original design.** The two conditions first shipped as `GET /risk-review-queue/`
+and `GET /low-confidence-queue/`, each with its own `-kpis` sibling — five endpoints
+total once Care Activities joined them (see below), explicitly justified at the time by
+matching `AlertListView`'s own standing-endpoint convention and by each queue needing
+different extra per-row data (`pending_risk_count`, `reasons`, a full embedded
+`assessment` object) that a single shared response shape couldn't hold cleanly. The user
+pushed back hard on this, pointing out that Neuro_RPM's own equivalent care activities
+(`monitoring_follow_up` included) are query-param filters on their one Patient List
+endpoint, not separate URLs — and after direct verification against Neuro_RPM's actual
+code, the "different response shapes" objection didn't hold up either: their own
+`PatientSerializer.to_representation()` unconditionally merges `compute_dashboard_
+analytics()` (reading days, monitoring seconds, last call/reading, RPM/CCM progress) onto
+**every** patient row regardless of filter, and conditionally adds `priority_score` only
+for `?workflow=priority_list` — their shape isn't uniform either, it's just merged onto
+every row rather than varying by filter. Resolved the same way: `PatientListSerializer`
+now unconditionally carries `pending_risk_count`/`needs_risk_review`/
+`needs_low_confidence_review` on every row (whether or not `?workflow=` is passed), the
+full per-assessment `reasons` array and embedded `assessment` object were dropped from
+the merged shape (available in full via the unchanged `GET /pregnancies/{id}/risk/`
+history endpoint instead), and the five standing endpoints — along with their five
+`-kpis` siblings — were deleted outright. `review`/`escalate`/`bulk-review` were
+unaffected by this move: those are POST actions in Neuro_RPM too, never query params, so
+only the GET/listing side was ever in scope.
+
+The condition logic itself didn't change — `patients_needing_risk_review()`/
+`patients_needing_low_confidence_review()` (`modules/pregnancy/vitals/services.py`,
+rooted on `Patient` via the `pregnancies__` join rather than `Pregnancy` directly, since
+the caller is now always the patient list) are the exact same filters the old
+`RiskReviewQueueView`/`LowConfidenceQueueView` used. `PatientListCreateView.
+_apply_workflow_and_care_activity()` (`core/patients/api/views.py`) resolves them via
+`importlib`, not a static import — they live in `modules.pregnancy.vitals`, which `core`
+must never import. `GET /api/patients/dashboard-kpis/`'s `workflow.risk_review`/
+`workflow.low_confidence` counts reuse the identical functions, so a number there can
+never disagree with what `?workflow=` actually returns.
+
+Neither condition is a Neuro_RPM port, regardless of how it's exposed. Confirmed directly
+against their code: their similarly-shaped "Reading Review" and "Out of Range" dashboard
+tiles are **not** a severity/confidence split — both read the identical `is_out_of_range`
+signal (`DataBound`, their configurable raw-value threshold), differing only in time
+window. Neuro_RPM has no confidence-score concept anywhere in this system at all, since
+they have no trained model gating it. This dual-condition problem is MomCare-specific;
+only the decision to expose it as a query-param filter rather than a standing endpoint is
+a Neuro_RPM port.
+
+### Care Activities — live roster signals, distinct from the review-status workflows above
+
+Added 26 Sep 2026, `core/analytics`. A **Care Activity** is not a workflow: no status
+field, no review/escalate action, no history. It's a live, stateless snapshot —
+"does this condition hold for this patient right now" — recomputed on every read, not a
+queue with a decision to record. This is a genuinely different mechanism from Risk Review
+Queue/Low Confidence Queue above, even though both can be fed by related raw signals:
+Neuro_RPM's own "Reading Review" workflow (the direct ancestor of MomCare's two risk
+queues) queries `PatientReading.review_status`/`is_out_of_range` **directly on the
+reading**, and never touches its separate `PatientAnalytics` cache at all — that cache
+backs only Neuro_RPM's four **Care Activities** (`out_of_range`, `monitoring_follow_up`,
+`unseen_readings`, `reading_reminder`), a dashboard-tile/roster-filter concept, not an
+audit trail. The two mechanisms don't even share membership: a reading already reviewed
+(workflow closed) can still show in the Out of Range Care Activity tile for the rest of
+its day window, since that filter doesn't know or care about `review_status`.
+
+**Monitoring Follow-up is the first Care Activity MomCare has built.** It flags a
+patient staff haven't meaningfully checked on: **less than 20 minutes of monitoring time
+logged this calendar month AND no monitoring contact (session or note) in the last 2
+days** — both conditions must hold, matching Neuro_RPM's own `monitoring_follow_up`
+condition (`core.patients.services.MONITORING_FOLLOW_UP_MAX_SECONDS`/
+`MONITORING_FOLLOW_UP_MIN_GAP_DAYS` in that codebase) exactly, constants hardcoded, no
+per-org setting. The 20-minute figure is Neuro_RPM's own CMS/CPT-99457 billing minimum,
+reused here **only as a plain heuristic number**, never as a billing computation —
+confirmed explicitly with the user before building it in, since MomCare has no billing
+module and has already decided against an RPM/CCM program split (see `core/monitoring`'s
+own row above). A patient with no analytics row yet for the current month implicitly
+qualifies (0 seconds, no session) — never a reason to exclude her, matching Neuro_RPM's
+own "missing row means she qualifies" behavior. No `review`/`escalate` action exists for
+it and none should be added — the condition resolves itself the instant a new
+session/note makes it false, same as the model landing on it decided against building one
+for Alert-adjacent reasons.
+
+**Out of Range was proposed as a second Care Activity and explicitly rejected.**
+Neuro_RPM's `out_of_range` depends on `DataBound`, a raw configurable numeric threshold
+on the reading itself — the exact rules-engine mechanism MomCare deleted outright when
+the trained model shipped (`core/monitoring/risk_rules.py`, see "Risk scoring has exactly
+one producer" below). Risk Review Queue **is** MomCare's version of that same clinical
+question, answered by the model instead of a hand-set threshold; building a literal Out
+of Range Care Activity on top would mean resurrecting the rules engine through the back
+door. **Unseen Readings and Reading Reminder were built the same day** (`core/analytics/
+services.py`'s `patients_with_unseen_readings`/`patients_needing_reading_reminder`) —
+neither depends on `DataBound`, so neither has this conflict. Unseen Readings: a reading
+arrived after the last monitoring contact, within the last `UNSEEN_READINGS_WINDOW_DAYS`
+(7) — compares `Patient.last_reading_at` to `Patient.last_monitoring_contact_at` (did a
+human look since a new reading arrived). Reading Reminder: no reading in the last
+`READING_REMINDER_GAP_DAYS` (3) — `Patient.last_reading_at` alone (has data stopped
+arriving at all). Complementary to Monitoring Follow-up's staff-side question, not
+redundant with it or with either risk queue. **Both are scoped to patients with an
+active pregnancy**, unlike Monitoring Follow-up — a `VitalReading` always requires one
+(unlike `MonitoringSession`/`MonitoringNote`, which don't), so a patient with none can
+never have a reading and would just be noise in these two lists.
+
+**Priority Patients was proposed as a fourth workflow and explicitly rejected.**
+Neuro_RPM's `priority_score = P(new) + P(off-track) + P(not-called) + P(compliant)` is a
+billing-cycle compliance score, not a simple "who needs attention" ranking — `P(off-track)`
+depends on which half of the calendar month it is relative to CMS billing phases, and
+`P(compliant)` is literally a percentage of billing requirements met that cycle (the same
+33/34/33 reading-days/TWC/time split as RPM Progress). This is a much deeper billing
+entanglement than Monitoring Follow-up's single borrowed 20-minute constant — it's an
+entire scoring formula built around a monthly billing cycle MomCare doesn't have. Not
+ported; no MomCare equivalent exists, and `dashboard-kpis` below has no `priority_list` key.
+
+**The combined `dashboard-kpis` consolidation — the item this whole "Care Activities"
+section originally deferred until all workflows existed — was built the same day**, once
+the user asked for it directly (see the `patients` app row above for the exact shape).
+Matches Neuro_RPM's own single-endpoint convention, with MomCare's three workflows/
+care-activities instead of their four/two.
+
+**Schema is deliberately narrower than Neuro_RPM's own `PatientAnalytics`.** Only
+`monitoring_seconds` (calendar-month-scoped, resets every period) lives on the new
+`PatientAnalytics(patient, period_month, monitoring_seconds)` model.
+`last_monitoring_contact_at` and `last_reading_at` are plain denormalized columns
+directly on `Patient` instead — running "most recent" values with no month boundary, so
+putting them on a per-period row (as Neuro_RPM does, ambiguously — its own schema
+duplicates a "last" value across every month's row) would just create a question of which
+period's copy is authoritative. Both new `Patient` columns and the `monitoring_seconds`
+column were built together in the first pass, all correctly wired to their signals from
+day one, even before Unseen Readings/Reading Reminder had queries consuming
+`last_reading_at` — no placeholder/dead columns at any point.
+
+Recompute is a full recompute from source data, **never an incremental delta** —
+`MonitoringSession`/`MonitoringNote` are editable and backdatable (unlike `VitalReading`,
+which is neither), so a delta could silently drift from the truth. An edit that moves a
+record's `recorded_at` across a month boundary refreshes both the old and new month's
+rows, via a `pre_save` receiver that stashes the old value before the write lands. Lives
+in the *consumer* app (`core/analytics/signals.py` listening to `core.monitoring`'s
+models, plus a small addition to `modules/pregnancy/vitals/signals.py` for
+`last_reading_at`), not the source — matching `core/monitoring/signals.py`'s own existing
+precedent (Location's tag/status/template copy-down is likewise owned by the app that
+needs the derived data, not the app being observed).
+
+**Exposed as `?care_activity=monitoring_follow_up`/`unseen_readings`/`reading_reminder`
+on `GET /api/patients/`, not as separate standing endpoints — same reversal, same day, as
+the risk queues above.** All three first shipped as their own URLs
+(`GET /monitoring-follow-up-queue/`, `GET /unseen-readings-queue/`,
+`GET /reading-reminder-queue/`, each with a `-kpis` sibling), sharing one
+`_CareActivityQueueBase` (`core/analytics/api/views.py`, since deleted) differing only in
+`base_patients()` (which patients are even eligible) and `condition()` (which of them
+currently qualify). Collapsed into query params for the identical reasoning covered under
+"Risk review workflow" above — see that section for the full account, including the
+Neuro_RPM-verification that corrected an overstated claim about response-shape
+uniformity. `patients_needing_monitoring_follow_up()`/`patients_with_unseen_readings()`/
+`patients_needing_reading_reminder()` (`core/analytics/services.py`) are unchanged by the
+move — plain static imports from `core/patients/api/views.py` since `core.analytics` is
+itself a core app, no `importlib` needed the way the risk conditions require. No
+review/escalate endpoints on any of them, by design — a Care Activity has no status to
+resolve.
 
 ### Scoring and alerting are one transaction
 
-`reassess_risk()` writes an assessment **only when the level changed**, then calls
-`alerts.services.sync_alert_for()`. An assessment saying "critical" with no alert is
-a state this system must not be able to reach.
+`reassess_risk()` writes an assessment for every reading (see "One `RiskAssessment` row
+per reading" above), then calls `alerts.services.sync_alert_for()`. An assessment saying
+"critical" with no alert is a state this system must not be able to reach.
 
 Both imports are function-local: `alerts` imports `monitoring`, so a module-level
 import the other way closes the cycle.
@@ -516,7 +778,7 @@ is not editable; a correction is a new reading.
 ### Testing
 
 ```bash
-uv run pytest momcare_platform/core -q      # 620 passed, 4 skipped, as of 25 Sep 2026
+uv run pytest momcare_platform/core -q      # 715 passed, 4 skipped, as of 27 Sep 2026
 ```
 
 Mostly **API-level integration tests** — a real request through routing, middleware,
