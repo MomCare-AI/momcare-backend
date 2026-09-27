@@ -52,6 +52,7 @@ from momcare_platform.core.patients.api.views import (
     PregnancyDetailView,
     PregnancyListCreateView,
 )
+from momcare_platform.core.platform_admin.api.views import AIAvailableModelsView, AIProviderConfigView
 from momcare_platform.core.staff.api.views import (
     SecondaryProviderDetailView,
     SecondaryProviderListCreateView,
@@ -498,10 +499,20 @@ core_urlpatterns = [
         AlertResolveView.as_view(),
         name="alert-resolve",
     ),
-    # Platform admin API — deferred. core/platform_admin/ exists as an empty
-    # skeleton (see CLAUDE.md); no routes until it's actually implemented.
-    # Reviewing organizations/deactivation requests goes through Django
-    # admin (OrganizationAdmin, OrganizationDeactivationRequestAdmin) until then.
+    # Platform admin API — AI config is the first real endpoint here (see
+    # docs/design/2026-09-27-ai-summary-design.md). Reviewing organizations/
+    # deactivation requests still goes through Django admin
+    # (OrganizationAdmin, OrganizationDeactivationRequestAdmin) — unaffected.
+    re_path(
+        r"^platform-admin/ai-config/?$",
+        AIProviderConfigView.as_view(),
+        name="platform-admin-ai-config",
+    ),
+    re_path(
+        r"^platform-admin/ai-config/available-models/?$",
+        AIAvailableModelsView.as_view(),
+        name="platform-admin-ai-available-models",
+    ),
 ]
 
 urlpatterns = router.urls + auth_urlpatterns + core_urlpatterns
