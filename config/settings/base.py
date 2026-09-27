@@ -74,6 +74,16 @@ LOCAL_APPS = [
     # core/), so this app -- which now holds what core/monitoring's *name*
     # implies -- needed a different one. See its own apps.py.
     "momcare_platform.core.monitoring",
+    # Cross-cutting per-patient caches feeding the "Care Activity"-style
+    # dashboard signals (Monitoring Follow-up, and later Unseen Readings /
+    # Reading Reminder) -- kept as its own app, not folded into monitoring
+    # or patients, matching Neuro_RPM's own separate core.analytics for the
+    # identical reason: it aggregates data owned by multiple other apps.
+    "momcare_platform.core.analytics",
+    # AI Summary and related features (chatbot, nutrition/exercise plans to
+    # follow) -- own app since it aggregates data owned by several other
+    # apps, same reasoning as core.analytics above.
+    "momcare_platform.core.ai",
     # The first feature module. Devices/readings/risk/alerts moved here from
     # core.monitoring/core.alerts on 2026-09-16 — core/monitoring never held
     # what its name implies (see CLAUDE.md's "structural divergence" section);
@@ -379,3 +389,18 @@ PASSWORD_RESET_TIMEOUT = 3600
 # NOTE: the reset link uses FRONTEND_URL, defined once above. It was redefined
 # here with a stale :5173 default, which silently won and sent every invitation
 # email to a port nothing runs on. Define it in one place only.
+
+# AI SUMMARY
+# ------------------------------------------------------------------------------
+# OpenRouter is a single OpenAI-compatible gateway to many underlying models --
+# see docs/design/2026-09-27-ai-summary-design.md for the full reasoning. The
+# API key is a deploy-time secret; the *model choice* and *instructions* are
+# runtime-editable via AIProviderConfig (core.ai.models), not read from here
+# again after the config row's first creation.
+OPENROUTER_API_KEY = env("DJANGO_OPENROUTER_API_KEY", default="")
+# Seed values only -- used the first time AIProviderConfig's row is created.
+MOMCARE_AI_SUMMARY_DEFAULT_MODEL = env("DJANGO_MOMCARE_AI_SUMMARY_DEFAULT_MODEL", default="google/gemini-2.0-flash-001")
+MOMCARE_AI_SUMMARY_DEFAULT_MAX_WORDS = env.int("DJANGO_MOMCARE_AI_SUMMARY_DEFAULT_MAX_WORDS", default=150)
+# How stale an AISummary must be before the periodic refresh command touches
+# it. Low-stakes, easy to tune once real cost data exists.
+MOMCARE_AI_SUMMARY_REFRESH_HOURS = env.int("DJANGO_MOMCARE_AI_SUMMARY_REFRESH_HOURS", default=4)
