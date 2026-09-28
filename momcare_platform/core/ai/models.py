@@ -8,9 +8,9 @@ class AIProviderConfig(UUIDPrimaryKeyModel, TimeStampedModel):
     ``services.get_ai_config()`` and never any other way. Editable at runtime
     by the platform admin (see core.platform_admin's new endpoint) -- model
     choice and word cap are cost/infra levers kept platform-only. Custom
-    instruction text lives in ``AIInstructionPreset`` instead (a history of
-    named, activatable presets, not a single mutable field) -- see
-    docs/design/2026-09-28-ai-instruction-presets-design.md.
+    instruction text lives on the active ``AISummaryTemplate`` instead (its
+    ``extra_instructions`` field) -- see
+    docs/design/2026-09-29-ai-summary-template-merge-design.md.
     """
 
     # Standard Django singleton pattern: every row is forced to the same
@@ -49,61 +49,29 @@ class AISummary(UUIDPrimaryKeyModel, TimeStampedModel):
         return f"AI summary for {self.patient_id}"
 
 
-class AIInstructionPreset(UUIDPrimaryKeyModel, TimeStampedModel):
-    """A named, historical instruction text at one of two tiers --
-    ``organization=None`` is platform-wide, a set ``organization`` is that
-    hospital's own. Immutable once created and never deleted; "editing"
-    means creating a new preset and activating it, "removing" means
-    deactivating. See docs/design/2026-09-28-ai-instruction-presets-design.md.
-    """
-
-    organization = models.ForeignKey(
-        "organization.Organization",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="ai_instruction_presets",
-    )
-    name = models.CharField(max_length=200)
-    content = models.TextField()
-    is_active = models.BooleanField(default=False)
-    # Set every time this preset is activated; left untouched on
-    # deactivation, so it always answers "when was this most recently made
-    # active" even after it's no longer the active one.
-    activated_at = models.DateTimeField(null=True, blank=True)
-    created_by = models.ForeignKey(
-        "users.User",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="+",
-    )
-
-    class Meta:
-        ordering = ["-created_at"]
-        verbose_name = "AI Instruction Preset"
-        verbose_name_plural = "AI Instruction Presets"
-
-    def __str__(self) -> str:
-        return self.name
-
-
 class AISummaryTemplate(UUIDPrimaryKeyModel, TimeStampedModel):
     """A named, historical arrangement of the AI Summary's fixed data fields
-    into ordered, labeled sections -- organization=None is platform-wide, a
-    set organization is that hospital's own. Same lifecycle as
-    AIInstructionPreset: immutable once created, never deleted, at most one
-    active per scope.
+    into ordered, labeled sections, plus optional extra wording -- organization=None
+    is platform-wide, a set organization is that hospital's own. Immutable once
+    created, never deleted, at most one active per scope.
 
-    Unlike AIInstructionPreset, this never carries free-form prompt text --
-    ``sections`` is structured data (an ordered list of {"label", "fields"}),
-    and ``fields`` may only reference the fixed vocabulary
-    core.ai.services._TEMPLATE_FIELD_VOCABULARY. A template can rearrange
-    which existing fields appear where; it can never introduce a fact that
-    isn't already collected, and it can never touch the base prompt's fixed
-    safety rules (never invent a value, state gaps plainly, the word cap,
-    the closing recommendation) -- those stay in code, never in a template.
-    See docs/design/2026-09-28-ai-summary-templates-design.md.
+    ``sections`` is structured data (an ordered list of {"label", "fields"}), and
+    ``fields`` may only reference the fixed vocabulary
+    core.ai.services.TEMPLATE_FIELD_VOCABULARY. A template can rearrange which
+    existing fields appear where; it can never introduce a fact that isn't already
+    collected, and it can never touch the base prompt's fixed safety rules (never
+    invent a value, state gaps plainly, the word cap, the closing recommendation)
+    -- those stay in code, never in a template.
+
+    ``extra_instructions`` (added 2026-09-29, merged in from the retired
+    AIInstructionPreset -- see
+    docs/design/2026-09-29-ai-summary-template-merge-design.md) is free-form text
+    appended to the prompt, same job a preset used to do, now saved and activated
+    together with the layout as one unit rather than as a separate resource. Unlike
+    the old preset system (which stacked platform + org text together), this does
+    NOT stack -- the active template (layout AND wording) is picked by the same
+    org-then-platform-then-default precedence _resolve_active_template() already
+    uses, never merged across tiers.
     """
 
     organization = models.ForeignKey(
@@ -115,6 +83,7 @@ class AISummaryTemplate(UUIDPrimaryKeyModel, TimeStampedModel):
     )
     name = models.CharField(max_length=200)
     sections = models.JSONField()
+    extra_instructions = models.TextField(blank=True)
     is_active = models.BooleanField(default=False)
     activated_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(

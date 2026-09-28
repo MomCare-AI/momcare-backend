@@ -8,13 +8,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from momcare_platform.core.ai import openrouter_client
-from momcare_platform.core.ai.api.serializers import AIInstructionPresetSerializer, AISummaryTemplateSerializer
-from momcare_platform.core.ai.models import AIInstructionPreset, AISummaryTemplate
+from momcare_platform.core.ai.api.serializers import AISummaryTemplateSerializer
+from momcare_platform.core.ai.models import AISummaryTemplate
 from momcare_platform.core.ai.services import (
     ActivationStateError,
-    activate_instruction_preset,
     activate_summary_template,
-    deactivate_instruction_preset,
     deactivate_summary_template,
     get_ai_config,
 )
@@ -51,9 +49,10 @@ class AIAvailableModelsView(APIView):
         return Response(catalog)
 
 
-class AIInstructionPresetListCreateView(APIView):
-    """Platform-tier instruction preset history. List/create, never
-    edit/delete -- see AIInstructionPreset's own docstring.
+class AISummaryTemplateListCreateView(APIView):
+    """Platform-tier summary template history -- layout arrangement and
+    optional extra wording, saved and activated together. List/create, never
+    edit/delete -- see AISummaryTemplate's own docstring.
 
     create()'s INSERT (organization=None) only satisfies the RLS policy's
     WITH CHECK because TenantAwareJWTAuthentication enters bypass_rls() for
@@ -62,54 +61,11 @@ class AIInstructionPresetListCreateView(APIView):
     not because of any Postgres-level exemption for this role (there is
     only one connecting role, momcare_app, NOBYPASSRLS). See
     docs/design/2026-09-28-ai-instruction-presets-design.md's Tenancy
-    section for the full account; tightening bypass_rls() to scope itself
-    more precisely would silently break this create() with no other code
-    change."""
-
-    permission_classes = [IsAuthenticated, IsPlatformAdmin]
-
-    def get(self, request):
-        presets = AIInstructionPreset.objects.filter(organization__isnull=True)
-        paginator = DefaultPagination()
-        page = paginator.paginate_queryset(presets, request, view=self)
-        return paginator.get_paginated_response(AIInstructionPresetSerializer(page, many=True).data)
-
-    def post(self, request):
-        serializer = AIInstructionPresetSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save(organization=None, created_by=request.user)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-
-class AIInstructionPresetActivateView(APIView):
-    permission_classes = [IsAuthenticated, IsPlatformAdmin]
-
-    def post(self, request, preset_id):
-        preset = get_object_or_404(AIInstructionPreset, pk=preset_id, organization__isnull=True)
-        try:
-            activate_instruction_preset(preset)
-        except ActivationStateError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(AIInstructionPresetSerializer(preset).data)
-
-
-class AIInstructionPresetDeactivateView(APIView):
-    permission_classes = [IsAuthenticated, IsPlatformAdmin]
-
-    def post(self, request, preset_id):
-        preset = get_object_or_404(AIInstructionPreset, pk=preset_id, organization__isnull=True)
-        try:
-            deactivate_instruction_preset(preset)
-        except ActivationStateError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(AIInstructionPresetSerializer(preset).data)
-
-
-class AISummaryTemplateListCreateView(APIView):
-    """Platform-tier summary template history. List/create, never
-    edit/delete -- see AISummaryTemplate's own docstring. Same
-    bypass_rls()-via-TenantAwareJWTAuthentication reasoning as
-    AIInstructionPresetListCreateView's create() applies here too."""
+    section for the full account of this bypass_rls() mechanism (written
+    for the now-retired preset system, but the mechanism is identical here
+    since both go through the same TenantAwareJWTAuthentication path);
+    tightening bypass_rls() to scope itself more precisely would silently
+    break this create() with no other code change."""
 
     permission_classes = [IsAuthenticated, IsPlatformAdmin]
 

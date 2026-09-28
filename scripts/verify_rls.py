@@ -118,7 +118,7 @@ def main() -> int:
                 connections["default"].settings_dict["NAME"] = SCRATCH_DB
                 connections["default"].close()
 
-                from momcare_platform.core.ai.models import AIInstructionPreset, AISummaryTemplate  # noqa: PLC0415
+                from momcare_platform.core.ai.models import AISummaryTemplate  # noqa: PLC0415
                 from momcare_platform.core.locations.models import Location  # noqa: PLC0415
                 from momcare_platform.core.organization.models import Organization  # noqa: PLC0415
                 from momcare_platform.core.patients.models import Patient  # noqa: PLC0415
@@ -143,25 +143,14 @@ def main() -> int:
                 ours = make("Verify Hospital A")
                 make("Verify Hospital B")
 
-                # AIInstructionPreset's platform tier (organization=None) has
+                # AISummaryTemplate's platform tier (organization=None) has
                 # to be visible to EVERY hospital session, not just to
-                # bypass_rls() callers -- generate_patient_summary() reads it
+                # bypass_rls() callers -- _resolve_active_template() reads it
                 # from an ordinary org-scoped session on every request-driven
                 # trigger. A policy that only matches organization_id = <uuid>
                 # would make the platform tier invisible there (NULL never
                 # equals a uuid via =), which is exactly the bug this probe
                 # exists to catch before it reaches production.
-                AIInstructionPreset.objects.create(
-                    organization_id=ours, name="Verify Org Preset", content="x",
-                )
-                AIInstructionPreset.objects.create(
-                    organization=None, name="Verify Platform Preset", content="x",
-                )
-                # AISummaryTemplate's platform tier needs the identical fix --
-                # same read path (_resolve_active_template(), an ordinary
-                # org-scoped session on every request-driven trigger), same
-                # bug shape if the policy ever regresses to a single
-                # organization_id = <uuid> condition.
                 _template_sections = [{"label": "All Fields", "fields": ["patient_name"]}]
                 AISummaryTemplate.objects.create(
                     organization_id=ours, name="Verify Org Template", sections=_template_sections,
@@ -195,21 +184,6 @@ def main() -> int:
                     count = cur.fetchone()[0]
                     cur.execute("COMMIT")
                     check("scoped to hospital A -> sees exactly 1 row", count == 1)
-
-                    cur.execute("BEGIN")
-                    cur.execute(
-                        "SELECT set_config('app.current_org_id', %s, true)",
-                        [str(ours)],
-                    )
-                    cur.execute(
-                        "SELECT name FROM ai_aiinstructionpreset ORDER BY name",
-                    )
-                    preset_names = {row[0] for row in cur.fetchall()}
-                    cur.execute("COMMIT")
-                    check(
-                        "scoped to hospital A -> sees its own preset AND the platform-tier one, not hospital B's",
-                        preset_names == {"Verify Org Preset", "Verify Platform Preset"},
-                    )
 
                     cur.execute("BEGIN")
                     cur.execute(

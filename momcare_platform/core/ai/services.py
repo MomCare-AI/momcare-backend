@@ -8,7 +8,7 @@ from django.db import connection, transaction
 from django.utils import timezone
 
 from momcare_platform.core.ai import openrouter_client
-from momcare_platform.core.ai.models import AIInstructionPreset, AIProviderConfig, AISummary, AISummaryTemplate
+from momcare_platform.core.ai.models import AIProviderConfig, AISummary, AISummaryTemplate
 from momcare_platform.core.analytics.models import PatientAnalytics
 from momcare_platform.core.common.formatting import humanize_days_ago
 from momcare_platform.core.common.rls import bypass_rls
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class ActivationStateError(Exception):
     """Raised when an activate/deactivate call doesn't apply to the
-    preset's current state -- e.g. activating one that's already active.
+    resource's current state -- e.g. activating one that's already active.
     A 400 at the view layer, never a silent no-op that could mask a
     caller bug like a double-click racing itself."""
 
@@ -168,13 +168,14 @@ def _format_group(snapshot: dict, field_names: list[str]) -> str:
 
 
 def _resolve_active_template(organization):
-    """Precedence for which AISummaryTemplate shapes a summary's data_lines:
-    the organization's own active template, else the platform's active
-    template, else None (the caller falls back to the built-in default
-    layout). Deliberately picks exactly one source rather than merging --
-    unlike instruction presets, which stack platform + org text together,
-    a template controls structure, and two templates disagreeing about
-    where a field belongs has no sensible merge."""
+    """Precedence for which AISummaryTemplate shapes a summary's data_lines
+    (and extra_instructions): the organization's own active template, else
+    the platform's active template, else None (the caller falls back to the
+    built-in default layout, no extra instructions). Deliberately picks
+    exactly one source rather than merging -- two templates disagreeing
+    about where a field belongs, or what extra wording applies, has no
+    sensible merge, unlike the retired AIInstructionPreset system this
+    replaced, which stacked platform + org text together."""
     org_template = AISummaryTemplate.objects.filter(organization=organization, is_active=True).first()
     if org_template is not None:
         return org_template
@@ -184,8 +185,6 @@ def _resolve_active_template(organization):
 def _build_prompt(
     snapshot: dict,
     config: AIProviderConfig,
-    platform_instructions: str,
-    org_instructions: str,
     *,
     deactivated: bool,
     template: AISummaryTemplate | None = None,
@@ -207,10 +206,9 @@ def _build_prompt(
             closing_instruction=_DEACTIVATED_CLOSING if deactivated else _ACTIVE_CLOSING,
         ),
     ]
-    if platform_instructions:
-        sections.append(platform_instructions)
-    if org_instructions:
-        sections.append(org_instructions)
+    extra_instructions = template.extra_instructions if template is not None else ""
+    if extra_instructions:
+        sections.append(extra_instructions)
     return "\n\n".join(sections)
 
 
@@ -243,24 +241,10 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
         with read_scope():
             snapshot = _build_data_snapshot(patient)
             config = get_ai_config()
-            platform_instructions = (
-                AIInstructionPreset.objects.filter(organization__isnull=True, is_active=True)
-                .values_list("content", flat=True)
-                .first()
-                or ""
-            )
-            org_instructions = (
-                AIInstructionPreset.objects.filter(organization=patient.organization, is_active=True)
-                .values_list("content", flat=True)
-                .first()
-                or ""
-            )
             template = _resolve_active_template(patient.organization)
             prompt = _build_prompt(
                 snapshot,
                 config,
-                platform_instructions,
-                org_instructions,
                 deactivated=deactivated,
                 template=template,
             )
@@ -348,40 +332,12 @@ def _lock_scope(resource_kind: str, organization_id) -> None:
     platform tier) into a lockable bigint; pg_advisory_xact_lock (not
     pg_advisory_lock) releases automatically at transaction end, so a crash
     or an exception can't leave the scope locked forever. ``resource_kind``
-    keeps an instruction-preset activation and a summary-template activation
-    for the same organization from contending on the same lock key -- they
-    are independent resources that just happen to share this locking
-    mechanism."""
+    is kept as a parameter (rather than hardcoded) even though
+    "summary_template" is the only caller today, so a future second
+    activatable resource type can't collide with this one's lock keys."""
     scope_key = f"{resource_kind}:{organization_id or 'platform'}"
     with connection.cursor() as cursor:
         cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [scope_key])
-
-
-def activate_instruction_preset(preset: AIInstructionPreset) -> None:
-    """At most one active preset per scope. ``organization=preset.organization``
-    scopes the "deactivate the others" step correctly for both tiers,
-    including the platform tier (organization=None matches only other
-    organization=None rows -- NULL never matches NULL in a WHERE clause via
-    ``=``, but Django's ORM ``filter(organization=None)`` compiles to
-    ``organization_id IS NULL``, not ``= NULL``, so this works)."""
-    if preset.is_active:
-        raise ActivationStateError("This preset is already active.")
-    with transaction.atomic():
-        _lock_scope("instruction_preset", preset.organization_id)
-        AIInstructionPreset.objects.filter(
-            organization=preset.organization,
-            is_active=True,
-        ).exclude(pk=preset.pk).update(is_active=False)
-        preset.is_active = True
-        preset.activated_at = timezone.now()
-        preset.save(update_fields=["is_active", "activated_at", "updated_at"])
-
-
-def deactivate_instruction_preset(preset: AIInstructionPreset) -> None:
-    if not preset.is_active:
-        raise ActivationStateError("This preset is not active.")
-    preset.is_active = False
-    preset.save(update_fields=["is_active", "updated_at"])
 
 
 # The fixed vocabulary _build_data_snapshot() produces -- the only field
@@ -448,8 +404,12 @@ def validate_template_sections(sections) -> list[str]:
 
 
 def activate_summary_template(template: AISummaryTemplate) -> None:
-    """At most one active template per scope -- same swap mechanism as
-    activate_instruction_preset()."""
+    """At most one active template per scope. ``organization=template.organization``
+    scopes the "deactivate the others" step correctly for both tiers,
+    including the platform tier (organization=None matches only other
+    organization=None rows -- NULL never matches NULL in a WHERE clause via
+    ``=``, but Django's ORM ``filter(organization=None)`` compiles to
+    ``organization_id IS NULL``, not ``= NULL``, so this works)."""
     if template.is_active:
         raise ActivationStateError("This template is already active.")
     with transaction.atomic():

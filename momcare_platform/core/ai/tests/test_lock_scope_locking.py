@@ -1,10 +1,12 @@
-"""activate_instruction_preset()'s scope lock -- transaction.atomic() alone
-gives atomicity, not serializability, so two concurrent activations of two
-DIFFERENT (not-yet-active) presets in the same scope could otherwise both
+"""_lock_scope()'s underlying primitive -- transaction.atomic() alone gives
+atomicity, not serializability, so two concurrent activations of two
+DIFFERENT (not-yet-active) rows in the same scope could otherwise both
 commit under READ COMMITTED, leaving two active rows (neither activation's
 "deactivate the others" UPDATE touches the other's row, since neither is
 active yet -- there is no shared row for them to contend over without an
-explicit lock).
+explicit lock). activate_summary_template() is the one real caller today,
+but these tests exercise the primitive itself, independent of which
+resource type calls it.
 
 Deliberately does NOT use pytest.mark.django_db(transaction=True) to prove
 this end-to-end with real concurrent threads: that flushes the database
@@ -25,9 +27,9 @@ from momcare_platform.core.ai.services import _lock_scope
 pytestmark = pytest.mark.django_db
 
 
-def test_lock_instruction_preset_scope_acquires_a_real_advisory_lock():
+def test_lock_scope_acquires_a_real_advisory_lock():
     with transaction.atomic():
-        _lock_scope("instruction_preset", "11111111-1111-1111-1111-111111111111")
+        _lock_scope("summary_template", "11111111-1111-1111-1111-111111111111")
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()",

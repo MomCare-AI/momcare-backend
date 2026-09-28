@@ -1,6 +1,8 @@
 """Platform-tier summary templates -- list/create/activate/deactivate under
-/api/platform-admin/ai-config/summary-templates/. ROLE_PLATFORM_ADMIN only,
-same gate as the instruction-preset endpoints this mirrors."""
+/api/platform-admin/ai-config/summary-templates/. ROLE_PLATFORM_ADMIN only.
+Carries both the layout (sections) and optional free-form
+extra_instructions text (merged in 2026-09-29 from the retired
+instruction-preset system) as one unit."""
 
 import json
 
@@ -202,3 +204,35 @@ def test_sections_with_a_duplicated_field_is_rejected(client, platform_admin_aut
 
     assert response.status_code == 400
     assert not AISummaryTemplate.objects.exists()
+
+
+def test_extra_instructions_is_saved_and_returned(client, platform_admin_auth):
+    response = client.post(
+        TEMPLATES_URL,
+        data=json.dumps(
+            {
+                "name": "With Wording",
+                "sections": _full_sections(),
+                "extra_instructions": "Always note the hospital's timezone.",
+            },
+        ),
+        content_type="application/json",
+        **platform_admin_auth,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["extra_instructions"] == "Always note the hospital's timezone."
+    template = AISummaryTemplate.objects.get()
+    assert template.extra_instructions == "Always note the hospital's timezone."
+
+
+def test_extra_instructions_defaults_to_blank(client, platform_admin_auth):
+    response = client.post(
+        TEMPLATES_URL,
+        data=json.dumps({"name": "No Wording", "sections": _full_sections()}),
+        content_type="application/json",
+        **platform_admin_auth,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["extra_instructions"] == ""

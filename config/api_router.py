@@ -31,9 +31,6 @@ from momcare_platform.core.monitoring.api.views import (
 from momcare_platform.core.organization.api.views import (
     MyOrganizationView,
     NotificationMarkReadView,
-    OrganizationAIInstructionPresetActivateView,
-    OrganizationAIInstructionPresetDeactivateView,
-    OrganizationAIInstructionPresetListCreateView,
     OrganizationAISummaryTemplateActivateView,
     OrganizationAISummaryTemplateDeactivateView,
     OrganizationAISummaryTemplateListCreateView,
@@ -60,9 +57,6 @@ from momcare_platform.core.patients.api.views import (
 )
 from momcare_platform.core.platform_admin.api.views import (
     AIAvailableModelsView,
-    AIInstructionPresetActivateView,
-    AIInstructionPresetDeactivateView,
-    AIInstructionPresetListCreateView,
     AIProviderConfigView,
     AISummaryTemplateActivateView,
     AISummaryTemplateDeactivateView,
@@ -200,21 +194,6 @@ core_urlpatterns = [
         r"^organization/me/confidence-threshold/?$",
         OrganizationConfidenceThresholdView.as_view(),
         name="organization-confidence-threshold",
-    ),
-    re_path(
-        r"^organization/me/instruction-presets/?$",
-        OrganizationAIInstructionPresetListCreateView.as_view(),
-        name="organization-instruction-presets",
-    ),
-    re_path(
-        r"^organization/me/instruction-presets/(?P<preset_id>[0-9a-f-]+)/activate/?$",
-        OrganizationAIInstructionPresetActivateView.as_view(),
-        name="organization-instruction-preset-activate",
-    ),
-    re_path(
-        r"^organization/me/instruction-presets/(?P<preset_id>[0-9a-f-]+)/deactivate/?$",
-        OrganizationAIInstructionPresetDeactivateView.as_view(),
-        name="organization-instruction-preset-deactivate",
     ),
     re_path(
         r"^organization/me/summary-templates/?$",
@@ -557,21 +536,6 @@ core_urlpatterns = [
         r"^platform-admin/ai-config/available-models/?$",
         AIAvailableModelsView.as_view(),
         name="platform-admin-ai-available-models",
-    ),
-    re_path(
-        r"^platform-admin/ai-config/instruction-presets/?$",
-        AIInstructionPresetListCreateView.as_view(),
-        name="platform-admin-instruction-presets",
-    ),
-    re_path(
-        r"^platform-admin/ai-config/instruction-presets/(?P<preset_id>[0-9a-f-]+)/activate/?$",
-        AIInstructionPresetActivateView.as_view(),
-        name="platform-admin-instruction-preset-activate",
-    ),
-    re_path(
-        r"^platform-admin/ai-config/instruction-presets/(?P<preset_id>[0-9a-f-]+)/deactivate/?$",
-        AIInstructionPresetDeactivateView.as_view(),
-        name="platform-admin-instruction-preset-deactivate",
     ),
     re_path(
         r"^platform-admin/ai-config/summary-templates/?$",

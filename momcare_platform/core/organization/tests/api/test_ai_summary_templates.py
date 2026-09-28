@@ -1,6 +1,8 @@
 """Organization-tier summary templates -- list/create/activate/deactivate
-under /api/organization/me/summary-templates/. hospital_admin only, same
-gate the organization-tier instruction presets use."""
+under /api/organization/me/summary-templates/. hospital_admin only. Carries
+both the layout (sections) and optional free-form extra_instructions text
+(merged in 2026-09-29 from the retired instruction-preset system) as one
+unit."""
 
 import json
 
@@ -115,3 +117,39 @@ def test_a_platform_tier_template_id_is_404_via_the_organization_endpoint(client
     response = client.post(f"{TEMPLATES_URL}{template.id}/deactivate/", **auth(hospital.admin.email))
 
     assert response.status_code == 404
+
+
+def test_extra_instructions_is_saved_and_returned(client, make_hospital, auth):
+    hospital = make_hospital("Org Template Extra Instructions Hospital")
+
+    response = client.post(
+        TEMPLATES_URL,
+        data=json.dumps(
+            {
+                "name": "With Wording",
+                "sections": _full_sections(),
+                "extra_instructions": "Always mention medication adherence.",
+            },
+        ),
+        content_type="application/json",
+        **auth(hospital.admin.email),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["extra_instructions"] == "Always mention medication adherence."
+    template = AISummaryTemplate.objects.get()
+    assert template.extra_instructions == "Always mention medication adherence."
+
+
+def test_extra_instructions_defaults_to_blank(client, make_hospital, auth):
+    hospital = make_hospital("Org Template Blank Extra Instructions Hospital")
+
+    response = client.post(
+        TEMPLATES_URL,
+        data=json.dumps({"name": "No Wording", "sections": _full_sections()}),
+        content_type="application/json",
+        **auth(hospital.admin.email),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["extra_instructions"] == ""
