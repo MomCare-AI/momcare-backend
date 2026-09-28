@@ -47,3 +47,42 @@ class AISummary(UUIDPrimaryKeyModel, TimeStampedModel):
 
     def __str__(self) -> str:
         return f"AI summary for {self.patient_id}"
+
+
+class AIInstructionPreset(UUIDPrimaryKeyModel, TimeStampedModel):
+    """A named, historical instruction text at one of two tiers --
+    ``organization=None`` is platform-wide, a set ``organization`` is that
+    hospital's own. Immutable once created and never deleted; "editing"
+    means creating a new preset and activating it, "removing" means
+    deactivating. See docs/design/2026-09-28-ai-instruction-presets-design.md.
+    """
+
+    organization = models.ForeignKey(
+        "organization.Organization",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="ai_instruction_presets",
+    )
+    name = models.CharField(max_length=200)
+    content = models.TextField()
+    is_active = models.BooleanField(default=False)
+    # Set every time this preset is activated; left untouched on
+    # deactivation, so it always answers "when was this most recently made
+    # active" even after it's no longer the active one.
+    activated_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "AI Instruction Preset"
+        verbose_name_plural = "AI Instruction Presets"
+
+    def __str__(self) -> str:
+        return self.name
