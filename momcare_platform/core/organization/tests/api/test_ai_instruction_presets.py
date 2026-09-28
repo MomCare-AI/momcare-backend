@@ -75,7 +75,10 @@ def test_list_only_returns_this_hospitals_own_presets(client, make_hospital, aut
 def test_activate_deactivates_the_previous_active_preset_for_this_hospital_only(client, make_hospital, auth):
     hospital = make_hospital("Org Preset Activate Hospital")
     old = AIInstructionPreset.objects.create(
-        organization=hospital.org, name="Old", content="Old.", is_active=True,
+        organization=hospital.org,
+        name="Old",
+        content="Old.",
+        is_active=True,
     )
     new = AIInstructionPreset.objects.create(organization=hospital.org, name="New", content="New.")
 

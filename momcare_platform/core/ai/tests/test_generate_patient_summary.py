@@ -100,7 +100,9 @@ def test_an_active_platform_preset_reaches_every_patients_prompt(patient):
     from momcare_platform.core.ai.services import activate_instruction_preset
 
     preset = AIInstructionPreset.objects.create(
-        organization=None, name="Platform-wide", content="Always note the hospital's timezone.",
+        organization=None,
+        name="Platform-wide",
+        content="Always note the hospital's timezone.",
     )
     activate_instruction_preset(preset)
 
@@ -120,7 +122,9 @@ def test_deactivating_the_only_active_platform_preset_leaves_the_prompt_with_no_
     from momcare_platform.core.ai.services import activate_instruction_preset, deactivate_instruction_preset
 
     preset = AIInstructionPreset.objects.create(
-        organization=None, name="Platform-wide", content="Should disappear once deactivated.",
+        organization=None,
+        name="Platform-wide",
+        content="Should disappear once deactivated.",
     )
     activate_instruction_preset(preset)
     deactivate_instruction_preset(preset)

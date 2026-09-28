@@ -77,7 +77,10 @@ def test_list_only_returns_platform_tier_presets(client, platform_admin_auth, ma
 
 def test_activate_deactivates_the_previous_active_platform_preset(client, platform_admin_auth):
     old = AIInstructionPreset.objects.create(
-        organization=None, name="Old", content="Old.", is_active=True,
+        organization=None,
+        name="Old",
+        content="Old.",
+        is_active=True,
     )
     new = AIInstructionPreset.objects.create(organization=None, name="New", content="New.")
 
@@ -92,7 +95,10 @@ def test_activate_deactivates_the_previous_active_platform_preset(client, platfo
 
 def test_activating_an_already_active_preset_is_a_400(client, platform_admin_auth):
     preset = AIInstructionPreset.objects.create(
-        organization=None, name="Active", content="Text.", is_active=True,
+        organization=None,
+        name="Active",
+        content="Text.",
+        is_active=True,
     )
 
     response = client.post(f"{PRESETS_URL}{preset.id}/activate/", **platform_admin_auth)
@@ -102,7 +108,10 @@ def test_activating_an_already_active_preset_is_a_400(client, platform_admin_aut
 
 def test_deactivate_clears_is_active(client, platform_admin_auth):
     preset = AIInstructionPreset.objects.create(
-        organization=None, name="Active", content="Text.", is_active=True,
+        organization=None,
+        name="Active",
+        content="Text.",
+        is_active=True,
     )
 
     response = client.post(f"{PRESETS_URL}{preset.id}/deactivate/", **platform_admin_auth)
@@ -112,7 +121,9 @@ def test_deactivate_clears_is_active(client, platform_admin_auth):
     assert preset.is_active is False
 
 
-def test_activating_an_organizations_preset_via_the_platform_endpoint_is_404(client, platform_admin_auth, make_hospital):
+def test_activating_an_organizations_preset_via_the_platform_endpoint_is_404(
+    client, platform_admin_auth, make_hospital
+):
     hospital = make_hospital("Preset Cross Tier Hospital")
     preset = AIInstructionPreset.objects.create(organization=hospital.org, name="Org", content="O.")
 

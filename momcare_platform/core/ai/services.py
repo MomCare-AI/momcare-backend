@@ -295,7 +295,8 @@ def activate_instruction_preset(preset: AIInstructionPreset) -> None:
         raise InstructionPresetStateError("This preset is already active.")
     with transaction.atomic():
         AIInstructionPreset.objects.filter(
-            organization=preset.organization, is_active=True,
+            organization=preset.organization,
+            is_active=True,
         ).exclude(pk=preset.pk).update(is_active=False)
         preset.is_active = True
         preset.activated_at = timezone.now()
