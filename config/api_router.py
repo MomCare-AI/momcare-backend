@@ -34,6 +34,9 @@ from momcare_platform.core.organization.api.views import (
     OrganizationAIInstructionPresetActivateView,
     OrganizationAIInstructionPresetDeactivateView,
     OrganizationAIInstructionPresetListCreateView,
+    OrganizationAISummaryTemplateActivateView,
+    OrganizationAISummaryTemplateDeactivateView,
+    OrganizationAISummaryTemplateListCreateView,
     OrganizationAuditLogView,
     OrganizationConfidenceThresholdView,
     OrganizationDeactivationRequestView,
@@ -61,6 +64,9 @@ from momcare_platform.core.platform_admin.api.views import (
     AIInstructionPresetDeactivateView,
     AIInstructionPresetListCreateView,
     AIProviderConfigView,
+    AISummaryTemplateActivateView,
+    AISummaryTemplateDeactivateView,
+    AISummaryTemplateListCreateView,
 )
 from momcare_platform.core.staff.api.views import (
     SecondaryProviderDetailView,
@@ -209,6 +215,21 @@ core_urlpatterns = [
         r"^organization/me/instruction-presets/(?P<preset_id>[0-9a-f-]+)/deactivate/?$",
         OrganizationAIInstructionPresetDeactivateView.as_view(),
         name="organization-instruction-preset-deactivate",
+    ),
+    re_path(
+        r"^organization/me/summary-templates/?$",
+        OrganizationAISummaryTemplateListCreateView.as_view(),
+        name="organization-summary-templates",
+    ),
+    re_path(
+        r"^organization/me/summary-templates/(?P<template_id>[0-9a-f-]+)/activate/?$",
+        OrganizationAISummaryTemplateActivateView.as_view(),
+        name="organization-summary-template-activate",
+    ),
+    re_path(
+        r"^organization/me/summary-templates/(?P<template_id>[0-9a-f-]+)/deactivate/?$",
+        OrganizationAISummaryTemplateDeactivateView.as_view(),
+        name="organization-summary-template-deactivate",
     ),
     re_path(
         r"^organization/me/deactivation-request/?$",
@@ -551,6 +572,21 @@ core_urlpatterns = [
         r"^platform-admin/ai-config/instruction-presets/(?P<preset_id>[0-9a-f-]+)/deactivate/?$",
         AIInstructionPresetDeactivateView.as_view(),
         name="platform-admin-instruction-preset-deactivate",
+    ),
+    re_path(
+        r"^platform-admin/ai-config/summary-templates/?$",
+        AISummaryTemplateListCreateView.as_view(),
+        name="platform-admin-summary-templates",
+    ),
+    re_path(
+        r"^platform-admin/ai-config/summary-templates/(?P<template_id>[0-9a-f-]+)/activate/?$",
+        AISummaryTemplateActivateView.as_view(),
+        name="platform-admin-summary-template-activate",
+    ),
+    re_path(
+        r"^platform-admin/ai-config/summary-templates/(?P<template_id>[0-9a-f-]+)/deactivate/?$",
+        AISummaryTemplateDeactivateView.as_view(),
+        name="platform-admin-summary-template-deactivate",
     ),
 ]
 

@@ -5,12 +5,14 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from momcare_platform.core.ai.api.serializers import AIInstructionPresetSerializer
-from momcare_platform.core.ai.models import AIInstructionPreset
+from momcare_platform.core.ai.api.serializers import AIInstructionPresetSerializer, AISummaryTemplateSerializer
+from momcare_platform.core.ai.models import AIInstructionPreset, AISummaryTemplate
 from momcare_platform.core.ai.services import (
     ActivationStateError,
     activate_instruction_preset,
+    activate_summary_template,
     deactivate_instruction_preset,
+    deactivate_summary_template,
 )
 from momcare_platform.core.common.pagination import DefaultPagination
 from momcare_platform.core.common.permissions import IsHospitalAdmin, IsHospitalStaff
@@ -205,6 +207,61 @@ class OrganizationAIInstructionPresetDeactivateView(APIView):
         except ActivationStateError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(AIInstructionPresetSerializer(preset).data)
+
+
+class OrganizationAISummaryTemplateListCreateView(APIView):
+    """This hospital's own summary template history. hospital_admin only,
+    same restriction as the organization-tier instruction presets."""
+
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def get(self, request):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        templates = AISummaryTemplate.objects.filter(organization=org)
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(templates, request, view=self)
+        return paginator.get_paginated_response(AISummaryTemplateSerializer(page, many=True).data)
+
+    def post(self, request):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        serializer = AISummaryTemplateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(organization=org, created_by=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class OrganizationAISummaryTemplateActivateView(APIView):
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def post(self, request, template_id):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        template = get_object_or_404(AISummaryTemplate, pk=template_id, organization=org)
+        try:
+            activate_summary_template(template)
+        except ActivationStateError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(AISummaryTemplateSerializer(template).data)
+
+
+class OrganizationAISummaryTemplateDeactivateView(APIView):
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def post(self, request, template_id):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        template = get_object_or_404(AISummaryTemplate, pk=template_id, organization=org)
+        try:
+            deactivate_summary_template(template)
+        except ActivationStateError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(AISummaryTemplateSerializer(template).data)
 
 
 class OrganizationAuditLogView(APIView):

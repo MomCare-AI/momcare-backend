@@ -8,12 +8,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from momcare_platform.core.ai import openrouter_client
-from momcare_platform.core.ai.api.serializers import AIInstructionPresetSerializer
-from momcare_platform.core.ai.models import AIInstructionPreset
+from momcare_platform.core.ai.api.serializers import AIInstructionPresetSerializer, AISummaryTemplateSerializer
+from momcare_platform.core.ai.models import AIInstructionPreset, AISummaryTemplate
 from momcare_platform.core.ai.services import (
     ActivationStateError,
     activate_instruction_preset,
+    activate_summary_template,
     deactivate_instruction_preset,
+    deactivate_summary_template,
     get_ai_config,
 )
 from momcare_platform.core.common.pagination import DefaultPagination
@@ -101,3 +103,48 @@ class AIInstructionPresetDeactivateView(APIView):
         except ActivationStateError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(AIInstructionPresetSerializer(preset).data)
+
+
+class AISummaryTemplateListCreateView(APIView):
+    """Platform-tier summary template history. List/create, never
+    edit/delete -- see AISummaryTemplate's own docstring. Same
+    bypass_rls()-via-TenantAwareJWTAuthentication reasoning as
+    AIInstructionPresetListCreateView's create() applies here too."""
+
+    permission_classes = [IsAuthenticated, IsPlatformAdmin]
+
+    def get(self, request):
+        templates = AISummaryTemplate.objects.filter(organization__isnull=True)
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(templates, request, view=self)
+        return paginator.get_paginated_response(AISummaryTemplateSerializer(page, many=True).data)
+
+    def post(self, request):
+        serializer = AISummaryTemplateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(organization=None, created_by=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AISummaryTemplateActivateView(APIView):
+    permission_classes = [IsAuthenticated, IsPlatformAdmin]
+
+    def post(self, request, template_id):
+        template = get_object_or_404(AISummaryTemplate, pk=template_id, organization__isnull=True)
+        try:
+            activate_summary_template(template)
+        except ActivationStateError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(AISummaryTemplateSerializer(template).data)
+
+
+class AISummaryTemplateDeactivateView(APIView):
+    permission_classes = [IsAuthenticated, IsPlatformAdmin]
+
+    def post(self, request, template_id):
+        template = get_object_or_404(AISummaryTemplate, pk=template_id, organization__isnull=True)
+        try:
+            deactivate_summary_template(template)
+        except ActivationStateError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(AISummaryTemplateSerializer(template).data)
