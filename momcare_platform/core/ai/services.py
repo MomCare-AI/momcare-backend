@@ -4,7 +4,7 @@ from contextlib import nullcontext
 
 from django.apps import apps as django_apps
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 
 from momcare_platform.core.ai import openrouter_client
@@ -284,6 +284,24 @@ def maybe_regenerate_for_risk_change(risk_assessment) -> None:
     generate_patient_summary(risk_assessment.pregnancy.patient)
 
 
+def _lock_instruction_preset_scope(organization_id) -> None:
+    """Serializes concurrent activate_instruction_preset() calls for the
+    same scope. transaction.atomic() alone gives atomicity, not
+    serializability: under READ COMMITTED, two concurrent activations of two
+    DIFFERENT, not-yet-active presets in the same scope can both commit,
+    each leaving its own row active -- neither activation's "deactivate the
+    others" UPDATE touches the other's row, since neither is active yet,
+    so there is no shared row for the two transactions to contend over
+    without an explicit lock. hashtext() collapses the scope key (an org
+    uuid, or a fixed sentinel string for the platform tier) into a lockable
+    bigint; pg_advisory_xact_lock (not pg_advisory_lock) releases
+    automatically at transaction end, so a crash or an exception can't leave
+    the scope locked forever."""
+    scope_key = str(organization_id) if organization_id else "platform"
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [scope_key])
+
+
 def activate_instruction_preset(preset: AIInstructionPreset) -> None:
     """At most one active preset per scope. ``organization=preset.organization``
     scopes the "deactivate the others" step correctly for both tiers,
@@ -294,6 +312,7 @@ def activate_instruction_preset(preset: AIInstructionPreset) -> None:
     if preset.is_active:
         raise InstructionPresetStateError("This preset is already active.")
     with transaction.atomic():
+        _lock_instruction_preset_scope(preset.organization_id)
         AIInstructionPreset.objects.filter(
             organization=preset.organization,
             is_active=True,
