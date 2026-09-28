@@ -10,7 +10,7 @@ from momcare_platform.core.ai.models import AIProviderConfig
 class AIProviderConfigSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIProviderConfig
-        fields = ["current_model", "max_words", "custom_instructions"]
+        fields = ["current_model", "max_words"]
 
     def validate_current_model(self, value):
         # Module-attribute call, not `from ... import list_available_models` --

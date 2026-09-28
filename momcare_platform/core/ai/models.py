@@ -7,9 +7,10 @@ class AIProviderConfig(UUIDPrimaryKeyModel, TimeStampedModel):
     """Platform-wide AI Summary configuration -- exactly one row, read via
     ``services.get_ai_config()`` and never any other way. Editable at runtime
     by the platform admin (see core.platform_admin's new endpoint) -- model
-    choice and word cap are cost/infra levers kept platform-only;
-    ``custom_instructions`` is free text appended to every generation's
-    prompt. See docs/design/2026-09-27-ai-summary-design.md.
+    choice and word cap are cost/infra levers kept platform-only. Custom
+    instruction text lives in ``AIInstructionPreset`` instead (a history of
+    named, activatable presets, not a single mutable field) -- see
+    docs/design/2026-09-28-ai-instruction-presets-design.md.
     """
 
     # Standard Django singleton pattern: every row is forced to the same
@@ -22,7 +23,6 @@ class AIProviderConfig(UUIDPrimaryKeyModel, TimeStampedModel):
         help_text="An OpenRouter model id, e.g. 'google/gemini-2.0-flash-001'.",
     )
     max_words = models.PositiveIntegerField(default=150)
-    custom_instructions = models.TextField(blank=True)
 
     def __str__(self) -> str:
         return f"AI config ({self.current_model})"

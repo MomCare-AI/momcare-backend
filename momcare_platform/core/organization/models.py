@@ -132,13 +132,6 @@ class Organization(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStamped
         ),
     )
 
-    # Free-text steering appended to every AI Summary prompt for this
-    # hospital's patients only, on top of the platform-wide instructions --
-    # same "hospital customizes its own operational details" pattern as
-    # ClinicalTag/StatusLabel/NoteTemplate. See
-    # docs/design/2026-09-27-ai-summary-design.md.
-    ai_custom_instructions = models.TextField(blank=True, default="")
-
     class Meta:
         ordering = ["name"]
 
