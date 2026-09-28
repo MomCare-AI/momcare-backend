@@ -167,6 +167,20 @@ def _format_group(snapshot: dict, field_names: list[str]) -> str:
     return "\n".join(f"- {key}: {_format_snapshot_value(snapshot[key])}" for key in field_names)
 
 
+def _resolve_active_template(organization):
+    """Precedence for which AISummaryTemplate shapes a summary's data_lines:
+    the organization's own active template, else the platform's active
+    template, else None (the caller falls back to the built-in default
+    layout). Deliberately picks exactly one source rather than merging --
+    unlike instruction presets, which stack platform + org text together,
+    a template controls structure, and two templates disagreeing about
+    where a field belongs has no sensible merge."""
+    org_template = AISummaryTemplate.objects.filter(organization=organization, is_active=True).first()
+    if org_template is not None:
+        return org_template
+    return AISummaryTemplate.objects.filter(organization__isnull=True, is_active=True).first()
+
+
 def _build_prompt(
     snapshot: dict,
     config: AIProviderConfig,
@@ -174,12 +188,18 @@ def _build_prompt(
     org_instructions: str,
     *,
     deactivated: bool,
+    template: AISummaryTemplate | None = None,
 ) -> str:
-    data_lines = (
-        f"Patient: {snapshot['patient_name']}\n\n"
-        f"Vitals & Risk:\n{_format_group(snapshot, _VITALS_AND_RISK_FIELDS)}\n\n"
-        f"Care Team & Activity:\n{_format_group(snapshot, _CARE_TEAM_AND_ACTIVITY_FIELDS)}"
-    )
+    if template is not None:
+        data_lines = "\n\n".join(
+            f"{section['label']}:\n{_format_group(snapshot, section['fields'])}" for section in template.sections
+        )
+    else:
+        data_lines = (
+            f"Patient: {snapshot['patient_name']}\n\n"
+            f"Vitals & Risk:\n{_format_group(snapshot, _VITALS_AND_RISK_FIELDS)}\n\n"
+            f"Care Team & Activity:\n{_format_group(snapshot, _CARE_TEAM_AND_ACTIVITY_FIELDS)}"
+        )
     sections = [
         _BASE_PROMPT.format(
             max_words=config.max_words,
@@ -235,12 +255,14 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
                 .first()
                 or ""
             )
+            template = _resolve_active_template(patient.organization)
             prompt = _build_prompt(
                 snapshot,
                 config,
                 platform_instructions,
                 org_instructions,
                 deactivated=deactivated,
+                template=template,
             )
 
         # No transaction or row lock is held across this call -- it is the
