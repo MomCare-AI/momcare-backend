@@ -52,7 +52,13 @@ from momcare_platform.core.patients.api.views import (
     PregnancyDetailView,
     PregnancyListCreateView,
 )
-from momcare_platform.core.platform_admin.api.views import AIAvailableModelsView, AIProviderConfigView
+from momcare_platform.core.platform_admin.api.views import (
+    AIAvailableModelsView,
+    AIInstructionPresetActivateView,
+    AIInstructionPresetDeactivateView,
+    AIInstructionPresetListCreateView,
+    AIProviderConfigView,
+)
 from momcare_platform.core.staff.api.views import (
     SecondaryProviderDetailView,
     SecondaryProviderListCreateView,
@@ -512,6 +518,21 @@ core_urlpatterns = [
         r"^platform-admin/ai-config/available-models/?$",
         AIAvailableModelsView.as_view(),
         name="platform-admin-ai-available-models",
+    ),
+    re_path(
+        r"^platform-admin/ai-config/instruction-presets/?$",
+        AIInstructionPresetListCreateView.as_view(),
+        name="platform-admin-instruction-presets",
+    ),
+    re_path(
+        r"^platform-admin/ai-config/instruction-presets/(?P<preset_id>[0-9a-f-]+)/activate/?$",
+        AIInstructionPresetActivateView.as_view(),
+        name="platform-admin-instruction-preset-activate",
+    ),
+    re_path(
+        r"^platform-admin/ai-config/instruction-presets/(?P<preset_id>[0-9a-f-]+)/deactivate/?$",
+        AIInstructionPresetDeactivateView.as_view(),
+        name="platform-admin-instruction-preset-deactivate",
     ),
 ]
 
