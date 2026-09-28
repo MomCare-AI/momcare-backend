@@ -60,9 +60,16 @@ def test_calling_it_twice_leaves_exactly_one_row(patient):
     assert AISummary.objects.get(patient=patient).content == "Second."
 
 
-def test_the_word_cap_and_organization_instructions_reach_the_prompt(patient):
-    patient.organization.ai_custom_instructions = "Always mention medication adherence."
-    patient.organization.save(update_fields=["ai_custom_instructions", "updated_at"])
+def test_the_word_cap_and_active_organization_preset_reach_the_prompt(patient):
+    from momcare_platform.core.ai.models import AIInstructionPreset
+    from momcare_platform.core.ai.services import activate_instruction_preset
+
+    preset = AIInstructionPreset.objects.create(
+        organization=patient.organization,
+        name="Adherence",
+        content="Always mention medication adherence.",
+    )
+    activate_instruction_preset(preset)
 
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
         generate_patient_summary(patient)
@@ -70,6 +77,59 @@ def test_the_word_cap_and_organization_instructions_reach_the_prompt(patient):
     sent_prompt = mock_generate.call_args.args[0]
     assert "150" in sent_prompt
     assert "Always mention medication adherence." in sent_prompt
+
+
+def test_an_inactive_organization_preset_never_reaches_the_prompt(patient):
+    from momcare_platform.core.ai.models import AIInstructionPreset
+
+    AIInstructionPreset.objects.create(
+        organization=patient.organization,
+        name="Never activated",
+        content="Should never appear.",
+    )
+
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
+        generate_patient_summary(patient)
+
+    sent_prompt = mock_generate.call_args.args[0]
+    assert "Should never appear." not in sent_prompt
+
+
+def test_an_active_platform_preset_reaches_every_patients_prompt(patient):
+    from momcare_platform.core.ai.models import AIInstructionPreset
+    from momcare_platform.core.ai.services import activate_instruction_preset
+
+    preset = AIInstructionPreset.objects.create(
+        organization=None, name="Platform-wide", content="Always note the hospital's timezone.",
+    )
+    activate_instruction_preset(preset)
+
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
+        generate_patient_summary(patient)
+
+    sent_prompt = mock_generate.call_args.args[0]
+    assert "Always note the hospital's timezone." in sent_prompt
+
+
+def test_deactivating_the_only_active_platform_preset_leaves_the_prompt_with_no_platform_section(patient):
+    """Review Focus item: deactivating the platform's only active preset,
+    then generating a summary, must fall back to "no platform instructions"
+    cleanly -- not crash on a missing preset, and not keep sending stale
+    content from the now-deactivated row."""
+    from momcare_platform.core.ai.models import AIInstructionPreset
+    from momcare_platform.core.ai.services import activate_instruction_preset, deactivate_instruction_preset
+
+    preset = AIInstructionPreset.objects.create(
+        organization=None, name="Platform-wide", content="Should disappear once deactivated.",
+    )
+    activate_instruction_preset(preset)
+    deactivate_instruction_preset(preset)
+
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
+        generate_patient_summary(patient)
+
+    sent_prompt = mock_generate.call_args.args[0]
+    assert "Should disappear once deactivated." not in sent_prompt
 
 
 def test_deactivation_flag_changes_the_closing_instruction(patient):

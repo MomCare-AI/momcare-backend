@@ -142,7 +142,14 @@ def _format_snapshot_value(value):
     return value
 
 
-def _build_prompt(snapshot: dict, config: AIProviderConfig, org_instructions: str, *, deactivated: bool) -> str:
+def _build_prompt(
+    snapshot: dict,
+    config: AIProviderConfig,
+    platform_instructions: str,
+    org_instructions: str,
+    *,
+    deactivated: bool,
+) -> str:
     data_lines = "\n".join(f"- {key}: {_format_snapshot_value(value)}" for key, value in snapshot.items())
     sections = [
         _BASE_PROMPT.format(
@@ -151,8 +158,8 @@ def _build_prompt(snapshot: dict, config: AIProviderConfig, org_instructions: st
             closing_instruction=_DEACTIVATED_CLOSING if deactivated else _ACTIVE_CLOSING,
         ),
     ]
-    if config.custom_instructions:
-        sections.append(config.custom_instructions)
+    if platform_instructions:
+        sections.append(platform_instructions)
     if org_instructions:
         sections.append(org_instructions)
     return "\n\n".join(sections)
@@ -187,10 +194,23 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
         with read_scope():
             snapshot = _build_data_snapshot(patient)
             config = get_ai_config()
+            platform_instructions = (
+                AIInstructionPreset.objects.filter(organization__isnull=True, is_active=True)
+                .values_list("content", flat=True)
+                .first()
+                or ""
+            )
+            org_instructions = (
+                AIInstructionPreset.objects.filter(organization=patient.organization, is_active=True)
+                .values_list("content", flat=True)
+                .first()
+                or ""
+            )
             prompt = _build_prompt(
                 snapshot,
                 config,
-                patient.organization.ai_custom_instructions,
+                platform_instructions,
+                org_instructions,
                 deactivated=deactivated,
             )
 
