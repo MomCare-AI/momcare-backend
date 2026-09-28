@@ -85,12 +85,21 @@ that could mask a caller bug (e.g. a double-click racing itself).
 
 `organization=preset.organization` naturally scopes the "deactivate the others" step correctly
 for both tiers: `NULL` matches only other `NULL`-organization (platform) rows, a real
-organization id matches only that hospital's own rows. One transaction, so a concurrent
-activation call can't leave two rows active at once — same "guard in the service layer, not a
-DB constraint" call already made for `AIProviderConfig`'s own singleton fix, for the identical
-reason: a partial unique index over a nullable column needs a sentinel-value workaround to treat
-every `NULL` as "the same platform row," which is a real but disproportionate amount of migration
-complexity for a guard a transaction already gives us correctly.
+organization id matches only that hospital's own rows.
+
+**Corrected 2026-09-28, after code review** — this section originally claimed "one transaction,
+so a concurrent activation call can't leave two rows active at once." That's false:
+`transaction.atomic()` gives atomicity, not serializability. Under READ COMMITTED, two concurrent
+activations of two *different*, not-yet-active presets in the same scope can both commit, each
+leaving its own row active — neither activation's "deactivate the others" `UPDATE` touches the
+other's row (since neither is active yet), so there's no shared row for the two transactions to
+contend over without an explicit lock. The actual guard is `pg_advisory_xact_lock`, keyed on the
+scope (the org uuid, or a fixed sentinel string for the platform tier) and held for the duration
+of the activating transaction — see `core/ai/services.py::_lock_instruction_preset_scope`. This
+still avoids the partial-unique-index-over-a-nullable-column problem the original reasoning
+correctly identified (the same tradeoff already made for `AIProviderConfig`'s own singleton fix):
+an advisory lock needs no schema change and treats the platform tier's sentinel key the same way
+a real org uuid is treated, with no NULL-handling special case.
 
 A separate `deactivate_instruction_preset(preset)` just sets `is_active = False` unconditionally
 (no other row needs touching).
@@ -128,21 +137,45 @@ create only — the view layer never routes a request at this serializer for upd
 
 ## Tenancy and RLS
 
-Organization-tier rows (`organization` set) are tenant-owned data — same scoping path as
-`AISummary`: `AIInstructionPreset → organization` (direct column here, not a join, since this
-table isn't per-patient). Needs an RLS migration matching
-`core/organization/migrations/0024_note_template_row_level_security.py`'s own pattern:
-tenant-owning role sees only its organization's rows, fail-closed, `platform_admin`/superuser
-untouched by policy (already bypasses via role, not policy).
+**Corrected 2026-09-28, after code review — the original text below this line was wrong.**
+There is no per-role RLS exemption anywhere in this project. Every request connects to Postgres
+as the same single `momcare_app` role, `NOBYPASSRLS` (see `DEPLOY.md`'s "Database roles"
+section) — `platform_admin` is a Django-level role check, invisible to Postgres, not a
+Postgres-level one. Two things actually determine what a request can see:
 
-Platform-tier rows (`organization IS NULL`) are cross-tenant by nature, same footing as
-`AIProviderConfig` itself (which has no RLS applied at all — there's no tenant to scope it to).
-The RLS policy's own `USING` clause naturally handles this: a hospital's session variable can
-never match `organization_id IS NULL`, so platform rows are invisible to every hospital-scoped
-query without needing a special case in the policy — only the platform-admin endpoints (which
-already run as `platform_admin`, exempt from RLS by role) ever see them, and even there the
-queryset itself still filters `organization__isnull=True` so a platform admin's own list doesn't
-also show every hospital's presets mixed in.
+1. **The RLS policy's own `USING`/`WITH CHECK` clauses.** Organization-tier rows (`organization`
+   set) are tenant-owned — same scoping path as `AISummary`: `AIInstructionPreset → organization`
+   (direct column, not a join, since this table isn't per-patient). Platform-tier rows
+   (`organization IS NULL`) must be **readable by every session** — a hospital's own AI summaries
+   need the platform-wide instructions to reach their prompt just as much as a platform admin's
+   picker does — but **writable only by a session that already owns the scope it's writing**, so
+   an ordinary hospital session can never create or repoint a platform-tier row. That needs the
+   policy's `USING` and `WITH CHECK` to differ (a `FOR ALL` policy with only `USING` reuses that
+   expression for both): `USING` allows a hospital's own rows OR any `organization_id IS NULL`
+   row; `WITH CHECK` allows only a hospital's own rows. See
+   `core/organization/migrations/0030_fix_ai_instruction_preset_platform_tier_visibility.py` —
+   the migration that fixed this after review found the first version (0028) made platform-tier
+   rows invisible to every ordinary hospital session, not just protected from being written by
+   one; `generate_patient_summary`'s own read (an ordinary org-scoped session, not `bypass_rls()`)
+   was silently getting zero platform instructions on every request-driven trigger.
+
+2. **`TenantAwareJWTAuthentication`'s own bypass for a token with no `org_id` claim** (a platform
+   admin's token). That code path calls `bypass_rls()`, and because `SET LOCAL app.rls_bypass`
+   survives `RELEASE SAVEPOINT` (confirmed empirically during review), the flag stays `'on'` for
+   the rest of that request's transaction — which is what actually lets
+   `AIInstructionPresetListCreateView.post()` (platform tier) insert an `organization_id IS NULL`
+   row: the corrected policy's `WITH CHECK` only allows a session's *own* org, so without this
+   leak-through a platform admin's own writes would fail their own policy. This is incidental,
+   not a designed-in per-role exemption — a future change tightening `bypass_rls()` to scope
+   itself more precisely would silently break platform-tier preset creation with no other code
+   change. `core/platform_admin/api/views.py`'s platform-tier views carry a comment naming this
+   dependency explicitly, for exactly that reason.
+
+The queryset in every list endpoint still filters `organization__isnull=True` /
+`organization=org` explicitly regardless of what RLS alone would return — so a platform admin's
+own list never shows every hospital's presets mixed in with the platform ones, and a hospital's
+own list never shows the platform-tier presets alongside its own (even though RLS alone would let
+a hospital's session *read* platform-tier rows, per point 1 above).
 
 ## Migration
 

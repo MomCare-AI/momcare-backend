@@ -51,7 +51,18 @@ class AIAvailableModelsView(APIView):
 
 class AIInstructionPresetListCreateView(APIView):
     """Platform-tier instruction preset history. List/create, never
-    edit/delete -- see AIInstructionPreset's own docstring."""
+    edit/delete -- see AIInstructionPreset's own docstring.
+
+    create()'s INSERT (organization=None) only satisfies the RLS policy's
+    WITH CHECK because TenantAwareJWTAuthentication enters bypass_rls() for
+    a token with no org_id claim (a platform admin's), and SET LOCAL
+    app.rls_bypass survives RELEASE SAVEPOINT for the rest of the request --
+    not because of any Postgres-level exemption for this role (there is
+    only one connecting role, momcare_app, NOBYPASSRLS). See
+    docs/design/2026-09-28-ai-instruction-presets-design.md's Tenancy
+    section for the full account; tightening bypass_rls() to scope itself
+    more precisely would silently break this create() with no other code
+    change."""
 
     permission_classes = [IsAuthenticated, IsPlatformAdmin]
 
