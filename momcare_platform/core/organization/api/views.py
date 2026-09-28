@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from momcare_platform.core.ai.api.serializers import AIInstructionPresetSerializer
 from momcare_platform.core.ai.models import AIInstructionPreset
 from momcare_platform.core.ai.services import (
-    InstructionPresetStateError,
+    ActivationStateError,
     activate_instruction_preset,
     deactivate_instruction_preset,
 )
@@ -187,7 +187,7 @@ class OrganizationAIInstructionPresetActivateView(APIView):
         preset = get_object_or_404(AIInstructionPreset, pk=preset_id, organization=org)
         try:
             activate_instruction_preset(preset)
-        except InstructionPresetStateError as exc:
+        except ActivationStateError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(AIInstructionPresetSerializer(preset).data)
 
@@ -202,7 +202,7 @@ class OrganizationAIInstructionPresetDeactivateView(APIView):
         preset = get_object_or_404(AIInstructionPreset, pk=preset_id, organization=org)
         try:
             deactivate_instruction_preset(preset)
-        except InstructionPresetStateError as exc:
+        except ActivationStateError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(AIInstructionPresetSerializer(preset).data)
 
@@ -291,7 +291,7 @@ class NotificationMarkReadView(APIView):
 
         try:
             notification = Notification.objects.get(organization=org, pk=notification_id)
-        except Notification.DoesNotExist, DjangoValidationError, ValueError:
+        except (Notification.DoesNotExist, DjangoValidationError, ValueError):
             return Response({"detail": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
 
         notification.mark_read()

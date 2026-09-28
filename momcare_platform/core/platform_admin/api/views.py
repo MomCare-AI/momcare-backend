@@ -11,7 +11,7 @@ from momcare_platform.core.ai import openrouter_client
 from momcare_platform.core.ai.api.serializers import AIInstructionPresetSerializer
 from momcare_platform.core.ai.models import AIInstructionPreset
 from momcare_platform.core.ai.services import (
-    InstructionPresetStateError,
+    ActivationStateError,
     activate_instruction_preset,
     deactivate_instruction_preset,
     get_ai_config,
@@ -86,7 +86,7 @@ class AIInstructionPresetActivateView(APIView):
         preset = get_object_or_404(AIInstructionPreset, pk=preset_id, organization__isnull=True)
         try:
             activate_instruction_preset(preset)
-        except InstructionPresetStateError as exc:
+        except ActivationStateError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(AIInstructionPresetSerializer(preset).data)
 
@@ -98,6 +98,6 @@ class AIInstructionPresetDeactivateView(APIView):
         preset = get_object_or_404(AIInstructionPreset, pk=preset_id, organization__isnull=True)
         try:
             deactivate_instruction_preset(preset)
-        except InstructionPresetStateError as exc:
+        except ActivationStateError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(AIInstructionPresetSerializer(preset).data)

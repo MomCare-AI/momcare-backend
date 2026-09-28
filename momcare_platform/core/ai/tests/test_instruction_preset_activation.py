@@ -5,7 +5,7 @@ import pytest
 
 from momcare_platform.core.ai.models import AIInstructionPreset
 from momcare_platform.core.ai.services import (
-    InstructionPresetStateError,
+    ActivationStateError,
     activate_instruction_preset,
     deactivate_instruction_preset,
 )
@@ -86,7 +86,7 @@ def test_activating_an_already_active_preset_raises(make_hospital):
         is_active=True,
     )
 
-    with pytest.raises(InstructionPresetStateError):
+    with pytest.raises(ActivationStateError):
         activate_instruction_preset(preset)
 
 
@@ -117,5 +117,5 @@ def test_deactivating_an_already_inactive_preset_raises(make_hospital):
         content="Text.",
     )
 
-    with pytest.raises(InstructionPresetStateError):
+    with pytest.raises(ActivationStateError):
         deactivate_instruction_preset(preset)

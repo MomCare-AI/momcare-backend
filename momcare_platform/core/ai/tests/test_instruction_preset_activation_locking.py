@@ -20,14 +20,14 @@ import pytest
 from django.conf import settings
 from django.db import connection, transaction
 
-from momcare_platform.core.ai.services import _lock_instruction_preset_scope
+from momcare_platform.core.ai.services import _lock_scope
 
 pytestmark = pytest.mark.django_db
 
 
 def test_lock_instruction_preset_scope_acquires_a_real_advisory_lock():
     with transaction.atomic():
-        _lock_instruction_preset_scope("11111111-1111-1111-1111-111111111111")
+        _lock_scope("instruction_preset", "11111111-1111-1111-1111-111111111111")
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()",
@@ -38,7 +38,7 @@ def test_lock_instruction_preset_scope_acquires_a_real_advisory_lock():
 
 
 def test_pg_advisory_xact_lock_blocks_a_second_holder_until_the_first_commits():
-    """Proves the underlying Postgres primitive _lock_instruction_preset_scope
+    """Proves the underlying Postgres primitive _lock_scope
     is built on actually serializes two concurrent holders of the same key --
     independent of Django's ORM/transaction wrapping, via two raw connections
     to the same (already-migrated) test database. Advisory locks are

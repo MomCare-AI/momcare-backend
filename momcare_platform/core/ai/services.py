@@ -8,7 +8,7 @@ from django.db import connection, transaction
 from django.utils import timezone
 
 from momcare_platform.core.ai import openrouter_client
-from momcare_platform.core.ai.models import AIInstructionPreset, AIProviderConfig, AISummary
+from momcare_platform.core.ai.models import AIInstructionPreset, AIProviderConfig, AISummary, AISummaryTemplate
 from momcare_platform.core.analytics.models import PatientAnalytics
 from momcare_platform.core.common.formatting import humanize_days_ago
 from momcare_platform.core.common.rls import bypass_rls
@@ -18,7 +18,7 @@ from momcare_platform.core.patients.models import Patient
 logger = logging.getLogger(__name__)
 
 
-class InstructionPresetStateError(Exception):
+class ActivationStateError(Exception):
     """Raised when an activate/deactivate call doesn't apply to the
     preset's current state -- e.g. activating one that's already active.
     A 400 at the view layer, never a silent no-op that could mask a
@@ -313,20 +313,24 @@ def maybe_regenerate_for_risk_change(risk_assessment) -> None:
     generate_patient_summary(risk_assessment.pregnancy.patient)
 
 
-def _lock_instruction_preset_scope(organization_id) -> None:
-    """Serializes concurrent activate_instruction_preset() calls for the
-    same scope. transaction.atomic() alone gives atomicity, not
+def _lock_scope(resource_kind: str, organization_id) -> None:
+    """Serializes concurrent activate_*() calls for the same (resource kind,
+    scope) pair. transaction.atomic() alone gives atomicity, not
     serializability: under READ COMMITTED, two concurrent activations of two
-    DIFFERENT, not-yet-active presets in the same scope can both commit,
-    each leaving its own row active -- neither activation's "deactivate the
+    DIFFERENT, not-yet-active rows in the same scope can both commit, each
+    leaving its own row active -- neither activation's "deactivate the
     others" UPDATE touches the other's row, since neither is active yet,
     so there is no shared row for the two transactions to contend over
-    without an explicit lock. hashtext() collapses the scope key (an org
-    uuid, or a fixed sentinel string for the platform tier) into a lockable
-    bigint; pg_advisory_xact_lock (not pg_advisory_lock) releases
-    automatically at transaction end, so a crash or an exception can't leave
-    the scope locked forever."""
-    scope_key = str(organization_id) if organization_id else "platform"
+    without an explicit lock. hashtext() collapses the scope key (which
+    resource kind, plus an org uuid or a fixed sentinel string for the
+    platform tier) into a lockable bigint; pg_advisory_xact_lock (not
+    pg_advisory_lock) releases automatically at transaction end, so a crash
+    or an exception can't leave the scope locked forever. ``resource_kind``
+    keeps an instruction-preset activation and a summary-template activation
+    for the same organization from contending on the same lock key -- they
+    are independent resources that just happen to share this locking
+    mechanism."""
+    scope_key = f"{resource_kind}:{organization_id or 'platform'}"
     with connection.cursor() as cursor:
         cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [scope_key])
 
@@ -339,9 +343,9 @@ def activate_instruction_preset(preset: AIInstructionPreset) -> None:
     ``=``, but Django's ORM ``filter(organization=None)`` compiles to
     ``organization_id IS NULL``, not ``= NULL``, so this works)."""
     if preset.is_active:
-        raise InstructionPresetStateError("This preset is already active.")
+        raise ActivationStateError("This preset is already active.")
     with transaction.atomic():
-        _lock_instruction_preset_scope(preset.organization_id)
+        _lock_scope("instruction_preset", preset.organization_id)
         AIInstructionPreset.objects.filter(
             organization=preset.organization,
             is_active=True,
@@ -353,6 +357,92 @@ def activate_instruction_preset(preset: AIInstructionPreset) -> None:
 
 def deactivate_instruction_preset(preset: AIInstructionPreset) -> None:
     if not preset.is_active:
-        raise InstructionPresetStateError("This preset is not active.")
+        raise ActivationStateError("This preset is not active.")
     preset.is_active = False
     preset.save(update_fields=["is_active", "updated_at"])
+
+
+# The fixed vocabulary _build_data_snapshot() produces -- the only field
+# names a AISummaryTemplate's sections may ever reference. Keeping this list
+# here, next to _build_data_snapshot itself, is what makes "a template can
+# rearrange fields, never invent or hide one" an enforced fact rather than a
+# convention: validate_template_sections() and _build_prompt() both read
+# from this single list, so a field added to the snapshot without being
+# added here would fail template validation loudly, not silently.
+TEMPLATE_FIELD_VOCABULARY = (
+    "patient_name",
+    "gestational_age",
+    "current_risk_level",
+    "risk_this_month",
+    "latest_readings",
+    "thirty_day_average",
+    "provider_name",
+    "nurse_name",
+    "care_manager_name",
+    "recent_note",
+    "recent_note_author",
+    "last_monitoring_contact_display",
+    "last_reading_display",
+    "monitoring_time_display",
+    "active_statuses",
+    "pending_risk_count",
+    "has_open_alert",
+)
+
+
+def validate_template_sections(sections) -> list[str]:
+    """Every field in TEMPLATE_FIELD_VOCABULARY must appear exactly once
+    across all sections -- nothing less (a template can't hide a field by
+    omitting it), nothing more (a template can't reference a field that
+    doesn't exist). Returns a list of human-readable error strings; an empty
+    list means the sections are valid. Never raises -- the caller (the
+    serializer) decides what an error list means for the response."""
+    errors: list[str] = []
+    if not isinstance(sections, list) or not sections:
+        return ["sections must be a non-empty list of {label, fields} objects."]
+
+    seen: list[str] = []
+    for index, section in enumerate(sections):
+        if not isinstance(section, dict) or "label" not in section or "fields" not in section:
+            errors.append(f"Section {index} must have a 'label' and a 'fields' list.")
+            continue
+        if not isinstance(section["label"], str) or not section["label"].strip():
+            errors.append(f"Section {index} must have a non-empty 'label'.")
+        for field in section["fields"]:
+            if field not in TEMPLATE_FIELD_VOCABULARY:
+                errors.append(f"'{field}' is not a known field.")
+            else:
+                seen.append(field)
+
+    missing = [f for f in TEMPLATE_FIELD_VOCABULARY if f not in seen]
+    for field in missing:
+        errors.append(f"'{field}' is missing -- every field must appear somewhere.")
+
+    duplicated = {f for f in seen if seen.count(f) > 1}
+    for field in sorted(duplicated):
+        errors.append(f"'{field}' appears more than once -- each field may appear exactly once.")
+
+    return errors
+
+
+def activate_summary_template(template: AISummaryTemplate) -> None:
+    """At most one active template per scope -- same swap mechanism as
+    activate_instruction_preset()."""
+    if template.is_active:
+        raise ActivationStateError("This template is already active.")
+    with transaction.atomic():
+        _lock_scope("summary_template", template.organization_id)
+        AISummaryTemplate.objects.filter(
+            organization=template.organization,
+            is_active=True,
+        ).exclude(pk=template.pk).update(is_active=False)
+        template.is_active = True
+        template.activated_at = timezone.now()
+        template.save(update_fields=["is_active", "activated_at", "updated_at"])
+
+
+def deactivate_summary_template(template: AISummaryTemplate) -> None:
+    if not template.is_active:
+        raise ActivationStateError("This template is not active.")
+    template.is_active = False
+    template.save(update_fields=["is_active", "updated_at"])
