@@ -8,7 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from momcare_platform.core.ai import openrouter_client
-from momcare_platform.core.ai.models import AIProviderConfig, AISummary
+from momcare_platform.core.ai.models import AIInstructionPreset, AIProviderConfig, AISummary
 from momcare_platform.core.analytics.models import PatientAnalytics
 from momcare_platform.core.common.formatting import humanize_days_ago
 from momcare_platform.core.common.rls import bypass_rls
@@ -16,6 +16,13 @@ from momcare_platform.core.monitoring.services import format_duration
 from momcare_platform.core.patients.models import Patient
 
 logger = logging.getLogger(__name__)
+
+
+class InstructionPresetStateError(Exception):
+    """Raised when an activate/deactivate call doesn't apply to the
+    preset's current state -- e.g. activating one that's already active.
+    A 400 at the view layer, never a silent no-op that could mask a
+    caller bug like a double-click racing itself."""
 
 
 def get_ai_config() -> AIProviderConfig:
@@ -255,3 +262,28 @@ def maybe_regenerate_for_risk_change(risk_assessment) -> None:
     if stored_level == risk_assessment.final_risk_level:
         return
     generate_patient_summary(risk_assessment.pregnancy.patient)
+
+
+def activate_instruction_preset(preset: AIInstructionPreset) -> None:
+    """At most one active preset per scope. ``organization=preset.organization``
+    scopes the "deactivate the others" step correctly for both tiers,
+    including the platform tier (organization=None matches only other
+    organization=None rows -- NULL never matches NULL in a WHERE clause via
+    ``=``, but Django's ORM ``filter(organization=None)`` compiles to
+    ``organization_id IS NULL``, not ``= NULL``, so this works)."""
+    if preset.is_active:
+        raise InstructionPresetStateError("This preset is already active.")
+    with transaction.atomic():
+        AIInstructionPreset.objects.filter(
+            organization=preset.organization, is_active=True,
+        ).exclude(pk=preset.pk).update(is_active=False)
+        preset.is_active = True
+        preset.activated_at = timezone.now()
+        preset.save(update_fields=["is_active", "activated_at", "updated_at"])
+
+
+def deactivate_instruction_preset(preset: AIInstructionPreset) -> None:
+    if not preset.is_active:
+        raise InstructionPresetStateError("This preset is not active.")
+    preset.is_active = False
+    preset.save(update_fields=["is_active", "updated_at"])
