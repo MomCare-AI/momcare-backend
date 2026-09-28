@@ -188,6 +188,27 @@ def test_missing_fields_are_stated_as_not_on_file_not_silently_dropped(patient):
     assert "- recent_note: not on file" in sent_prompt
 
 
+def test_the_prompt_groups_data_by_topic_instead_of_one_flat_list(patient):
+    """User-directed prompt redesign: the model was producing a field-by-field
+    recitation ('X is not on file, Y is not on file...') instead of flowing
+    clinical-note-style prose, because the prompt handed it one undifferentiated
+    list of 17 facts in a row. Grouping related facts under labeled sections
+    and explicitly asking for paragraphs-by-topic (matching how a clinician
+    actually summarizes a chart) is meant to fix that."""
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
+        generate_patient_summary(patient)
+
+    sent_prompt = mock_generate.call_args.args[0]
+    assert "Vitals & Risk:" in sent_prompt
+    assert "Care Team & Activity:" in sent_prompt
+    # The vitals group's own fields land under that header, not the flat list.
+    vitals_section = sent_prompt.split("Vitals & Risk:")[1].split("Care Team & Activity:")[0]
+    assert "current_risk_level" in vitals_section
+    care_team_section = sent_prompt.split("Care Team & Activity:")[1]
+    assert "provider_name" in care_team_section
+    assert "current_risk_level" not in care_team_section
+
+
 def test_a_snapshot_building_error_is_logged_and_never_raised(patient):
     """Important review finding: only the client call was best-effort --
     an exception building the data snapshot (a DB error, a bad relation)

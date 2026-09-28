@@ -118,9 +118,8 @@ def _build_data_snapshot(patient) -> dict:
     return snapshot
 
 
-_BASE_PROMPT = """You are writing a short clinical summary for a hospital staff member about one pregnant patient. Use only the data given below -- never invent a value, a name, or an event that is not present. If something is missing (no care team assigned, no readings this period, no recent note), state that plainly instead of omitting it. Write in plain prose, no bullet points, no markdown. Keep the entire summary to at most {max_words} words.
+_BASE_PROMPT = """You are writing a short clinical summary for a hospital staff member about one pregnant patient, the way a clinician would summarize a chart out loud -- flowing paragraphs grouped by topic, never a list of facts read out one after another. Use only the data given below -- never invent a value, a name, or an event that is not present. If something is missing (no care team assigned, no readings this period, no recent note), state that plainly instead of omitting it. Write one paragraph synthesizing the Vitals & Risk section, then a separate paragraph covering the Care Team & Activity section. No bullet points, no markdown. Keep the entire summary to at most {max_words} words.
 
-Patient data:
 {data_lines}
 
 {closing_instruction}"""
@@ -142,6 +141,32 @@ def _format_snapshot_value(value):
     return value
 
 
+_VITALS_AND_RISK_FIELDS = [
+    "gestational_age",
+    "current_risk_level",
+    "risk_this_month",
+    "latest_readings",
+    "thirty_day_average",
+    "pending_risk_count",
+    "has_open_alert",
+]
+_CARE_TEAM_AND_ACTIVITY_FIELDS = [
+    "provider_name",
+    "nurse_name",
+    "care_manager_name",
+    "recent_note",
+    "recent_note_author",
+    "last_monitoring_contact_display",
+    "last_reading_display",
+    "monitoring_time_display",
+    "active_statuses",
+]
+
+
+def _format_group(snapshot: dict, field_names: list[str]) -> str:
+    return "\n".join(f"- {key}: {_format_snapshot_value(snapshot[key])}" for key in field_names)
+
+
 def _build_prompt(
     snapshot: dict,
     config: AIProviderConfig,
@@ -150,7 +175,11 @@ def _build_prompt(
     *,
     deactivated: bool,
 ) -> str:
-    data_lines = "\n".join(f"- {key}: {_format_snapshot_value(value)}" for key, value in snapshot.items())
+    data_lines = (
+        f"Patient: {snapshot['patient_name']}\n\n"
+        f"Vitals & Risk:\n{_format_group(snapshot, _VITALS_AND_RISK_FIELDS)}\n\n"
+        f"Care Team & Activity:\n{_format_group(snapshot, _CARE_TEAM_AND_ACTIVITY_FIELDS)}"
+    )
     sections = [
         _BASE_PROMPT.format(
             max_words=config.max_words,
