@@ -1,9 +1,17 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status
+from rest_framework.generics import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from momcare_platform.core.ai.api.serializers import AIInstructionPresetSerializer
+from momcare_platform.core.ai.models import AIInstructionPreset
+from momcare_platform.core.ai.services import (
+    InstructionPresetStateError,
+    activate_instruction_preset,
+    deactivate_instruction_preset,
+)
 from momcare_platform.core.common.pagination import DefaultPagination
 from momcare_platform.core.common.permissions import IsHospitalAdmin, IsHospitalStaff
 from momcare_platform.core.organization.api.serializers import (
@@ -140,6 +148,63 @@ class OrganizationConfidenceThresholdView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(OrganizationSerializer(org, context={"request": request}).data)
+
+
+class OrganizationAIInstructionPresetListCreateView(APIView):
+    """This hospital's own instruction preset history. hospital_admin only,
+    same restriction the old ai-instructions endpoint used -- a setting that
+    shapes a clinical-facing output shouldn't be editable by every staff
+    role."""
+
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def get(self, request):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        presets = AIInstructionPreset.objects.filter(organization=org)
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(presets, request, view=self)
+        return paginator.get_paginated_response(AIInstructionPresetSerializer(page, many=True).data)
+
+    def post(self, request):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        serializer = AIInstructionPresetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(organization=org, created_by=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class OrganizationAIInstructionPresetActivateView(APIView):
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def post(self, request, preset_id):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        preset = get_object_or_404(AIInstructionPreset, pk=preset_id, organization=org)
+        try:
+            activate_instruction_preset(preset)
+        except InstructionPresetStateError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(AIInstructionPresetSerializer(preset).data)
+
+
+class OrganizationAIInstructionPresetDeactivateView(APIView):
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def post(self, request, preset_id):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        preset = get_object_or_404(AIInstructionPreset, pk=preset_id, organization=org)
+        try:
+            deactivate_instruction_preset(preset)
+        except InstructionPresetStateError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(AIInstructionPresetSerializer(preset).data)
 
 
 class OrganizationAuditLogView(APIView):

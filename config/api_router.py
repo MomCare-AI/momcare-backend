@@ -31,6 +31,9 @@ from momcare_platform.core.monitoring.api.views import (
 from momcare_platform.core.organization.api.views import (
     MyOrganizationView,
     NotificationMarkReadView,
+    OrganizationAIInstructionPresetActivateView,
+    OrganizationAIInstructionPresetDeactivateView,
+    OrganizationAIInstructionPresetListCreateView,
     OrganizationAuditLogView,
     OrganizationConfidenceThresholdView,
     OrganizationDeactivationRequestView,
@@ -191,6 +194,21 @@ core_urlpatterns = [
         r"^organization/me/confidence-threshold/?$",
         OrganizationConfidenceThresholdView.as_view(),
         name="organization-confidence-threshold",
+    ),
+    re_path(
+        r"^organization/me/instruction-presets/?$",
+        OrganizationAIInstructionPresetListCreateView.as_view(),
+        name="organization-instruction-presets",
+    ),
+    re_path(
+        r"^organization/me/instruction-presets/(?P<preset_id>[0-9a-f-]+)/activate/?$",
+        OrganizationAIInstructionPresetActivateView.as_view(),
+        name="organization-instruction-preset-activate",
+    ),
+    re_path(
+        r"^organization/me/instruction-presets/(?P<preset_id>[0-9a-f-]+)/deactivate/?$",
+        OrganizationAIInstructionPresetDeactivateView.as_view(),
+        name="organization-instruction-preset-deactivate",
     ),
     re_path(
         r"^organization/me/deactivation-request/?$",
