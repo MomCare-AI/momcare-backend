@@ -351,3 +351,12 @@ class PatientStatusSerializer(serializers.ModelSerializer):
     def validate_color(self, value):
         HEX_COLOR_VALIDATOR(value)
         return value
+
+
+class NoteEnhanceRequestSerializer(serializers.Serializer):
+    """The one input to the AI wording-assist a staff member can use while
+    actively drafting a note -- not tied to a model, nothing here is ever
+    saved directly. Saving still happens through the ordinary note
+    create/update endpoints, whether or not the staff member used this."""
+
+    text = serializers.CharField(min_length=1, max_length=5000, trim_whitespace=True)

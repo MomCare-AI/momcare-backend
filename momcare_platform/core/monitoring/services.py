@@ -201,3 +201,29 @@ def monitoring_month_totals(*, patient, year: int, month: int) -> dict:
     """
     start, end = month_bounds(year=year, month=month, tzinfo=patient.location.timezone)
     return monitoring_period_totals(patient=patient, start=start, end=end)
+
+
+_NOTE_ENHANCE_PROMPT = """You are helping a hospital staff member polish a clinical note they have drafted about a patient. Improve grammar, clarity, and professional tone only. You must never add a fact, remove a fact, or change what the note actually says -- only how it is worded.
+
+Draft note:
+{draft}
+
+Respond with ONLY the improved note text, no commentary, no quotation marks around it."""
+
+
+def enhance_note_text(draft: str) -> str | None:
+    """AI-assist for a staff member actively writing a clinical note --
+    distinct from the AI Summary feature entirely (which reads existing
+    structured patient data and writes new prose from it). This takes free
+    text a person already wrote and only ever improves its wording; the
+    hard rule enforced in the prompt is that the AI may never add, drop,
+    or alter a fact, only phrase it better. Uses generate_with_retries()
+    for the same blank/None-response reliability handling every other AI
+    call in this system needs (a reasoning-style model can spend its whole
+    token budget on internal reasoning and return nothing visible)."""
+    from momcare_platform.core.ai.services import generate_with_retries, get_ai_config  # noqa: PLC0415
+
+    config = get_ai_config()
+    prompt = _NOTE_ENHANCE_PROMPT.format(draft=draft)
+    max_tokens = len(draft.split()) * 4 + 200
+    return generate_with_retries(prompt, model=config.current_model, max_tokens=max_tokens)

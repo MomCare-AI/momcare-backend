@@ -30,6 +30,7 @@ from momcare_platform.core.monitoring.api.serializers import (
     CombinedMonitoringSerializer,
     MonitoringNoteSerializer,
     MonitoringSessionSerializer,
+    NoteEnhanceRequestSerializer,
     NoteTemplateSerializer,
     PatientStatusSerializer,
     StatusLabelSerializer,
@@ -44,6 +45,7 @@ from momcare_platform.core.monitoring.models import (
 )
 from momcare_platform.core.monitoring.services import (
     create_combined_monitoring,
+    enhance_note_text,
     monitoring_period_totals,
     month_bounds,
 )
@@ -383,6 +385,30 @@ class MonitoringNoteDetailView(OrganizationScopedQuerysetMixin, APIView):
             )
         note.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MonitoringNoteEnhanceView(APIView):
+    """AI-assist for a staff member actively drafting a note -- distinct
+    from the AI Summary feature entirely (that reads structured patient
+    data and writes new prose; this takes free text a person already
+    wrote and only improves its wording, never the facts). Stateless: it
+    doesn't touch any patient or note record, doesn't require a patient_id,
+    and saving still only ever happens through the ordinary note
+    create/update endpoints -- calling this is optional and can be done
+    as many times as the staff member wants before they save."""
+
+    permission_classes = [IsAuthenticated, IsHospitalStaff]
+
+    def post(self, request):
+        serializer = NoteEnhanceRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        enhanced = enhance_note_text(serializer.validated_data["text"])
+        if enhanced is None:
+            return Response(
+                {"detail": "Could not enhance this note right now. Try again."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({"enhanced_text": enhanced})
 
 
 class ClinicalTagListCreateView(APIView):
