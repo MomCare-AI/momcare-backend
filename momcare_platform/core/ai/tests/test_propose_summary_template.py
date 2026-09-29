@@ -97,12 +97,28 @@ def test_propose_rejects_a_response_missing_a_field_and_retries():
     assert mock_generate.call_count == 2
 
 
-def test_propose_returns_none_immediately_when_the_client_call_fails():
+def test_propose_retries_a_none_response_rather_than_giving_up_immediately():
+    """A reasoning-style model can spend its whole token budget on internal
+    reasoning and return no visible content at all -- caught live testing
+    this feature. That's retried like any other invalid attempt, not
+    treated as an unretriable transport failure, since retrying the
+    identical prompt often succeeds."""
+    with patch(
+        "momcare_platform.core.ai.openrouter_client.generate",
+        side_effect=[None, _valid_ai_response()],
+    ) as mock_generate:
+        candidate = propose_summary_template("anything")
+
+    assert candidate is not None
+    assert mock_generate.call_count == 2
+
+
+def test_propose_returns_none_after_exhausting_retries_on_a_none_response():
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value=None) as mock_generate:
         candidate = propose_summary_template("anything")
 
     assert candidate is None
-    assert mock_generate.call_count == 1
+    assert mock_generate.call_count > 1
 
 
 def test_propose_and_preview_includes_preview_text_generated_from_sample_data():
@@ -119,9 +135,12 @@ def test_propose_and_preview_includes_preview_text_generated_from_sample_data():
 
 
 def test_propose_and_preview_still_returns_the_candidate_when_the_preview_call_fails():
+    """The preview call retries too (same reasoning-model flakiness as the
+    proposal call), so this needs enough None responses to exhaust every
+    preview retry attempt, not just one."""
     with patch(
         "momcare_platform.core.ai.openrouter_client.generate",
-        side_effect=[_valid_ai_response(), None],
+        side_effect=[_valid_ai_response(), None, None, None],
     ):
         result = propose_and_preview_template("anything")
 

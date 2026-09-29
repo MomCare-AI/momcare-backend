@@ -3,6 +3,8 @@ values we already know are real (never the other way around: the AI never
 gets to say what it's referencing). A value/name that doesn't appear in the
 text produces no citation; nothing is ever invented."""
 
+from decimal import Decimal
+
 from momcare_platform.core.ai.services import _build_citations
 
 
@@ -103,3 +105,41 @@ def test_no_citations_when_nothing_in_the_snapshot_matches_the_text():
     citations = _build_citations(snapshot, "This patient has no data on file yet.")
 
     assert citations == []
+
+
+def test_a_decimal_whole_number_reading_value_matches_the_ais_natural_writing():
+    """Real bug caught in live end-to-end testing: systolic_bp/diastolic_bp/
+    heart_rate/etc. are DecimalField(decimal_places=2) -- the real stored
+    value is Decimal('142.00'), but a real model naturally writes '142' in
+    prose, never '142.00'. Matching only the raw Decimal string meant this
+    never actually cited a reading in practice."""
+    snapshot = _snapshot(
+        latest_readings={"heart_rate": Decimal("96.00")},
+        _latest_reading_id="reading-3",
+    )
+
+    citations = _build_citations(snapshot, "Her heart rate was 96 bpm today.")
+
+    assert citations == [{"text": "96", "type": "reading", "id": "reading-3"}]
+
+
+def test_a_decimal_fractional_reading_value_matches_the_ais_natural_writing():
+    snapshot = _snapshot(
+        latest_readings={"body_temp_f": Decimal("99.10")},
+        _latest_reading_id="reading-4",
+    )
+
+    citations = _build_citations(snapshot, "Her temperature was 99.1°F.")
+
+    assert citations == [{"text": "99.1", "type": "reading", "id": "reading-4"}]
+
+
+def test_a_decimal_bp_combo_matches_the_ais_natural_writing():
+    snapshot = _snapshot(
+        latest_readings={"systolic_bp": Decimal("142.00"), "diastolic_bp": Decimal("91.00")},
+        _latest_reading_id="reading-5",
+    )
+
+    citations = _build_citations(snapshot, "Her BP was 142/91 at her last visit.")
+
+    assert citations == [{"text": "142/91", "type": "reading", "id": "reading-5"}]

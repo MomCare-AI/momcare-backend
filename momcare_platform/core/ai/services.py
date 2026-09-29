@@ -132,6 +132,19 @@ def _build_data_snapshot(patient) -> dict:
     return snapshot
 
 
+def _natural_number_str(value) -> str:
+    """Reading fields are DecimalField(decimal_places=2) -- the real stored
+    value is Decimal('142.00'), but a model writes '142' in natural prose,
+    never a padded '.00'. Normalizes to how a person (or the AI) actually
+    writes it: '142' for a whole number, '99.1' for a fractional one.
+    Matching only the raw Decimal string meant a citation almost never
+    actually matched in practice -- caught in live end-to-end testing."""
+    number = float(value)
+    if number == int(number):
+        return str(int(number))
+    return str(number)
+
+
 def _build_citations(snapshot: dict, content: str) -> list[dict]:
     """Links a value the AI's *finished* text happens to mention back to
     the real record it came from -- readings and the three care-team
@@ -165,10 +178,12 @@ def _build_citations(snapshot: dict, content: str) -> list[dict]:
         systolic = readings.get("systolic_bp")
         diastolic = readings.get("diastolic_bp")
         if systolic is not None and diastolic is not None:
+            candidates.append(f"{_natural_number_str(systolic)}/{_natural_number_str(diastolic)}")
             candidates.append(f"{systolic}/{diastolic}")
         for key in ("heart_rate", "body_temp_f", "blood_glucose", "hemoglobin"):
             value = readings.get(key)
             if value is not None:
+                candidates.append(_natural_number_str(value))
                 candidates.append(str(value))
         for text in candidates:
             if text in content and text not in citations:
@@ -288,6 +303,31 @@ def _max_tokens_for(max_words: int) -> int:
     return max_words * 2 + 100
 
 
+_GENERATE_MAX_ATTEMPTS = 3
+
+
+def _is_usable_content(content: str | None) -> bool:
+    return content is not None and content.strip() != ""
+
+
+def _generate_with_retries(prompt: str, *, model: str, max_tokens: int) -> str | None:
+    """openrouter_client.generate() can come back None (a real transport or
+    API failure) or, with a reasoning-style model, a non-None but blank
+    string -- caught live testing this feature: the model spent its entire
+    token budget on internal "reasoning" tokens (counted against the same
+    max_tokens) and never wrote a visible answer at all. Both are equally
+    unusable, but unlike a genuine transport failure, retrying a blank
+    response often succeeds -- how much a reasoning model "thinks" before
+    answering varies call to call for the identical prompt (measured live:
+    4 of 5 real attempts against the summary prompt came back blank, the
+    5th succeeded outright). Returns None only if every attempt failed."""
+    for _attempt in range(_GENERATE_MAX_ATTEMPTS):
+        content = openrouter_client.generate(prompt, model=model, max_tokens=max_tokens)
+        if _is_usable_content(content):
+            return content
+    return None
+
+
 def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypass: bool = False) -> None:
     """The single entry point every trigger (patient creation, a risk-level
     change, deactivation, the periodic refresh command) calls. Best-effort:
@@ -324,7 +364,7 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
         # would block any other request touching this same patient row for
         # just as long. See docs/design/2026-09-27-ai-summary-design.md's
         # Concurrency note: the guard belongs around the upsert, not the call.
-        content = openrouter_client.generate(
+        content = _generate_with_retries(
             prompt,
             model=config.current_model,
             max_tokens=_max_tokens_for(config.max_words),
@@ -592,14 +632,17 @@ def propose_summary_template(description: str) -> dict | None:
     propose extra wording) from a plain-English description -- the
     AI-assisted step of authoring a template. Every candidate is validated
     through the exact same validate_template_sections() check a hand-built
-    template gets; an invalid one (missing/duplicated/unknown field, or a
-    response that isn't parseable JSON at all) is retried up to
-    _PROPOSE_MAX_ATTEMPTS times before giving up. Returns None if the
-    client call itself fails (no point retrying a transport-level failure)
-    or if every attempt produced an invalid candidate. Nothing is ever
-    saved here -- this only ever produces a draft for the caller to
-    preview and, if they choose, save through the ordinary create
-    endpoint."""
+    template gets; an invalid one (missing/duplicated/unknown field, a
+    response that isn't parseable JSON at all, or a blank/None response) is
+    retried up to _PROPOSE_MAX_ATTEMPTS times before giving up. A None/blank
+    response is retried rather than treated as an immediate transport-level
+    failure -- caught live testing this feature: a reasoning-style model can
+    spend its entire token budget on internal reasoning and return nothing
+    visible, and how much it "thinks" before answering the identical prompt
+    varies call to call, so a retry often succeeds. Returns None only if
+    every attempt failed. Nothing is ever saved here -- this only ever
+    produces a draft for the caller to preview and, if they choose, save
+    through the ordinary create endpoint."""
     config = get_ai_config()
     prompt = _PROPOSE_PROMPT.format(
         field_count=len(TEMPLATE_FIELD_VOCABULARY),
@@ -608,8 +651,8 @@ def propose_summary_template(description: str) -> dict | None:
     )
     for _attempt in range(_PROPOSE_MAX_ATTEMPTS):
         raw = openrouter_client.generate(prompt, model=config.current_model, max_tokens=_PROPOSE_MAX_TOKENS)
-        if raw is None:
-            return None
+        if raw is None or not raw.strip():
+            continue
         candidate = _parse_propose_response(raw)
         if candidate is None:
             continue
@@ -636,7 +679,7 @@ def propose_and_preview_template(description: str) -> dict | None:
         extra_instructions=candidate["extra_instructions"],
     )
     preview_prompt = _build_prompt(_SAMPLE_SNAPSHOT, config, deactivated=False, template=draft_template)
-    preview_text = openrouter_client.generate(
+    preview_text = _generate_with_retries(
         preview_prompt,
         model=config.current_model,
         max_tokens=_max_tokens_for(config.max_words),

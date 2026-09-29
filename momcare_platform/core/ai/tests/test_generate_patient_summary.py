@@ -300,3 +300,33 @@ def test_no_citation_for_a_value_the_generated_text_never_mentions(patient_with_
 
     summary = AISummary.objects.get(patient=patient_with_provider_and_reading)
     assert summary.citations == []
+
+
+def test_a_blank_response_never_overwrites_the_previously_cached_summary(patient):
+    """Real failure caught in live end-to-end testing: a reasoning-style
+    model can spend its whole token budget on internal reasoning and
+    return a non-None but blank/whitespace string. Before the fix, that
+    blank string still passed the `content is None` check and overwrote a
+    perfectly good previous summary with near-empty garbage. Every retry
+    attempt returning blank must leave the existing row untouched, the
+    same as a plain None already did."""
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="Yesterday's real summary."):
+        generate_patient_summary(patient)
+
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="   "):
+        generate_patient_summary(patient)
+
+    summary = AISummary.objects.get(patient=patient)
+    assert summary.content == "Yesterday's real summary."
+
+
+def test_a_blank_first_attempt_is_retried_and_a_later_success_is_stored(patient):
+    with patch(
+        "momcare_platform.core.ai.openrouter_client.generate",
+        side_effect=["", " ", "A real summary after retrying."],
+    ) as mock_generate:
+        generate_patient_summary(patient)
+
+    summary = AISummary.objects.get(patient=patient)
+    assert summary.content == "A real summary after retrying."
+    assert mock_generate.call_count == 3
