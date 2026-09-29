@@ -2,6 +2,7 @@ import importlib
 import json
 import logging
 from contextlib import nullcontext
+from decimal import Decimal
 
 from django.apps import apps as django_apps
 from django.conf import settings
@@ -219,10 +220,57 @@ _DEACTIVATED_CLOSING = (
 def _format_snapshot_value(value):
     """The base prompt tells the model to state a gap plainly rather than
     omit it -- so a field the caller left None/blank must show up as text
-    saying so, not vanish from the prompt entirely."""
+    saying so, not vanish from the prompt entirely.
+
+    Also where the raw-Python-repr bug lived: latest_readings/
+    thirty_day_average are dicts of Decimal objects, and this used to just
+    return them as-is, which f-string interpolation then rendered as
+    "{'systolic_bp': Decimal('142.00'), ...}" -- a real Python repr shown
+    directly to the model. Nothing told it blood pressure is conventionally
+    written as one "142/91" pair, so its own phrasing varied
+    unpredictably call to call -- exactly why _build_citations() (which
+    looks for that same "142/91" pair in the finished text) missed it more
+    often than not. Caught live end-to-end testing."""
     if value in (None, "", [], {}):
         return "not on file"
+    if isinstance(value, dict):
+        return _format_dict_value(value)
+    if isinstance(value, Decimal):
+        return _natural_number_str(value)
     return value
+
+
+def _format_dict_value(value: dict) -> str:
+    """systolic_bp/diastolic_bp are combined into one "142/91" pair -- the
+    same convention a clinician actually writes blood pressure in, and the
+    same shape _build_citations() looks for, so the model is far more
+    likely to naturally echo it back. Any other dict (e.g. risk_this_month,
+    which nests further) just flattens its own key/value pairs the same
+    recursive way -- still readable, never a raw repr.
+
+    Both BP keys can be *present but None* (nullable fields, not merely
+    absent) -- combining them requires both to actually have a value, not
+    just both keys existing, or _natural_number_str(None) crashes. Caught
+    live end-to-end testing. A None-valued field elsewhere is skipped
+    entirely rather than printed as the literal word "None"."""
+    parts = []
+    remaining = dict(value)
+    systolic = remaining.get("systolic_bp")
+    diastolic = remaining.get("diastolic_bp")
+    if systolic is not None and diastolic is not None:
+        remaining.pop("systolic_bp")
+        remaining.pop("diastolic_bp")
+        parts.append(f"blood_pressure: {_natural_number_str(systolic)}/{_natural_number_str(diastolic)}")
+    for key, val in remaining.items():
+        if val is None:
+            continue
+        if isinstance(val, dict):
+            parts.append(f"{key}: {_format_snapshot_value(val)}")
+        elif isinstance(val, Decimal):
+            parts.append(f"{key}: {_natural_number_str(val)}")
+        else:
+            parts.append(f"{key}: {val}")
+    return ", ".join(parts) if parts else "not on file"
 
 
 _VITALS_AND_RISK_FIELDS = [
