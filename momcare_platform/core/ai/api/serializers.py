@@ -32,3 +32,12 @@ class AISummaryTemplateSerializer(serializers.ModelSerializer):
         if errors:
             raise serializers.ValidationError(errors)
         return value
+
+
+class SummaryTemplateProposalRequestSerializer(serializers.Serializer):
+    """The one input to the AI-assisted authoring step -- a plain-English
+    description of the layout and/or wording the admin wants. Not tied to a
+    model: nothing here is ever saved directly, it only drives one
+    propose_and_preview_template() call."""
+
+    description = serializers.CharField(min_length=1, max_length=2000, trim_whitespace=True)

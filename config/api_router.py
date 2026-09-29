@@ -34,6 +34,7 @@ from momcare_platform.core.organization.api.views import (
     OrganizationAISummaryTemplateActivateView,
     OrganizationAISummaryTemplateDeactivateView,
     OrganizationAISummaryTemplateListCreateView,
+    OrganizationAISummaryTemplateProposalView,
     OrganizationAuditLogView,
     OrganizationConfidenceThresholdView,
     OrganizationDeactivationRequestView,
@@ -61,6 +62,7 @@ from momcare_platform.core.platform_admin.api.views import (
     AISummaryTemplateActivateView,
     AISummaryTemplateDeactivateView,
     AISummaryTemplateListCreateView,
+    AISummaryTemplateProposalView,
 )
 from momcare_platform.core.staff.api.views import (
     SecondaryProviderDetailView,
@@ -209,6 +211,11 @@ core_urlpatterns = [
         r"^organization/me/summary-templates/(?P<template_id>[0-9a-f-]+)/deactivate/?$",
         OrganizationAISummaryTemplateDeactivateView.as_view(),
         name="organization-summary-template-deactivate",
+    ),
+    re_path(
+        r"^organization/me/summary-templates/propose/?$",
+        OrganizationAISummaryTemplateProposalView.as_view(),
+        name="organization-summary-template-propose",
     ),
     re_path(
         r"^organization/me/deactivation-request/?$",
@@ -551,6 +558,11 @@ core_urlpatterns = [
         r"^platform-admin/ai-config/summary-templates/(?P<template_id>[0-9a-f-]+)/deactivate/?$",
         AISummaryTemplateDeactivateView.as_view(),
         name="platform-admin-summary-template-deactivate",
+    ),
+    re_path(
+        r"^platform-admin/ai-config/summary-templates/propose/?$",
+        AISummaryTemplateProposalView.as_view(),
+        name="platform-admin-summary-template-propose",
     ),
 ]
 

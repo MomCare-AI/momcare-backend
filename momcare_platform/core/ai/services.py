@@ -1,4 +1,5 @@
 import importlib
+import json
 import logging
 from contextlib import nullcontext
 
@@ -428,3 +429,149 @@ def deactivate_summary_template(template: AISummaryTemplate) -> None:
         raise ActivationStateError("This template is not active.")
     template.is_active = False
     template.save(update_fields=["is_active", "updated_at"])
+
+
+# Fixed, made-up data -- never a real patient. Used only to render a preview
+# of a candidate template during AI-assisted authoring, at both tiers (the
+# platform tier has no single hospital's patient to reach for anyway; using
+# sample data at both keeps the mechanism identical and keeps no real PHI in
+# what is fundamentally a design/testing tool). Shape matches
+# _build_data_snapshot()'s output exactly -- every TEMPLATE_FIELD_VOCABULARY
+# key is present.
+_SAMPLE_SNAPSHOT = {
+    "patient_name": "Jane Sample",
+    "gestational_age": "6 months 2 weeks",
+    "current_risk_level": "Medium",
+    "risk_this_month": {"low": 40, "medium": 40, "high": 20},
+    "latest_readings": {
+        "systolic_bp": 128,
+        "diastolic_bp": 84,
+        "heart_rate": 88,
+        "body_temp_f": 98.6,
+        "blood_glucose": 95,
+        "hemoglobin": 11.2,
+    },
+    "thirty_day_average": {
+        "systolic_bp": 124,
+        "diastolic_bp": 80,
+        "heart_rate": 82,
+        "body_temp_f": 98.4,
+        "blood_glucose": 92,
+        "hemoglobin": 11.5,
+    },
+    "provider_name": "Dr. Sample Provider",
+    "nurse_name": "Sample Nurse",
+    "care_manager_name": "Sample Care Manager",
+    "recent_note": "Patient reports mild swelling in ankles.",
+    "recent_note_author": "Sample Nurse",
+    "last_monitoring_contact_display": "2 days ago",
+    "last_reading_display": "Today",
+    "monitoring_time_display": "24m 10s",
+    "active_statuses": ["Stable"],
+    "pending_risk_count": 1,
+    "has_open_alert": False,
+}
+
+_PROPOSE_PROMPT = """You are helping a hospital administrator design the structure of an AI-generated clinical summary. The summary always covers the same fixed set of data fields -- you may only use fields from this exact list, and every one of the {field_count} fields must appear in your answer exactly once. Never invent a field, never omit one.
+
+Fields:
+{field_list}
+
+The administrator's request: "{description}"
+
+Respond with ONLY a JSON object, no markdown formatting, no commentary before or after it, in exactly this shape:
+{{"sections": [{{"label": "<section name>", "fields": ["<field>", ...]}}, ...], "extra_instructions": "<a short sentence of extra guidance implied by the request, or an empty string if none>"}}"""
+
+_PROPOSE_MAX_ATTEMPTS = 3
+_PROPOSE_MAX_TOKENS = 800
+
+
+def _extract_json_object(raw: str) -> str | None:
+    """Models asked for "JSON only" still sometimes wrap it in a markdown
+    code fence or add a stray sentence around it -- taking the substring
+    between the first '{' and the last '}' is a simple, robust way to pull
+    the object out regardless."""
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return None
+    return raw[start : end + 1]
+
+
+def _parse_propose_response(raw: str) -> dict | None:
+    """Never raises -- a malformed or unexpected response is just a
+    signal to retry, not a caller-facing error."""
+    extracted = _extract_json_object(raw)
+    if extracted is None:
+        return None
+    try:
+        data = json.loads(extracted)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or "sections" not in data:
+        return None
+    extra_instructions = data.get("extra_instructions", "")
+    if not isinstance(extra_instructions, str):
+        extra_instructions = ""
+    return {"sections": data["sections"], "extra_instructions": extra_instructions}
+
+
+def propose_summary_template(description: str) -> dict | None:
+    """Asks the AI to arrange the fixed field vocabulary (and optionally
+    propose extra wording) from a plain-English description -- the
+    AI-assisted step of authoring a template. Every candidate is validated
+    through the exact same validate_template_sections() check a hand-built
+    template gets; an invalid one (missing/duplicated/unknown field, or a
+    response that isn't parseable JSON at all) is retried up to
+    _PROPOSE_MAX_ATTEMPTS times before giving up. Returns None if the
+    client call itself fails (no point retrying a transport-level failure)
+    or if every attempt produced an invalid candidate. Nothing is ever
+    saved here -- this only ever produces a draft for the caller to
+    preview and, if they choose, save through the ordinary create
+    endpoint."""
+    config = get_ai_config()
+    prompt = _PROPOSE_PROMPT.format(
+        field_count=len(TEMPLATE_FIELD_VOCABULARY),
+        field_list="\n".join(f"- {field}" for field in TEMPLATE_FIELD_VOCABULARY),
+        description=description,
+    )
+    for _attempt in range(_PROPOSE_MAX_ATTEMPTS):
+        raw = openrouter_client.generate(prompt, model=config.current_model, max_tokens=_PROPOSE_MAX_TOKENS)
+        if raw is None:
+            return None
+        candidate = _parse_propose_response(raw)
+        if candidate is None:
+            continue
+        if not validate_template_sections(candidate["sections"]):
+            return candidate
+    return None
+
+
+def propose_and_preview_template(description: str) -> dict | None:
+    """propose_summary_template() plus a real preview, generated the same
+    way an actual summary would be, using fixed sample data and the
+    candidate's own layout and wording. Returns None only when the
+    proposal itself fails -- if the proposal succeeds but the preview
+    call fails, the candidate is still returned with preview_text=None
+    rather than discarding a valid, already-produced candidate over a
+    second, independent transient failure."""
+    candidate = propose_summary_template(description)
+    if candidate is None:
+        return None
+
+    config = get_ai_config()
+    draft_template = AISummaryTemplate(
+        sections=candidate["sections"],
+        extra_instructions=candidate["extra_instructions"],
+    )
+    preview_prompt = _build_prompt(_SAMPLE_SNAPSHOT, config, deactivated=False, template=draft_template)
+    preview_text = openrouter_client.generate(
+        preview_prompt,
+        model=config.current_model,
+        max_tokens=_max_tokens_for(config.max_words),
+    )
+    return {
+        "sections": candidate["sections"],
+        "extra_instructions": candidate["extra_instructions"],
+        "preview_text": preview_text,
+    }

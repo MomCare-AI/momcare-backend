@@ -5,12 +5,16 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from momcare_platform.core.ai.api.serializers import AISummaryTemplateSerializer
+from momcare_platform.core.ai.api.serializers import (
+    AISummaryTemplateSerializer,
+    SummaryTemplateProposalRequestSerializer,
+)
 from momcare_platform.core.ai.models import AISummaryTemplate
 from momcare_platform.core.ai.services import (
     ActivationStateError,
     activate_summary_template,
     deactivate_summary_template,
+    propose_and_preview_template,
 )
 from momcare_platform.core.common.pagination import DefaultPagination
 from momcare_platform.core.common.permissions import IsHospitalAdmin, IsHospitalStaff
@@ -206,6 +210,30 @@ class OrganizationAISummaryTemplateDeactivateView(APIView):
         except ActivationStateError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(AISummaryTemplateSerializer(template).data)
+
+
+class OrganizationAISummaryTemplateProposalView(APIView):
+    """AI-assisted template authoring for this hospital -- describe a
+    layout/wording preference in plain English, get back a candidate
+    {sections, extra_instructions, preview_text}. Stateless, hospital_admin
+    only, same as the platform-tier equivalent. The preview always uses
+    fixed sample data, never one of this hospital's real patients."""
+
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def post(self, request):
+        org = request.user.organization
+        if org is None:
+            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
+        serializer = SummaryTemplateProposalRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = propose_and_preview_template(serializer.validated_data["description"])
+        if result is None:
+            return Response(
+                {"detail": "Could not generate a template proposal right now. Try again."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(result)
 
 
 class OrganizationAuditLogView(APIView):
