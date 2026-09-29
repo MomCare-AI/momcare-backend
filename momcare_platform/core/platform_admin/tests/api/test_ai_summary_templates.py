@@ -236,3 +236,48 @@ def test_extra_instructions_defaults_to_blank(client, platform_admin_auth):
 
     assert response.status_code == 201
     assert response.json()["extra_instructions"] == ""
+
+
+def test_extra_instructions_over_the_platform_word_limit_is_rejected(client, platform_admin_auth):
+    """extra_instructions competes with the rest of the prompt for the
+    same word budget -- text that alone already exceeds the platform's
+    configured max_words (default 150) can never fit, so it's rejected at
+    save time rather than silently accepted and failing later."""
+    too_long = " ".join(f"word{i}" for i in range(151))
+
+    response = client.post(
+        TEMPLATES_URL,
+        data=json.dumps({"name": "Too Long", "sections": _full_sections(), "extra_instructions": too_long}),
+        content_type="application/json",
+        **platform_admin_auth,
+    )
+
+    assert response.status_code == 400
+    assert not AISummaryTemplate.objects.exists()
+
+
+def test_extra_instructions_at_exactly_the_word_limit_is_accepted(client, platform_admin_auth):
+    exactly_at_limit = " ".join(f"word{i}" for i in range(150))
+
+    response = client.post(
+        TEMPLATES_URL,
+        data=json.dumps({"name": "At Limit", "sections": _full_sections(), "extra_instructions": exactly_at_limit}),
+        content_type="application/json",
+        **platform_admin_auth,
+    )
+
+    assert response.status_code == 201
+
+
+def test_the_response_reports_extra_instructions_word_count(client, platform_admin_auth):
+    response = client.post(
+        TEMPLATES_URL,
+        data=json.dumps(
+            {"name": "Word Count", "sections": _full_sections(), "extra_instructions": "Three words here."},
+        ),
+        content_type="application/json",
+        **platform_admin_auth,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["extra_instructions_word_count"] == 3

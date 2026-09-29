@@ -153,3 +153,34 @@ def test_extra_instructions_defaults_to_blank(client, make_hospital, auth):
 
     assert response.status_code == 201
     assert response.json()["extra_instructions"] == ""
+
+
+def test_extra_instructions_over_the_platform_word_limit_is_rejected(client, make_hospital, auth):
+    hospital = make_hospital("Org Template Word Limit Hospital")
+    too_long = " ".join(f"word{i}" for i in range(151))
+
+    response = client.post(
+        TEMPLATES_URL,
+        data=json.dumps({"name": "Too Long", "sections": _full_sections(), "extra_instructions": too_long}),
+        content_type="application/json",
+        **auth(hospital.admin.email),
+    )
+
+    assert response.status_code == 400
+    assert not AISummaryTemplate.objects.exists()
+
+
+def test_the_response_reports_extra_instructions_word_count(client, make_hospital, auth):
+    hospital = make_hospital("Org Template Word Count Hospital")
+
+    response = client.post(
+        TEMPLATES_URL,
+        data=json.dumps(
+            {"name": "Word Count", "sections": _full_sections(), "extra_instructions": "Three words here."},
+        ),
+        content_type="application/json",
+        **auth(hospital.admin.email),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["extra_instructions_word_count"] == 3

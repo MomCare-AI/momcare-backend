@@ -1,5 +1,4 @@
 import importlib
-import json
 import logging
 from contextlib import nullcontext
 from decimal import Decimal
@@ -358,7 +357,7 @@ def _is_usable_content(content: str | None) -> bool:
     return content is not None and content.strip() != ""
 
 
-def _generate_with_retries(prompt: str, *, model: str, max_tokens: int) -> str | None:
+def generate_with_retries(prompt: str, *, model: str, max_tokens: int) -> str | None:
     """openrouter_client.generate() can come back None (a real transport or
     API failure) or, with a reasoning-style model, a non-None but blank
     string -- caught live testing this feature: the model spent its entire
@@ -412,7 +411,7 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
         # would block any other request touching this same patient row for
         # just as long. See docs/design/2026-09-27-ai-summary-design.md's
         # Concurrency note: the guard belongs around the upsert, not the call.
-        content = _generate_with_retries(
+        content = generate_with_retries(
             prompt,
             model=config.current_model,
             max_tokens=_max_tokens_for(config.max_words),
@@ -631,109 +630,59 @@ _SAMPLE_SNAPSHOT = {
     "has_open_alert": False,
 }
 
-_PROPOSE_PROMPT = """You are helping a hospital administrator design the structure of an AI-generated clinical summary. The summary always covers the same fixed set of data fields -- you may only use fields from this exact list, and every one of the {field_count} fields must appear in your answer exactly once. Never invent a field, never omit one.
+_ENHANCE_PROMPT = """You are helping a hospital administrator refine the wording of a clinical summary template's extra instructions. These get appended to the prompt every time a real summary is generated for a real patient.
 
-Fields:
+Rules -- both are hard requirements, never break either:
+- You may only refer to these {field_count} fields -- never mention or imply any other fact about a patient, since no other data will ever be available to fill it in:
 {field_list}
+- Keep your entire rewritten version to at most {limit} words.
 
-The administrator's request: "{description}"
+Preserve the administrator's actual intent -- improve clarity and phrasing, do not invent new guidance they never asked for.
 
-Respond with ONLY a JSON object, no markdown formatting, no commentary before or after it, in exactly this shape:
-{{"sections": [{{"label": "<section name>", "fields": ["<field>", ...]}}, ...], "extra_instructions": "<a short sentence of extra guidance implied by the request, or an empty string if none>"}}"""
+The administrator's current draft: "{draft}"
 
-_PROPOSE_MAX_ATTEMPTS = 3
-_PROPOSE_MAX_TOKENS = 800
-
-
-def _extract_json_object(raw: str) -> str | None:
-    """Models asked for "JSON only" still sometimes wrap it in a markdown
-    code fence or add a stray sentence around it -- taking the substring
-    between the first '{' and the last '}' is a simple, robust way to pull
-    the object out regardless."""
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        return None
-    return raw[start : end + 1]
+Respond with ONLY the improved instructions text, no commentary, no quotation marks around it, no markdown."""
 
 
-def _parse_propose_response(raw: str) -> dict | None:
-    """Never raises -- a malformed or unexpected response is just a
-    signal to retry, not a caller-facing error."""
-    extracted = _extract_json_object(raw)
-    if extracted is None:
-        return None
-    try:
-        data = json.loads(extracted)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict) or "sections" not in data:
-        return None
-    extra_instructions = data.get("extra_instructions", "")
-    if not isinstance(extra_instructions, str):
-        extra_instructions = ""
-    return {"sections": data["sections"], "extra_instructions": extra_instructions}
+def enhance_summary_template_wording(sections: list, extra_instructions: str) -> dict | None:
+    """The AI-assisted step of authoring a template -- deliberately narrow.
+    The admin builds ``sections`` (which field goes in which group)
+    entirely by hand; 17 fields is simple enough that arranging them
+    doesn't need AI help, a call already made and not revisited here. This
+    only ever polishes the *wording* of ``extra_instructions``, constrained
+    to (a) the fixed field vocabulary -- it can't introduce a fact to
+    mention that isn't one of the 17 -- and (b) the platform's configured
+    word limit, so the enhanced text can never itself already exceed the
+    budget the real summary has to fit in.
 
-
-def propose_summary_template(description: str) -> dict | None:
-    """Asks the AI to arrange the fixed field vocabulary (and optionally
-    propose extra wording) from a plain-English description -- the
-    AI-assisted step of authoring a template. Every candidate is validated
-    through the exact same validate_template_sections() check a hand-built
-    template gets; an invalid one (missing/duplicated/unknown field, a
-    response that isn't parseable JSON at all, or a blank/None response) is
-    retried up to _PROPOSE_MAX_ATTEMPTS times before giving up. A None/blank
-    response is retried rather than treated as an immediate transport-level
-    failure -- caught live testing this feature: a reasoning-style model can
-    spend its entire token budget on internal reasoning and return nothing
-    visible, and how much it "thinks" before answering the identical prompt
-    varies call to call, so a retry often succeeds. Returns None only if
-    every attempt failed. Nothing is ever saved here -- this only ever
-    produces a draft for the caller to preview and, if they choose, save
-    through the ordinary create endpoint."""
+    Also renders a live preview using fixed sample data (never a real
+    patient), the same way the real save-time summary will look, using the
+    caller's own ``sections`` unchanged plus the newly enhanced wording.
+    Returns None only if the enhance call itself fails after retrying; if
+    only the preview call fails, the enhanced wording is still returned
+    with preview_text=None rather than discarding real, already-produced
+    work over a second, independent transient failure."""
     config = get_ai_config()
-    prompt = _PROPOSE_PROMPT.format(
+    prompt = _ENHANCE_PROMPT.format(
         field_count=len(TEMPLATE_FIELD_VOCABULARY),
         field_list="\n".join(f"- {field}" for field in TEMPLATE_FIELD_VOCABULARY),
-        description=description,
+        limit=config.max_words,
+        draft=extra_instructions or "(nothing written yet -- suggest a short, useful starting point)",
     )
-    for _attempt in range(_PROPOSE_MAX_ATTEMPTS):
-        raw = openrouter_client.generate(prompt, model=config.current_model, max_tokens=_PROPOSE_MAX_TOKENS)
-        if raw is None or not raw.strip():
-            continue
-        candidate = _parse_propose_response(raw)
-        if candidate is None:
-            continue
-        if not validate_template_sections(candidate["sections"]):
-            return candidate
-    return None
-
-
-def propose_and_preview_template(description: str) -> dict | None:
-    """propose_summary_template() plus a real preview, generated the same
-    way an actual summary would be, using fixed sample data and the
-    candidate's own layout and wording. Returns None only when the
-    proposal itself fails -- if the proposal succeeds but the preview
-    call fails, the candidate is still returned with preview_text=None
-    rather than discarding a valid, already-produced candidate over a
-    second, independent transient failure."""
-    candidate = propose_summary_template(description)
-    if candidate is None:
+    enhanced = generate_with_retries(prompt, model=config.current_model, max_tokens=_max_tokens_for(config.max_words))
+    if enhanced is None:
         return None
 
-    config = get_ai_config()
-    draft_template = AISummaryTemplate(
-        sections=candidate["sections"],
-        extra_instructions=candidate["extra_instructions"],
-    )
+    draft_template = AISummaryTemplate(sections=sections, extra_instructions=enhanced)
     preview_prompt = _build_prompt(_SAMPLE_SNAPSHOT, config, deactivated=False, template=draft_template)
-    preview_text = _generate_with_retries(
+    preview_text = generate_with_retries(
         preview_prompt,
         model=config.current_model,
         max_tokens=_max_tokens_for(config.max_words),
     )
     return {
-        "sections": candidate["sections"],
-        "extra_instructions": candidate["extra_instructions"],
+        "extra_instructions": enhanced,
+        "word_count": len(enhanced.split()),
+        "word_limit": config.max_words,
         "preview_text": preview_text,
     }

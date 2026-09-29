@@ -17,6 +17,7 @@ from momcare_platform.core.monitoring.api.views import (
     ClinicalTagDetailView,
     ClinicalTagListCreateView,
     MonitoringNoteDetailView,
+    MonitoringNoteEnhanceView,
     MonitoringSessionDetailView,
     NoteTemplateDetailView,
     NoteTemplateListCreateView,
@@ -33,8 +34,8 @@ from momcare_platform.core.organization.api.views import (
     NotificationMarkReadView,
     OrganizationAISummaryTemplateActivateView,
     OrganizationAISummaryTemplateDeactivateView,
+    OrganizationAISummaryTemplateEnhanceView,
     OrganizationAISummaryTemplateListCreateView,
-    OrganizationAISummaryTemplateProposalView,
     OrganizationAuditLogView,
     OrganizationConfidenceThresholdView,
     OrganizationDeactivationRequestView,
@@ -61,8 +62,8 @@ from momcare_platform.core.platform_admin.api.views import (
     AIProviderConfigView,
     AISummaryTemplateActivateView,
     AISummaryTemplateDeactivateView,
+    AISummaryTemplateEnhanceView,
     AISummaryTemplateListCreateView,
-    AISummaryTemplateProposalView,
 )
 from momcare_platform.core.staff.api.views import (
     SecondaryProviderDetailView,
@@ -213,9 +214,9 @@ core_urlpatterns = [
         name="organization-summary-template-deactivate",
     ),
     re_path(
-        r"^organization/me/summary-templates/propose/?$",
-        OrganizationAISummaryTemplateProposalView.as_view(),
-        name="organization-summary-template-propose",
+        r"^organization/me/summary-templates/enhance/?$",
+        OrganizationAISummaryTemplateEnhanceView.as_view(),
+        name="organization-summary-template-enhance",
     ),
     re_path(
         r"^organization/me/deactivation-request/?$",
@@ -472,6 +473,11 @@ core_urlpatterns = [
         MonitoringNoteDetailView.as_view(),
         name="monitoring-note-detail",
     ),
+    re_path(
+        r"^monitoring-notes/enhance/?$",
+        MonitoringNoteEnhanceView.as_view(),
+        name="monitoring-note-enhance",
+    ),
     # The tag catalogue notes draw from -- org-level (hospital-wide) or
     # location-level, see ClinicalTag's own docstring.
     re_path(r"^clinical-tags/?$", ClinicalTagListCreateView.as_view(), name="clinical-tag-list"),
@@ -560,9 +566,9 @@ core_urlpatterns = [
         name="platform-admin-summary-template-deactivate",
     ),
     re_path(
-        r"^platform-admin/ai-config/summary-templates/propose/?$",
-        AISummaryTemplateProposalView.as_view(),
-        name="platform-admin-summary-template-propose",
+        r"^platform-admin/ai-config/summary-templates/enhance/?$",
+        AISummaryTemplateEnhanceView.as_view(),
+        name="platform-admin-summary-template-enhance",
     ),
 ]
 

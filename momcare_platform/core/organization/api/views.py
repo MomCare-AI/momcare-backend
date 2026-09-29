@@ -7,14 +7,14 @@ from rest_framework.views import APIView
 
 from momcare_platform.core.ai.api.serializers import (
     AISummaryTemplateSerializer,
-    SummaryTemplateProposalRequestSerializer,
+    SummaryTemplateEnhanceRequestSerializer,
 )
 from momcare_platform.core.ai.models import AISummaryTemplate
 from momcare_platform.core.ai.services import (
     ActivationStateError,
     activate_summary_template,
     deactivate_summary_template,
-    propose_and_preview_template,
+    enhance_summary_template_wording,
 )
 from momcare_platform.core.common.pagination import DefaultPagination
 from momcare_platform.core.common.permissions import IsHospitalAdmin, IsHospitalStaff
@@ -212,12 +212,13 @@ class OrganizationAISummaryTemplateDeactivateView(APIView):
         return Response(AISummaryTemplateSerializer(template).data)
 
 
-class OrganizationAISummaryTemplateProposalView(APIView):
-    """AI-assisted template authoring for this hospital -- describe a
-    layout/wording preference in plain English, get back a candidate
-    {sections, extra_instructions, preview_text}. Stateless, hospital_admin
-    only, same as the platform-tier equivalent. The preview always uses
-    fixed sample data, never one of this hospital's real patients."""
+class OrganizationAISummaryTemplateEnhanceView(APIView):
+    """AI-assisted wording for this hospital's own draft, not structure --
+    same shape as the platform-tier equivalent. The admin builds
+    ``sections`` by hand and sends it plus their current extra_instructions
+    draft; gets back polished wording, a word count against the platform's
+    limit, and a live preview using fixed sample data (never one of this
+    hospital's real patients). Stateless, hospital_admin only."""
 
     permission_classes = [IsAuthenticated, IsHospitalAdmin]
 
@@ -225,15 +226,18 @@ class OrganizationAISummaryTemplateProposalView(APIView):
         org = request.user.organization
         if org is None:
             return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
-        serializer = SummaryTemplateProposalRequestSerializer(data=request.data)
+        serializer = SummaryTemplateEnhanceRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        result = propose_and_preview_template(serializer.validated_data["description"])
+        result = enhance_summary_template_wording(
+            serializer.validated_data["sections"],
+            serializer.validated_data["extra_instructions"],
+        )
         if result is None:
             return Response(
-                {"detail": "Could not generate a template proposal right now. Try again."},
+                {"detail": "Could not enhance this template's wording right now. Try again."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        return Response(result)
+        return Response({"sections": serializer.validated_data["sections"], **result})
 
 
 class OrganizationAuditLogView(APIView):
