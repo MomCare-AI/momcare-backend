@@ -29,7 +29,9 @@ def test_hospital_staff_can_read_the_cached_summary(client, patient, auth):
     response = client.get(summary_url(patient.id), **auth(patient.organization.owner.email))
 
     assert response.status_code == 200
-    assert response.json()["content"] == "Enrollment summary."
+    body = response.json()
+    assert body["content"] == "Enrollment summary."
+    assert body["citations"] == []
 
 
 def test_returns_404_before_any_summary_exists(client, make_hospital, auth):

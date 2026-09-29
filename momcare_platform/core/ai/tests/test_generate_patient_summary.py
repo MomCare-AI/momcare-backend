@@ -1,9 +1,12 @@
 """generate_patient_summary() -- the prompt assembly + client call + upsert,
 end to end, with the OpenRouter client mocked."""
 
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from django.apps import apps as django_apps
+from django.conf import settings
 from django.db import connection
 from django.utils import timezone
 
@@ -18,6 +21,11 @@ from momcare_platform.core.patients.services import onboard_patient
 
 pytestmark = pytest.mark.django_db
 
+# Resolved via the app registry, not a static import -- VitalReading lives in
+# modules.pregnancy.vitals, which core (this test included) must never import
+# statically -- the `core must not import modules` contract.
+VitalReading = django_apps.get_model("monitoring", "VitalReading")
+
 
 def _full_sections(label="All Fields"):
     return [{"label": label, "fields": list(TEMPLATE_FIELD_VOCABULARY)}]
@@ -30,6 +38,32 @@ def patient(make_hospital):
         organization=hospital.org,
         patient_data={"first_name": "Sana", "last_name": "Malik"},
     )
+
+
+@pytest.fixture
+def patient_with_provider_and_reading(make_hospital, make_staff):
+    hospital = make_hospital("Generate Summary Citations Hospital")
+    provider = make_staff(hospital.org, settings.ROLE_PROVIDER, email="provider@citationsummary.test")
+    patient = onboard_patient(
+        organization=hospital.org,
+        patient_data={"first_name": "Amina", "last_name": "Yousaf"},
+        pregnancy_data={"lmp": timezone.now().date() - timedelta(weeks=20)},
+    )
+    pregnancy = patient.current_pregnancy
+    pregnancy.provider = provider.staff
+    pregnancy.save(update_fields=["provider", "updated_at"])
+    VitalReading.objects.create(
+        pregnancy=pregnancy,
+        recorded_at=timezone.now(),
+        source=VitalReading.SOURCE_MANUAL,
+        systolic_bp=185,
+        diastolic_bp=125,
+        heart_rate=130,
+        body_temp_f=103.0,
+        hemoglobin=6.0,
+        blood_glucose=250,
+    )
+    return patient
 
 
 def test_generate_patient_summary_creates_the_ai_summary_row(patient):
@@ -227,3 +261,42 @@ def test_a_snapshot_building_error_is_logged_and_never_raised(patient):
 
     assert not mock_generate.called
     assert not AISummary.objects.filter(patient=patient).exists()
+
+
+def test_citations_are_computed_and_stored_for_values_the_ai_actually_mentioned(
+    patient_with_provider_and_reading,
+):
+    """End to end: a reading value and a care-team name the AI's own text
+    happens to mention get linked back to their real records. A value the
+    text never mentions (a different, unmatched number) produces no
+    citation -- proving the match is against the real generated text, not
+    just "every known value always gets a citation"."""
+    provider_name = patient_with_provider_and_reading.current_pregnancy.provider.user.get_full_name()
+    # systolic_bp/diastolic_bp are DecimalField(decimal_places=2) -- the real
+    # snapshot value is Decimal('185.00'), not the plain int 185, so the
+    # fake AI text has to match that real formatted string for the citation
+    # match to succeed, the same as it would have to in production.
+    generated_text = f"{provider_name} recorded a reading of 185.00/125.00 during today's visit."
+
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value=generated_text):
+        generate_patient_summary(patient_with_provider_and_reading)
+
+    summary = AISummary.objects.get(patient=patient_with_provider_and_reading)
+    reading = VitalReading.objects.get(pregnancy=patient_with_provider_and_reading.current_pregnancy)
+    assert {"text": "185.00/125.00", "type": "reading", "id": str(reading.id)} in summary.citations
+    assert {
+        "text": provider_name,
+        "type": "staff",
+        "id": str(patient_with_provider_and_reading.current_pregnancy.provider_id),
+    } in summary.citations
+
+
+def test_no_citation_for_a_value_the_generated_text_never_mentions(patient_with_provider_and_reading):
+    with patch(
+        "momcare_platform.core.ai.openrouter_client.generate",
+        return_value="This patient's vitals were reviewed and are stable overall.",
+    ):
+        generate_patient_summary(patient_with_provider_and_reading)
+
+    summary = AISummary.objects.get(patient=patient_with_provider_and_reading)
+    assert summary.citations == []

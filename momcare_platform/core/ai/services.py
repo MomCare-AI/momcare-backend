@@ -48,7 +48,15 @@ def get_ai_config() -> AIProviderConfig:
 def _build_data_snapshot(patient) -> dict:
     """Everything the prompt builder needs, gathered once. No narrative
     judgement happens here -- that's the model's job (see the design doc's
-    "structured data in, free-form prose out" section)."""
+    "structured data in, free-form prose out" section).
+
+    The underscore-prefixed keys (_latest_reading_id, _provider_id,
+    _nurse_id, _care_manager_id) are never part of TEMPLATE_FIELD_VOCABULARY
+    and never reach the prompt -- _format_group() only ever reads the field
+    names a template's own sections list, so these extra keys are invisible
+    to both the AI and any template. They exist purely for _build_citations()
+    to link a value the AI's finished text happens to mention back to the
+    real record it came from, without ever asking the AI what it meant."""
     RiskAssessment = django_apps.get_model("monitoring", "RiskAssessment")
     VitalReading = django_apps.get_model("monitoring", "VitalReading")
     Alert = django_apps.get_model("alerts", "Alert")
@@ -62,12 +70,16 @@ def _build_data_snapshot(patient) -> dict:
         "current_risk_level": None,
         "risk_this_month": None,
         "latest_readings": {},
+        "_latest_reading_id": None,
         "thirty_day_average": {},
         "provider_name": pregnancy.provider.user.get_full_name() if pregnancy and pregnancy.provider else None,
+        "_provider_id": pregnancy.provider_id if pregnancy else None,
         "nurse_name": pregnancy.nurse.user.get_full_name() if pregnancy and pregnancy.nurse else None,
+        "_nurse_id": pregnancy.nurse_id if pregnancy else None,
         "care_manager_name": (
             pregnancy.care_manager.user.get_full_name() if pregnancy and pregnancy.care_manager else None
         ),
+        "_care_manager_id": pregnancy.care_manager_id if pregnancy else None,
         "recent_note": None,
         "recent_note_author": None,
         "last_monitoring_contact_display": humanize_days_ago(
@@ -100,6 +112,7 @@ def _build_data_snapshot(patient) -> dict:
                 "blood_glucose": latest_reading.blood_glucose,
                 "hemoglobin": latest_reading.hemoglobin,
             }
+            snapshot["_latest_reading_id"] = latest_reading.id
 
         pending = RiskAssessment.objects.filter(pregnancy=pregnancy, review_status=RiskAssessment.REVIEW_PENDING)
         snapshot["pending_risk_count"] = sum(1 for assessment in pending if assessment.needs_attention)
@@ -117,6 +130,61 @@ def _build_data_snapshot(patient) -> dict:
         snapshot["monitoring_time_display"] = format_duration(analytics_row.monitoring_seconds)
 
     return snapshot
+
+
+def _build_citations(snapshot: dict, content: str) -> list[dict]:
+    """Links a value the AI's *finished* text happens to mention back to
+    the real record it came from -- readings and the three care-team
+    roles (provider/nurse/care_manager). Deliberately the reverse of
+    asking the AI what it meant: every candidate string here comes from
+    data we already trust (the same snapshot that built the prompt), and
+    a candidate only becomes a citation if it's found, verbatim, in text
+    the AI already produced. A value the AI never mentions (or phrases
+    differently -- "185 over 115" instead of "185/115") simply produces no
+    citation, never a wrong one: the failure mode of substring matching is
+    a missed link, not a fabricated one.
+
+    recent_note_author is deliberately excluded -- it's a User id (the
+    monitoring note's ``added_by``), not a Staff id like the other three,
+    and resolving one from the other isn't done here; mixing the two id
+    types under one "staff" citation type would be worse than omitting it.
+
+    Known limitation, accepted rather than engineered around: a short
+    scalar value (e.g. a heart rate of 88) could coincidentally match an
+    unrelated number elsewhere in the text. The citation still always
+    points to a *real* reading -- never a fabricated one -- just possibly
+    attached to a coincidental occurrence of that number rather than the
+    one the AI meant.
+    """
+    citations: dict[str, dict] = {}
+
+    reading_id = snapshot.get("_latest_reading_id")
+    if reading_id is not None:
+        readings = snapshot.get("latest_readings") or {}
+        candidates = []
+        systolic = readings.get("systolic_bp")
+        diastolic = readings.get("diastolic_bp")
+        if systolic is not None and diastolic is not None:
+            candidates.append(f"{systolic}/{diastolic}")
+        for key in ("heart_rate", "body_temp_f", "blood_glucose", "hemoglobin"):
+            value = readings.get(key)
+            if value is not None:
+                candidates.append(str(value))
+        for text in candidates:
+            if text in content and text not in citations:
+                citations[text] = {"text": text, "type": "reading", "id": str(reading_id)}
+
+    for name_key, id_key in (
+        ("provider_name", "_provider_id"),
+        ("nurse_name", "_nurse_id"),
+        ("care_manager_name", "_care_manager_id"),
+    ):
+        name = snapshot.get(name_key)
+        staff_id = snapshot.get(id_key)
+        if name and staff_id is not None and name in content and name not in citations:
+            citations[name] = {"text": name, "type": "staff", "id": str(staff_id)}
+
+    return list(citations.values())
 
 
 _BASE_PROMPT = """You are writing a short clinical summary for a hospital staff member about one pregnant patient, the way a clinician would summarize a chart out loud -- flowing paragraphs grouped by topic, never a list of facts read out one after another. Use only the data given below -- never invent a value, a name, or an event that is not present. If something is missing (no care team assigned, no readings this period, no recent note), state that plainly instead of omitting it. Write one paragraph synthesizing the Vitals & Risk section, then a separate paragraph covering the Care Team & Activity section. No bullet points, no markdown. Keep the entire summary to at most {max_words} words.
@@ -264,6 +332,8 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
         if content is None:
             return
 
+        citations = _build_citations(snapshot, content)
+
         with write_scope():
             # Locks this patient's row only for the upsert itself, so a cron
             # sweep and a risk-level-change signal landing at the same moment
@@ -276,6 +346,7 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
                     "generated_at": timezone.now(),
                     "model_used": config.current_model,
                     "risk_level_at_generation": snapshot["current_risk_level"] or "",
+                    "citations": citations,
                 },
             )
     except Exception:

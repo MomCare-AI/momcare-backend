@@ -7,7 +7,7 @@ from momcare_platform.core.ai.services import validate_template_sections
 class AISummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = AISummary
-        fields = ["content", "generated_at", "model_used"]
+        fields = ["content", "generated_at", "model_used", "citations"]
 
 
 class AISummaryTemplateSerializer(serializers.ModelSerializer):

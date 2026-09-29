@@ -44,6 +44,14 @@ class AISummary(UUIDPrimaryKeyModel, TimeStampedModel):
     # decide whether a regeneration is warranted. Blank when the patient had
     # no pregnancy/assessment yet at generation time.
     risk_level_at_generation = models.CharField(max_length=20, blank=True)
+    # Computed once, at generation time, by services._build_citations() from
+    # the exact data snapshot that built this row's own content -- never
+    # recomputed later against the patient's current (possibly since-changed)
+    # data, which could drift from what this specific piece of text actually
+    # says. Each entry is {"text", "type" ("reading"|"staff"), "id"} -- the
+    # frontend's job to render as a link; this row never claims a link is
+    # right, only that the cited record is real. Empty list, never null.
+    citations = models.JSONField(default=list, blank=True)
 
     def __str__(self) -> str:
         return f"AI summary for {self.patient_id}"
