@@ -26,6 +26,6 @@ def on_risk_assessment_saved(sender, instance, created, **kwargs):
     `sender` (RiskAssessment) lives in modules.pregnancy.vitals, which core
     must never import statically. See apps.py for the apps.get_model()
     resolution this depends on."""
-    from momcare_platform.core.ai.services import maybe_regenerate_for_risk_change  # noqa: PLC0415
+    from momcare_platform.core.ai.services import regenerate_for_new_reading  # noqa: PLC0415
 
-    maybe_regenerate_for_risk_change(instance)
+    regenerate_for_new_reading(instance)

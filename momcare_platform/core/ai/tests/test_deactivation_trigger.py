@@ -52,7 +52,7 @@ def test_deactivating_a_patient_generates_a_final_summary(make_hospital):
 
 
 def test_a_risk_level_change_does_not_unfreeze_a_deactivated_patients_summary(make_hospital):
-    """Important review finding: maybe_regenerate_for_risk_change() had no
+    """Important review finding: regenerate_for_new_reading() had no
     is_active check, so a new RiskAssessment on a deactivated patient's
     pregnancy (e.g. a late-arriving reading, an admin backfilling historical
     data) could silently overwrite the frozen deactivation summary with a

@@ -22,5 +22,5 @@ class AiConfig(AppConfig):
         post_save.connect(
             signals.on_risk_assessment_saved,
             sender=RiskAssessment,
-            dispatch_uid="ai_risk_level_change_trigger",
+            dispatch_uid="ai_new_reading_trigger",
         )

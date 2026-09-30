@@ -1,4 +1,4 @@
-"""The two signal-based triggers: patient creation and a risk-level change.
+"""The two signal-based triggers: patient creation and a new reading.
 No manual regenerate endpoint exists -- these, plus the periodic command
 (Task 9) and the deactivation call (Task 10), are the only paths in."""
 
@@ -104,7 +104,12 @@ def test_a_risk_level_change_triggers_a_regeneration(make_hospital):
     assert AISummary.objects.get(patient=patient).content == "Risk just went High."
 
 
-def test_a_reading_that_does_not_change_the_risk_level_does_not_trigger_a_regeneration(make_hospital):
+def test_a_reading_that_does_not_change_the_risk_level_still_triggers_a_regeneration(make_hospital):
+    """Reversed from the original "level unchanged -> skip" design: real
+    usage showed a patient can have several consecutive readings at the
+    same level, and every one is still new information (a new reading
+    date, new latest_readings values) that a stale, un-regenerated
+    summary would hide from the patient overview screen."""
     hospital = make_hospital("Risk Unchanged Hospital")
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="Enrollment summary."):
         patient = onboard_patient(
@@ -115,7 +120,10 @@ def test_a_reading_that_does_not_change_the_risk_level_does_not_trigger_a_regene
     pregnancy = patient.current_pregnancy
     AISummary.objects.filter(patient=patient).update(risk_level_at_generation=RiskAssessment.LEVEL_LOW)
 
-    with patch("momcare_platform.core.ai.openrouter_client.generate") as mock_generate:
+    with patch(
+        "momcare_platform.core.ai.openrouter_client.generate",
+        return_value="Still low, but freshly regenerated.",
+    ) as mock_generate:
         VitalReading.objects.create(
             pregnancy=pregnancy,
             recorded_at=timezone.now(),
@@ -123,5 +131,5 @@ def test_a_reading_that_does_not_change_the_risk_level_does_not_trigger_a_regene
             **LOW_VITALS,
         )
 
-    assert not mock_generate.called
-    assert AISummary.objects.get(patient=patient).content == "Enrollment summary."
+    assert mock_generate.called
+    assert AISummary.objects.get(patient=patient).content == "Still low, but freshly regenerated."

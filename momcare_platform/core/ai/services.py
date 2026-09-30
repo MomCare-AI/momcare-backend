@@ -440,22 +440,20 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
         logger.exception("generate_patient_summary() failed for patient %s", patient.pk)
 
 
-def maybe_regenerate_for_risk_change(risk_assessment) -> None:
+def regenerate_for_new_reading(risk_assessment) -> None:
     """Connected to RiskAssessment's post_save in AiConfig.ready() (see
     apps.py) -- fires on every reading (reassess_risk() writes one row per
-    reading, unconditionally), but only actually regenerates when the level
-    genuinely moved since the cached summary was written. Most routine
-    readings don't change the risk level, so this stays cheap.
+    reading, unconditionally), and regenerates the summary every time,
+    regardless of whether the risk level actually moved.
 
-    Reads the stored level via a plain queryset lookup keyed on patient_id,
-    not `patient.ai_summary` -- a reverse OneToOne accessor Django caches on
-    the Patient instance the first time it's read (including implicitly,
-    e.g. inside AISummary.objects.update_or_create(patient=patient, ...)).
-    Any later out-of-band write to that same AISummary row (a queryset
-    .update(), or a second generate_patient_summary() call reached through a
-    different Patient object earlier in the same request) never invalidates
-    that cache, so reading through it here could silently compare against a
-    stale value.
+    Reversed from the original "only regenerate if the level changed"
+    design -- real usage showed a patient can have several consecutive
+    readings at the same level (e.g. stays "high" across many readings),
+    and every one of those is still new information (a new reading date,
+    a new latest_readings value, a new monitoring-time total) that
+    deserves to be reflected in what's shown. "only on level change" left
+    the summary visibly stale on the patient overview screen even though
+    real, newer readings had already come in.
 
     Skips a deactivated patient entirely: her summary was frozen on purpose
     by the deactivation trigger's own closing-line fork, and a late-arriving
@@ -464,16 +462,6 @@ def maybe_regenerate_for_risk_change(risk_assessment) -> None:
     """
     patient_id = risk_assessment.pregnancy.patient_id
     if not Patient.objects.filter(pk=patient_id, is_active=True).exists():
-        return
-    stored_level = (
-        AISummary.objects.filter(patient_id=patient_id)
-        .values_list(
-            "risk_level_at_generation",
-            flat=True,
-        )
-        .first()
-    )
-    if stored_level == risk_assessment.final_risk_level:
         return
     generate_patient_summary(risk_assessment.pregnancy.patient)
 
@@ -632,16 +620,20 @@ _SAMPLE_SNAPSHOT = {
 
 _ENHANCE_PROMPT = """You are helping a hospital administrator refine the wording of a clinical summary template's extra instructions. These get appended to the prompt every time a real summary is generated for a real patient.
 
-Rules -- both are hard requirements, never break either:
+Rules -- all are hard requirements, never break any:
 - You may only refer to these {field_count} fields -- never mention or imply any other fact about a patient, since no other data will ever be available to fill it in:
 {field_list}
-- Keep your entire rewritten version to at most {limit} words.
-
-Preserve the administrator's actual intent -- improve clarity and phrasing, do not invent new guidance they never asked for.
+- The administrator's draft is {draft_word_count} words. Stay close to that length -- polish grammar and clarity only. Never more than roughly double the original word count, and never more than {limit} words regardless.
+- Preserve the administrator's actual intent exactly. Do not invent new guidance they never asked for, and do not turn a short instruction into an elaborate, summary-like passage.
 
 The administrator's current draft: "{draft}"
 
 Respond with ONLY the improved instructions text, no commentary, no quotation marks around it, no markdown."""
+
+_NO_EXTRA_INSTRUCTIONS_MESSAGE = (
+    "No extra instructions written yet. The summary will still include all the standard fields "
+    "for this template -- write something here only if you want to add guidance beyond that."
+)
 
 
 def enhance_summary_template_wording(sections: list, extra_instructions: str) -> dict | None:
@@ -651,27 +643,51 @@ def enhance_summary_template_wording(sections: list, extra_instructions: str) ->
     doesn't need AI help, a call already made and not revisited here. This
     only ever polishes the *wording* of ``extra_instructions``, constrained
     to (a) the fixed field vocabulary -- it can't introduce a fact to
-    mention that isn't one of the 17 -- and (b) the platform's configured
-    word limit, so the enhanced text can never itself already exceed the
-    budget the real summary has to fit in.
+    mention that isn't one of the 17 -- and (b) staying close to the
+    draft's own length, not ballooning toward the platform's full word
+    budget.
+
+    A blank draft is never sent to the AI at all -- there is nothing to
+    enhance, so this states that plainly instead of fabricating something,
+    the same "never invent" rule that governs the real summary. Caught
+    live: the old code explicitly asked the AI to "suggest a short, useful
+    starting point" from nothing, which produced a ~47-word block that
+    literally listed every field name in prose -- reading like a
+    miniature summary, not a short instruction. A genuinely short draft
+    (e.g. 3 words) was also getting expanded well past its own length,
+    because the only ceiling given to the model was the platform's full
+    150-word summary limit, with no signal to stay close to the original.
 
     Also renders a live preview using fixed sample data (never a real
     patient), the same way the real save-time summary will look, using the
-    caller's own ``sections`` unchanged plus the newly enhanced wording.
-    Returns None only if the enhance call itself fails after retrying; if
-    only the preview call fails, the enhanced wording is still returned
-    with preview_text=None rather than discarding real, already-produced
-    work over a second, independent transient failure."""
+    caller's own ``sections`` unchanged plus the (possibly blank) wording.
+    Returns None only if a non-blank draft's enhance call itself fails
+    after retrying; if only the preview call fails, the wording is still
+    returned with preview_text=None rather than discarding real,
+    already-produced work over a second, independent transient failure."""
     config = get_ai_config()
-    prompt = _ENHANCE_PROMPT.format(
-        field_count=len(TEMPLATE_FIELD_VOCABULARY),
-        field_list="\n".join(f"- {field}" for field in TEMPLATE_FIELD_VOCABULARY),
-        limit=config.max_words,
-        draft=extra_instructions or "(nothing written yet -- suggest a short, useful starting point)",
-    )
-    enhanced = generate_with_retries(prompt, model=config.current_model, max_tokens=_max_tokens_for(config.max_words))
-    if enhanced is None:
-        return None
+    draft = extra_instructions.strip()
+
+    message = None
+    if not draft:
+        enhanced = ""
+        message = _NO_EXTRA_INSTRUCTIONS_MESSAGE
+    else:
+        prompt = _ENHANCE_PROMPT.format(
+            field_count=len(TEMPLATE_FIELD_VOCABULARY),
+            field_list="\n".join(f"- {field}" for field in TEMPLATE_FIELD_VOCABULARY),
+            limit=config.max_words,
+            draft_word_count=len(draft.split()),
+            draft=draft,
+        )
+        raw_enhanced = generate_with_retries(
+            prompt,
+            model=config.current_model,
+            max_tokens=_max_tokens_for(config.max_words),
+        )
+        if raw_enhanced is None:
+            return None
+        enhanced = raw_enhanced
 
     draft_template = AISummaryTemplate(sections=sections, extra_instructions=enhanced)
     preview_prompt = _build_prompt(_SAMPLE_SNAPSHOT, config, deactivated=False, template=draft_template)
@@ -680,9 +696,12 @@ def enhance_summary_template_wording(sections: list, extra_instructions: str) ->
         model=config.current_model,
         max_tokens=_max_tokens_for(config.max_words),
     )
-    return {
+    result = {
         "extra_instructions": enhanced,
         "word_count": len(enhanced.split()),
         "word_limit": config.max_words,
         "preview_text": preview_text,
     }
+    if message is not None:
+        result["message"] = message
+    return result
