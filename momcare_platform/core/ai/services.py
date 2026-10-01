@@ -204,7 +204,7 @@ def _build_citations(snapshot: dict, content: str) -> list[dict]:
     return list(citations.values())
 
 
-_BASE_PROMPT = """You are writing a short clinical summary for a hospital staff member about one pregnant patient, the way a clinician would summarize a chart out loud -- flowing paragraphs grouped by topic, never a list of facts read out one after another. Use only the data given below -- never invent a value, a name, or an event that is not present. If something is missing (no care team assigned, no readings this period, no recent note), state that plainly instead of omitting it. {structure_instruction} No bullet points, no markdown. Keep the entire summary to at most {max_words} words.
+_BASE_PROMPT = """You are writing a short clinical summary for a hospital staff member about one pregnant patient, the way a clinician would summarize a chart out loud -- flowing paragraphs grouped by topic, never a list of facts read out one after another. Use only the data given below -- never invent a value, a name, or an event that is not present. If something is missing (no care team assigned, no readings this period, no recent note), state that plainly instead of omitting it. {structure_instruction} State every item listed under Patient data with its actual value -- for readings and averages give the numbers themselves, never just a comparison -- and keep the writing compact (short sentences, no filler, numbers written as digits) so all of it fits. No bullet points, no markdown. The entire summary must be at most {max_words} words.
 
 {data_lines}
 
@@ -347,6 +347,51 @@ def generate_with_retries(prompt: str, *, model: str, max_tokens: int) -> str | 
     return None
 
 
+_SHORTEN_PROMPT = """Rewrite the clinical summary below in at most {max_words} words (it is currently {current} words). Keep every value (readings, averages, counts, names, dates) and the final recommendation; remove only filler words and repetition. Keep the same paragraph breaks. Respond with ONLY the rewritten summary.
+
+{content}"""
+
+_SHORTEN_MAX_ATTEMPTS = 2
+
+
+def _trim_to_word_limit(content: str, limit: int) -> str:
+    """Last resort: cut at the limit, backing up to the end of the last
+    complete sentence when one ends in the second half of the kept text."""
+    ends = [m.end() for m in re.finditer(r"\S+", content)]
+    if len(ends) <= limit:
+        return content
+    kept = content[: ends[limit - 1]]
+    last_stop = max(kept.rfind("."), kept.rfind("!"), kept.rfind("?"))
+    if last_stop >= len(kept) // 2:
+        kept = kept[: last_stop + 1]
+    return kept.rstrip()
+
+
+def enforce_word_limit(content: str, config: AIProviderConfig) -> str:
+    """The word limit applies to the summary a patient page actually shows --
+    not just to the instruction given to the AI, which a model can exceed
+    (measured on production: 160 words against a limit of 130). Over the
+    limit, the AI is asked to shorten it (keeping every value); if it still
+    won't fit after a couple of tries, the text is trimmed at a sentence
+    boundary so the limit always holds."""
+    limit = config.max_words
+    for _attempt in range(_SHORTEN_MAX_ATTEMPTS):
+        words = len(content.split())
+        if words <= limit:
+            return content
+        shortened = generate_with_retries(
+            _SHORTEN_PROMPT.format(max_words=limit, current=words, content=content),
+            model=config.current_model,
+            max_tokens=_max_tokens_for(limit),
+        )
+        if shortened is not None and len(shortened.split()) < words:
+            content = shortened.strip()
+    if len(content.split()) > limit:
+        logger.warning("AI summary still over %s words after shortening; trimmed.", limit)
+        content = _trim_to_word_limit(content, limit)
+    return content
+
+
 def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypass: bool = False) -> None:
     """The single entry point every trigger (patient creation, a risk-level
     change, deactivation, the periodic refresh command) calls. Best-effort:
@@ -397,6 +442,7 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
         )
         if content is None:
             return
+        content = enforce_word_limit(content, config)
 
         citations = _build_citations(snapshot, content)
 
@@ -736,6 +782,8 @@ def review_summary_template(content: str) -> dict | None:
         model=config.current_model,
         max_tokens=_max_tokens_for(config.max_words),
     )
+    if preview_text is not None:
+        preview_text = enforce_word_limit(preview_text, config)
     return {
         "complete": True,
         "missing_fields": [],
