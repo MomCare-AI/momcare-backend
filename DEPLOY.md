@@ -273,6 +273,51 @@ one step per missed run.
 
 ---
 
+## Scheduled job — AI summary refresh (`ai-summary-sweep`)
+
+Patient AI summaries are rebuilt automatically when a patient is registered, when
+a reading arrives and when a patient is deactivated. Changes that trigger none of
+those (a new clinical note, a care-team change, new monitoring sessions) are only
+picked up by this sweep:
+
+```
+python manage.py refresh_ai_summaries
+```
+
+It regenerates the summary of every active patient whose summary is missing or
+older than `DJANGO_MOMCARE_AI_SUMMARY_REFRESH_HOURS` (default 4). Safe to run as
+often as you like: a fresh summary is skipped. It calls OpenRouter once per
+patient refreshed (more if a draft has to be shortened to the word limit), so its
+cost grows with the number of active patients.
+
+**It is a separate Railway service, not part of `web`** (a service has one start
+command and one schedule, and `web` must keep serving requests). Created in the
+dashboard, same repo as `web`:
+
+1. Project **momcare** → **Add** → **GitHub Repo** → `MomCare-AI/momcare-backend`.
+2. Rename it `ai-summary-sweep`.
+3. **Variables → Raw Editor**: point every variable at `web`'s own value, one line
+   each, for example `DATABASE_URL=${{web.DATABASE_URL}}`. Use the same names as
+   `web` (all `DJANGO_*`, `CORS_ALLOWED_ORIGINS`, `DATABASE_URL`). **Do not**
+   add `MIGRATION_DATABASE_URL`, and make sure `DATABASE_URL` is `web`'s restricted
+   role (`${{web.DATABASE_URL}}`), not `${{Postgres.DATABASE_URL}}`, which is the
+   owner role and would bypass row-level security. Delete any variable Railway
+   auto-fills from the repo's example settings (`DJANGO_DEBUG`, `localhost` values).
+4. **Settings → Deploy → Custom Start Command**: `python manage.py refresh_ai_summaries`
+5. **Settings → Deploy → Cron Schedule**: `0 */4 * * *` (UTC).
+6. Deploy. Railway does **not** run the job at deploy time; the first run is at the
+   next scheduled time. To run it immediately:
+   `railway ssh -- python manage.py refresh_ai_summaries`.
+
+Check a run under the service's **Cron Runs** tab: the log ends with
+`Refreshed N AI summary(ies).` (N counts attempts, including any whose AI call
+failed -- a failed one keeps its previous summary).
+
+The service lives only in the Railway dashboard, not in the repo. If the project is
+ever rebuilt, recreate it from these steps.
+
+---
+
 ## Verifying a deploy properly
 
 A 200 from the health check means the process started. It does not mean the

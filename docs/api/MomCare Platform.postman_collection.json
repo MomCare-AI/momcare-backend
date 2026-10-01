@@ -1801,7 +1801,7 @@
                 ""
               ]
             },
-            "description": "The cached AI-generated clinical summary for this patient -- `content` (at most 150 words by default), `generated_at`, `model_used`, and `citations` (an array of {text, type, id} -- `type` is \"reading\" or \"staff\" -- linking a value or name the generated text actually mentions back to the real reading/staff record it came from; a value the text never mentions, or phrases differently than stored, simply produces no citation rather than a wrong one). Never generated on the fly; this only reads whatever the last trigger (enrollment, a risk-level change, deactivation, or the periodic refresh) already produced and stored.\n\nWhich template shaped this summary's layout and wording follows org-active-template -> platform-active-template -> built-in default, never merged across tiers -- see List Organization/Platform Summary Templates.\n\nPermissions: IsAuthenticated + any hospital-side role, organization-scoped the same way as Get Patient (not location-scoped -- a provider with no location assigned can still read it, same access as the patient detail page).\n\n404 if no summary has been generated yet (rare -- the enrollment trigger fires on patient creation) or if the patient belongs to another hospital (never 403)."
+            "description": "The cached AI-generated clinical summary for this patient -- `content` (never more than the platform word limit, 130 by default -- enforced on the saved text, not just requested from the AI), `generated_at`, `model_used`, and `citations` (an array of {text, type, id} -- `type` is \"reading\" or \"staff\" -- linking a value or name the generated text actually mentions back to the real reading/staff record it came from; a value the text never mentions, or phrases differently than stored, simply produces no citation rather than a wrong one). Never generated on the fly; this only reads whatever the last trigger (enrollment, a new reading, deactivation, or the periodic refresh -- the ai-summary-sweep cron service, every 4 hours) already produced and stored.\n\nThe summary is written from the platform's one active summary template (see List Platform Summary Templates) -- the same template for every hospital. If an admin has deactivated every template, no new summary is generated and the last saved one stays.\n\nPermissions: IsAuthenticated + any hospital-side role, organization-scoped the same way as Get Patient (not location-scoped -- a provider with no location assigned can still read it, same access as the patient detail page).\n\n404 if no summary has been generated yet (rare -- the enrollment trigger fires on patient creation) or if the patient belongs to another hospital (never 403)."
           },
           "response": []
         },
@@ -3968,7 +3968,7 @@
                 ""
               ]
             },
-            "description": "The platform-wide AI Summary configuration -- `current_model` (an OpenRouter model id), `max_words` (default 130). Exactly one row exists; created from settings on first read if it doesn't exist yet.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only -- not visible to any hospital-side role.\n\nCustom instruction text no longer lives here -- see List/Create/Activate/Deactivate Platform Instruction Preset below."
+            "description": "The platform-wide AI Summary configuration -- `current_model` (an OpenRouter model id), `max_words` (default 130). Exactly one row exists; created from settings on first read if it doesn't exist yet.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only -- not visible to any hospital-side role.\n\nThe summary's wording and layout live in the platform summary templates, not here -- see List/Create/Activate Platform Summary Template below. `max_words` is the hard limit on every saved summary and on every template an admin writes."
           },
           "response": []
         },
@@ -4003,7 +4003,7 @@
                 ""
               ]
             },
-            "description": "Change the platform's model and/or word cap. Partial update.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n`current_model` is validated against OpenRouter's live model catalog on every write (see List Available AI Models) -- a typo, or a model OpenRouter has stopped serving, is rejected with 400 rather than saved silently. If the catalog is briefly unreachable, validation falls back to whatever catalog was last fetched successfully rather than failing every write."
+            "description": "Change the platform's model and/or word cap (`max_words`, currently 130). The cap applies to every saved patient summary and to the text of every new summary template. Partial update.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n`current_model` is validated against OpenRouter's live model catalog on every write (see List Available AI Models) -- a typo, or a model OpenRouter has stopped serving, is rejected with 400 rather than saved silently. If the catalog is briefly unreachable, validation falls back to whatever catalog was last fetched successfully rather than failing every write."
           },
           "response": []
         },
