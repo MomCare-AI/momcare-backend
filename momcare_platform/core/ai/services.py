@@ -1,5 +1,7 @@
 import importlib
+import json
 import logging
+import re
 from contextlib import nullcontext
 from decimal import Decimal
 
@@ -52,8 +54,8 @@ def _build_data_snapshot(patient) -> dict:
 
     The underscore-prefixed keys (_latest_reading_id, _provider_id,
     _nurse_id, _care_manager_id) are never part of TEMPLATE_FIELD_VOCABULARY
-    and never reach the prompt -- _format_group() only ever reads the field
-    names a template's own sections list, so these extra keys are invisible
+    and never reach the prompt -- _format_group() only ever reads the field names in
+    the default layout lists / TEMPLATE_FIELD_VOCABULARY, so these extra keys are invisible
     to both the AI and any template. They exist purely for _build_citations()
     to link a value the AI's finished text happens to mention back to the
     real record it came from, without ever asking the AI what it meant."""
@@ -202,11 +204,18 @@ def _build_citations(snapshot: dict, content: str) -> list[dict]:
     return list(citations.values())
 
 
-_BASE_PROMPT = """You are writing a short clinical summary for a hospital staff member about one pregnant patient, the way a clinician would summarize a chart out loud -- flowing paragraphs grouped by topic, never a list of facts read out one after another. Use only the data given below -- never invent a value, a name, or an event that is not present. If something is missing (no care team assigned, no readings this period, no recent note), state that plainly instead of omitting it. Write one paragraph synthesizing the Vitals & Risk section, then a separate paragraph covering the Care Team & Activity section. No bullet points, no markdown. Keep the entire summary to at most {max_words} words.
+_BASE_PROMPT = """You are writing a short clinical summary for a hospital staff member about one pregnant patient, the way a clinician would summarize a chart out loud -- flowing paragraphs grouped by topic, never a list of facts read out one after another. Use only the data given below -- never invent a value, a name, or an event that is not present. If something is missing (no care team assigned, no readings this period, no recent note), state that plainly instead of omitting it. {structure_instruction} No bullet points, no markdown. Keep the entire summary to at most {max_words} words.
 
 {data_lines}
 
 {closing_instruction}"""
+
+_TEMPLATE_STRUCTURE = (
+    "The platform administrator wrote the guidance below describing how this summary should be "
+    "organized. Follow its order and emphasis, and make sure everything it asks for is covered, "
+    "using the patient data given underneath it. Write natural flowing prose -- never copy the "
+    "guidance itself."
+)
 
 _ACTIVE_CLOSING = "Close with exactly one recommendation, grounded specifically in the data above."
 _DEACTIVATED_CLOSING = (
@@ -272,37 +281,16 @@ def _format_dict_value(value: dict) -> str:
     return ", ".join(parts) if parts else "not on file"
 
 
-_VITALS_AND_RISK_FIELDS = [
-    "gestational_age",
-    "current_risk_level",
-    "risk_this_month",
-    "latest_readings",
-    "thirty_day_average",
-    "pending_risk_count",
-    "has_open_alert",
-]
-_CARE_TEAM_AND_ACTIVITY_FIELDS = [
-    "provider_name",
-    "nurse_name",
-    "care_manager_name",
-    "recent_note",
-    "recent_note_author",
-    "last_monitoring_contact_display",
-    "last_reading_display",
-    "monitoring_time_display",
-    "active_statuses",
-]
-
-
 def _format_group(snapshot: dict, field_names: list[str]) -> str:
     return "\n".join(f"- {key}: {_format_snapshot_value(snapshot[key])}" for key in field_names)
 
 
 def _resolve_active_template():
-    """The platform's single active AISummaryTemplate, or None (the caller
-    falls back to the built-in default layout). Hospitals have no templates
-    of their own (removed 2026-10-01), so there is no per-organization
-    precedence any more -- every patient's summary uses this one."""
+    """The platform's single active AISummaryTemplate, or None if an admin has
+    deactivated every one (which deactivate_summary_template() refuses to do,
+    so None only happens on a database that never had one). There is no layout
+    in code any more: the default template is a real database row (seeded by
+    migration 0014) that the platform admin can read and replace."""
     return AISummaryTemplate.objects.filter(organization__isnull=True, is_active=True).first()
 
 
@@ -311,20 +299,17 @@ def _build_prompt(
     config: AIProviderConfig,
     *,
     deactivated: bool,
-    template: AISummaryTemplate | None = None,
+    template: AISummaryTemplate,
 ) -> str:
-    if template is not None:
-        data_lines = "\n\n".join(
-            f"{section['label']}:\n{_format_group(snapshot, section['fields'])}" for section in template.sections
-        )
-    else:
-        data_lines = (
-            f"Patient: {snapshot['patient_name']}\n\n"
-            f"Vitals & Risk:\n{_format_group(snapshot, _VITALS_AND_RISK_FIELDS)}\n\n"
-            f"Care Team & Activity:\n{_format_group(snapshot, _CARE_TEAM_AND_ACTIVITY_FIELDS)}"
-        )
+    """The fixed safety rules and closing line (in code, never in a template)
+    around the admin's own template text and the patient's data."""
+    data_lines = (
+        f"Administrator's guidance:\n{template.content.strip()}\n\n"
+        f"Patient data:\n{_format_group(snapshot, list(TEMPLATE_FIELD_VOCABULARY))}"
+    )
     return _BASE_PROMPT.format(
         max_words=config.max_words,
+        structure_instruction=_TEMPLATE_STRUCTURE,
         data_lines=data_lines,
         closing_instruction=_DEACTIVATED_CLOSING if deactivated else _ACTIVE_CLOSING,
     )
@@ -385,6 +370,13 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
             snapshot = _build_data_snapshot(patient)
             config = get_ai_config()
             template = _resolve_active_template()
+            if template is None:
+                logger.warning(
+                    "No active AI summary template -- skipped generating a summary for patient %s. "
+                    "Activate one under platform-admin AI config.",
+                    patient.pk,
+                )
+                return
             prompt = _build_prompt(
                 snapshot,
                 config,
@@ -474,13 +466,11 @@ def _lock_scope(resource_kind: str, organization_id) -> None:
         cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [scope_key])
 
 
-# The fixed vocabulary _build_data_snapshot() produces -- the only field
-# names a AISummaryTemplate's sections may ever reference. Keeping this list
-# here, next to _build_data_snapshot itself, is what makes "a template can
-# rearrange fields, never invent or hide one" an enforced fact rather than a
-# convention: validate_template_sections() and _build_prompt() both read
-# from this single list, so a field added to the snapshot without being
-# added here would fail template validation loudly, not silently.
+# The fixed vocabulary _build_data_snapshot() produces -- the only facts a
+# summary template may ever ask for. The platform admin writes the template in
+# plain language; check_template_coverage() has the AI decide which of these
+# the text covers, so a field added to the snapshot without being added here
+# (and to TEMPLATE_FIELD_LABELS) would never be checked for.
 TEMPLATE_FIELD_VOCABULARY = (
     "patient_name",
     "gestational_age",
@@ -502,41 +492,103 @@ TEMPLATE_FIELD_VOCABULARY = (
 )
 
 
-def validate_template_sections(sections, *, allow_missing: bool = False) -> list[str]:
-    """Every field in TEMPLATE_FIELD_VOCABULARY must appear exactly once
-    across all sections -- nothing less (a template can't hide a field by
-    omitting it), nothing more (a template can't reference a field that
-    doesn't exist). Returns a list of human-readable error strings; an empty
-    list means the sections are valid. ``allow_missing`` skips the "every field
-    must appear" check, for the review step that reports missing fields as a
-    friendly alert instead of an error. Never raises -- the caller (the
-    serializer) decides what an error list means for the response."""
-    errors: list[str] = []
-    if not isinstance(sections, list) or not sections:
-        return ["sections must be a non-empty list of {label, fields} objects."]
+# Plain-English description of each field: shown to the admin in "add these"
+# alerts, and given to the AI so it knows what each topic means.
+TEMPLATE_FIELD_LABELS = {
+    "patient_name": "the patient's name",
+    "gestational_age": "how far along the pregnancy is (gestational age)",
+    "current_risk_level": "the current risk level (low / medium / high)",
+    "risk_this_month": "the share of low / medium / high risk this month",
+    "latest_readings": "the latest vital readings (blood pressure, heart rate, temperature, glucose, hemoglobin)",
+    "thirty_day_average": "the 30-day average of the vitals",
+    "provider_name": "the provider (doctor) name",
+    "nurse_name": "the nurse's name",
+    "care_manager_name": "the care manager's name",
+    "recent_note": "the most recent clinical note",
+    "recent_note_author": "who wrote the most recent note",
+    "last_monitoring_contact_display": "when staff last contacted or monitored her",
+    "last_reading_display": "when her last reading was received",
+    "monitoring_time_display": "the monitoring time logged this month",
+    "active_statuses": "her current statuses",
+    "pending_risk_count": "how many risk assessments are waiting for review",
+    "has_open_alert": "whether she has an open alert",
+}
 
-    seen: list[str] = []
-    for index, section in enumerate(sections):
-        if not isinstance(section, dict) or "label" not in section or "fields" not in section:
-            errors.append(f"Section {index} must have a 'label' and a 'fields' list.")
-            continue
-        if not isinstance(section["label"], str) or not section["label"].strip():
-            errors.append(f"Section {index} must have a non-empty 'label'.")
-        for field in section["fields"]:
-            if field not in TEMPLATE_FIELD_VOCABULARY:
-                errors.append(f"'{field}' is not a known field.")
-            else:
-                seen.append(field)
 
-    missing = [] if allow_missing else [f for f in TEMPLATE_FIELD_VOCABULARY if f not in seen]
-    for field in missing:
-        errors.append(f"'{field}' is missing -- every field must appear somewhere.")
+def template_word_count(content: str) -> int:
+    return len(content.split())
 
-    duplicated = {f for f in seen if seen.count(f) > 1}
-    for field in sorted(duplicated):
-        errors.append(f"'{field}' appears more than once -- each field may appear exactly once.")
 
-    return errors
+def validate_template_content(content) -> list[str]:
+    """The rules that need no AI: not blank, and no more words than the
+    platform's configured limit. Whether every field is covered is a
+    separate, AI-judged check -- see check_template_coverage(). Returns
+    human-readable error strings; empty means valid. Never raises."""
+    if not isinstance(content, str) or not content.strip():
+        return ["Write the summary template -- it can't be empty."]
+    limit = get_ai_config().max_words
+    words = template_word_count(content)
+    if words > limit:
+        return [f"This template uses {words} words, but the limit is {limit}. Shorten it to {limit} or fewer."]
+    return []
+
+
+_COVERAGE_PROMPT = """A platform administrator wrote guidance describing what a patient summary should contain and in what order. Decide which of the following topics the guidance clearly asks to be included.
+
+Topics (key: meaning):
+{topic_list}
+
+Rules:
+- The administrator writes in plain words and may use their own phrasing, abbreviations or example values (for example "reading 120/80" asks for the latest readings). Judge by meaning, not exact wording.
+- Mark a topic as covered ONLY if the guidance clearly asks for it. If you are unsure, leave it out.
+- Do not mark a topic as covered just because a related one is.
+
+The administrator's guidance:
+{draft}
+
+Respond with ONLY a JSON object of the form {{"covered": ["key", "key"]}} listing the keys of the covered topics. No commentary, no markdown."""
+
+_COVERAGE_MAX_ATTEMPTS = 2
+
+
+def _parse_covered(raw: str | None) -> set[str] | None:
+    if raw is None:
+        return None
+    text = raw.strip()
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match is None:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except ValueError:
+        return None
+    covered = data.get("covered") if isinstance(data, dict) else None
+    if not isinstance(covered, list):
+        return None
+    return {key for key in covered if key in TEMPLATE_FIELD_VOCABULARY}
+
+
+def check_template_coverage(content: str) -> list[str] | None:
+    """Which of the 17 fields the admin's plain-language text does NOT yet
+    cover, judged by the AI. Returns [] when everything is covered, or None
+    when the AI could not give a usable answer -- callers must treat None as
+    "could not verify" and refuse to save, never as "covered" (fail closed,
+    same reasoning as validating a model id against OpenRouter)."""
+    config = get_ai_config()
+    prompt = _COVERAGE_PROMPT.format(
+        topic_list="\n".join(f"- {key}: {TEMPLATE_FIELD_LABELS[key]}" for key in TEMPLATE_FIELD_VOCABULARY),
+        draft=content.strip(),
+    )
+    for _attempt in range(_COVERAGE_MAX_ATTEMPTS):
+        raw = generate_with_retries(prompt, model=config.current_model, max_tokens=400)
+        covered = _parse_covered(raw)
+        if covered is not None:
+            return [f for f in TEMPLATE_FIELD_VOCABULARY if f not in covered]
+    return None
+
+
+def missing_fields_message(missing: list[str]) -> str:
+    return "Add the remaining details to your template: " + "; ".join(TEMPLATE_FIELD_LABELS[f] for f in missing) + "."
 
 
 def activate_summary_template(template: AISummaryTemplate) -> None:
@@ -555,10 +607,17 @@ def activate_summary_template(template: AISummaryTemplate) -> None:
 
 
 def deactivate_summary_template(template: AISummaryTemplate) -> None:
+    """Never allowed to leave zero active templates: with none active, no
+    patient summary can be generated. At most one template is ever active, so
+    any active template IS the last one -- the only way to change which
+    template is in use is to save or activate another, which switches this
+    one off in the same step."""
     if not template.is_active:
         raise ActivationStateError("This template is not active.")
-    template.is_active = False
-    template.save(update_fields=["is_active", "updated_at"])
+    raise ActivationStateError(
+        "The active template can't be deactivated -- patients would be left without a summary. "
+        "Write and save a new template, or activate another one, and this one switches off automatically.",
+    )
 
 
 # Fixed, made-up data -- never a real patient. Used only to render a preview
@@ -601,41 +660,88 @@ _SAMPLE_SNAPSHOT = {
 }
 
 
-def review_summary_template(sections) -> dict | None:
-    """The review/"enhance" step of authoring a template. ``sections`` is the
-    admin's draft layout, which may be incomplete.
+_ENHANCE_PROMPT = """You are helping a platform administrator polish the wording of the guidance they wrote for a clinical patient summary. The guidance says what the summary should contain and in what order.
 
-    If any of the TEMPLATE_FIELD_VOCABULARY fields is not yet placed in a
-    section, nothing is generated -- the admin gets back exactly which fields
-    are still missing, to add before the template can be reviewed or saved.
-    Once every field is covered, renders the entire summary exactly as a
-    patient's page would show it, using fixed sample data (never a real
-    patient). Returns None only if that preview call fails after retrying.
-    Stateless: nothing is saved here."""
-    placed = {f for s in sections for f in s["fields"]}
-    missing = [f for f in TEMPLATE_FIELD_VOCABULARY if f not in placed]
+Rules -- all are hard requirements, never break any:
+- Fix grammar, spelling and clarity only. Preserve the administrator's meaning, order and emphasis.
+- Keep everything the administrator asked to include. Never drop a topic, never add one they did not ask for.
+- Never add any fact or instruction the administrator did not write.
+- The draft is {draft_word_count} words. Stay close to that length, and never exceed {limit} words.
+
+The administrator's draft:
+{draft}
+
+Respond with ONLY the improved text, no commentary, no quotation marks around it, no markdown."""
+
+
+def _enhance_template_wording(content: str, config) -> str | None:
+    """AI polish of the admin's own text. Only accepted if it still fits the
+    word limit AND still covers all 17 fields (re-checked, since a polish that
+    quietly dropped a topic must never be shown as safe); otherwise None."""
+    draft = content.strip()
+    prompt = _ENHANCE_PROMPT.format(
+        limit=config.max_words,
+        draft_word_count=template_word_count(draft),
+        draft=draft,
+    )
+    enhanced = generate_with_retries(prompt, model=config.current_model, max_tokens=_max_tokens_for(config.max_words))
+    if enhanced is None:
+        return None
+    enhanced = enhanced.strip()
+    if not enhanced or template_word_count(enhanced) > config.max_words:
+        return None
+    if check_template_coverage(enhanced) != []:
+        return None
+    return enhanced
+
+
+def review_summary_template(content: str) -> dict | None:
+    """The review/"enhance" step of authoring a template. ``content`` is the
+    admin's plain-language draft (word limit already checked by the caller).
+
+    The AI first decides which of the 17 fields the text covers. If any are
+    missing, nothing else is generated -- the admin gets back exactly what is
+    still missing, in plain words, to add. Once everything is covered, the AI
+    polishes the wording/grammar, and the entire summary is rendered exactly
+    as a patient's page would show it, using fixed sample data (never a real
+    patient). Returns None if the AI cannot verify coverage or the polish
+    fails after retrying; a failed preview alone still returns the polished
+    text with preview_text=None. Stateless: nothing is saved here."""
+    missing = check_template_coverage(content)
+    if missing is None:
+        return None
     if missing:
         return {
             "complete": False,
             "missing_fields": missing,
-            "message": "Add the remaining fields to your template before reviewing it: " + ", ".join(missing) + ".",
+            "missing_labels": [TEMPLATE_FIELD_LABELS[f] for f in missing],
+            "message": missing_fields_message(missing),
+            "enhanced_content": None,
             "preview_text": None,
         }
 
     config = get_ai_config()
-    draft_template = AISummaryTemplate(sections=sections)
-    preview_prompt = _build_prompt(_SAMPLE_SNAPSHOT, config, deactivated=False, template=draft_template)
+    enhanced = _enhance_template_wording(content, config)
+    if enhanced is None:
+        return None
+
+    preview_prompt = _build_prompt(
+        _SAMPLE_SNAPSHOT,
+        config,
+        deactivated=False,
+        template=AISummaryTemplate(content=enhanced),
+    )
     preview_text = generate_with_retries(
         preview_prompt,
         model=config.current_model,
         max_tokens=_max_tokens_for(config.max_words),
     )
-    if preview_text is None:
-        return None
     return {
         "complete": True,
         "missing_fields": [],
-        "word_count": len(preview_text.split()),
+        "missing_labels": [],
+        "enhanced_content": enhanced,
+        "word_count": template_word_count(enhanced),
         "word_limit": config.max_words,
         "preview_text": preview_text,
     }

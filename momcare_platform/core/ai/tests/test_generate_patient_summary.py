@@ -14,8 +14,8 @@ from momcare_platform.core.ai.models import AISummary, AISummaryTemplate
 from momcare_platform.core.ai.services import (
     TEMPLATE_FIELD_VOCABULARY,
     activate_summary_template,
-    deactivate_summary_template,
     generate_patient_summary,
+    validate_template_content,
 )
 from momcare_platform.core.patients.services import onboard_patient
 
@@ -25,10 +25,6 @@ pytestmark = pytest.mark.django_db
 # modules.pregnancy.vitals, which core (this test included) must never import
 # statically -- the `core must not import modules` contract.
 VitalReading = django_apps.get_model("monitoring", "VitalReading")
-
-
-def _full_sections(label="All Fields"):
-    return [{"label": label, "fields": list(TEMPLATE_FIELD_VOCABULARY)}]
 
 
 @pytest.fixture
@@ -107,52 +103,56 @@ def test_the_word_cap_reaches_the_prompt(patient):
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
         generate_patient_summary(patient)
 
-    assert "150" in mock_generate.call_args.args[0]
+    assert "130" in mock_generate.call_args.args[0]
 
 
 def test_an_active_platform_template_shapes_every_patients_prompt(patient):
     template = AISummaryTemplate.objects.create(
         organization=None,
         name="Platform-wide",
-        sections=[{"label": "Everything Together", "fields": list(TEMPLATE_FIELD_VOCABULARY)}],
+        content="Everything Together in one paragraph.",
     )
     activate_summary_template(template)
 
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
         generate_patient_summary(patient)
 
-    assert "Everything Together:" in mock_generate.call_args.args[0]
+    assert "Everything Together in one paragraph." in mock_generate.call_args.args[0]
 
 
 def test_a_hospital_level_template_never_reaches_the_prompt(patient):
     AISummaryTemplate.objects.create(
         organization=patient.organization,
         name="Stray hospital row",
-        sections=[{"label": "Should Not Appear", "fields": list(TEMPLATE_FIELD_VOCABULARY)}],
+        content="Should Not Appear in any prompt.",
         is_active=True,
     )
 
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
         generate_patient_summary(patient)
 
-    assert "Should Not Appear:" not in mock_generate.call_args.args[0]
+    assert "Should Not Appear in any prompt." not in mock_generate.call_args.args[0]
 
 
-def test_deactivating_the_only_active_platform_template_falls_back_to_the_default_layout(patient):
-    template = AISummaryTemplate.objects.create(
-        organization=None,
-        name="Platform-wide",
-        sections=[{"label": "Custom Layout", "fields": list(TEMPLATE_FIELD_VOCABULARY)}],
-    )
-    activate_summary_template(template)
-    deactivate_summary_template(template)
+def test_with_no_active_template_nothing_is_generated_and_the_old_summary_is_kept(patient):
+    """There is no layout in code any more. If an admin deactivates every
+    template, generation is skipped (logged), never sent to the AI with a
+    made-up layout, and a previously saved summary is left untouched."""
+    AISummary.objects.create(patient=patient, content="Old summary.", generated_at=timezone.now(), model_used="m")
+    AISummaryTemplate.objects.filter(organization__isnull=True).update(is_active=False)
 
-    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
+    with patch("momcare_platform.core.ai.openrouter_client.generate") as mock_generate:
         generate_patient_summary(patient)
 
-    sent_prompt = mock_generate.call_args.args[0]
-    assert "Custom Layout:" not in sent_prompt
-    assert "Vitals & Risk:" in sent_prompt
+    mock_generate.assert_not_called()
+    assert AISummary.objects.get(patient=patient).content == "Old summary."
+
+
+def test_the_seeded_default_template_is_a_real_active_row_covering_every_field():
+    template = AISummaryTemplate.objects.get(organization__isnull=True, name="Default Summary Template")
+
+    assert template.is_active is True
+    assert validate_template_content(template.content) == []  # within the word limit
 
 
 def test_deactivation_flag_changes_the_closing_instruction(patient):
@@ -207,25 +207,15 @@ def test_missing_fields_are_stated_as_not_on_file_not_silently_dropped(patient):
     assert "- recent_note: not on file" in sent_prompt
 
 
-def test_the_prompt_groups_data_by_topic_instead_of_one_flat_list(patient):
-    """User-directed prompt redesign: the model was producing a field-by-field
-    recitation ('X is not on file, Y is not on file...') instead of flowing
-    clinical-note-style prose, because the prompt handed it one undifferentiated
-    list of 17 facts in a row. Grouping related facts under labeled sections
-    and explicitly asking for paragraphs-by-topic (matching how a clinician
-    actually summarizes a chart) is meant to fix that."""
+def test_the_default_prompt_carries_the_seeded_templates_guidance_and_all_17_fields(patient):
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
         generate_patient_summary(patient)
 
     sent_prompt = mock_generate.call_args.args[0]
-    assert "Vitals & Risk:" in sent_prompt
-    assert "Care Team & Activity:" in sent_prompt
-    # The vitals group's own fields land under that header, not the flat list.
-    vitals_section = sent_prompt.split("Vitals & Risk:")[1].split("Care Team & Activity:")[0]
-    assert "current_risk_level" in vitals_section
-    care_team_section = sent_prompt.split("Care Team & Activity:")[1]
-    assert "provider_name" in care_team_section
-    assert "current_risk_level" not in care_team_section
+    assert "Administrator's guidance:" in sent_prompt
+    assert "Begin with the patient's name" in sent_prompt
+    for field in TEMPLATE_FIELD_VOCABULARY:
+        assert f"- {field}:" in sent_prompt
 
 
 def test_a_snapshot_building_error_is_logged_and_never_raised(patient):

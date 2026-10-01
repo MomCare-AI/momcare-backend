@@ -405,7 +405,7 @@ class MonitoringNoteEnhanceView(APIView):
         enhanced = enhance_note_text(serializer.validated_data["text"])
         if enhanced is None:
             return Response(
-                {"detail": "Could not enhance this note right now. Try again."},
+                {"detail": "The service is not working right now. Please try again later."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         return Response({"enhanced_text": enhanced})

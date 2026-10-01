@@ -3968,7 +3968,7 @@
                 ""
               ]
             },
-            "description": "The platform-wide AI Summary configuration -- `current_model` (an OpenRouter model id), `max_words` (default 150). Exactly one row exists; created from settings on first read if it doesn't exist yet.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only -- not visible to any hospital-side role.\n\nCustom instruction text no longer lives here -- see List/Create/Activate/Deactivate Platform Instruction Preset below."
+            "description": "The platform-wide AI Summary configuration -- `current_model` (an OpenRouter model id), `max_words` (default 130). Exactly one row exists; created from settings on first read if it doesn't exist yet.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only -- not visible to any hospital-side role.\n\nCustom instruction text no longer lives here -- see List/Create/Activate/Deactivate Platform Instruction Preset below."
           },
           "response": []
         },
@@ -3984,7 +3984,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"current_model\": \"deepseek/deepseek-chat\",\n  \"max_words\": 150\n}",
+              "raw": "{\n  \"current_model\": \"deepseek/deepseek-chat\",\n  \"max_words\": 130\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -4047,7 +4047,7 @@
                 ""
               ]
             },
-            "description": "The platform-wide history of AI Summary templates, newest first -- each is a layout (`sections`: an ordered list of {label, fields}). Immutable once created, never deleted. Platform admin is the only place templates exist; hospitals have no template endpoints.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only."
+            "description": "The platform-wide history of AI Summary templates, newest first. Each template is plain text the platform admin wrote (`content`) plus its `word_count`. Immutable once created, never deleted. Platform admin is the only place templates exist; hospitals have no template endpoints.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only."
           },
           "response": []
         },
@@ -4074,10 +4074,10 @@
                 ""
               ]
             },
-            "description": "Add a new template to the platform-wide history. Created inactive -- creating one does not activate it; call Activate Platform Summary Template separately.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\nRequired: `name`, `sections` (every one of the 17 fixed data fields must appear across the sections exactly once -- missing, duplicated, or unknown field names are all rejected with 400). There is no extra-instructions field.",
+            "description": "Save a template the admin wrote. Saving it makes it the template in use: it is activated immediately and the previous active template is deactivated in the same step. A rejected template (400/503) changes nothing -- the previous one stays active.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\nRequired: `name`, `content`. `content` is plain text in the admin's own words and order -- no special syntax. It must ask for all 17 pieces of patient information (name, gestational age, risk level, risk this month, latest readings, 30-day average, doctor, nurse, care manager, latest note, note author, last staff contact, last reading received, monitoring time, current statuses, pending risk reviews, open alert). The AI judges this.\n\n400 (nothing saved) if the text is blank, uses more words than the platform limit `max_words` (see Get AI Config), or leaves details out -- in that case the response lists `missing_fields` and `missing_labels` (plain-English names to show the admin). 503 if the AI could not verify coverage -- try again.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"RPM Style\",\n  \"sections\": [\n    {\n      \"label\": \"Vitals & Risk\",\n      \"fields\": [\n        \"gestational_age\",\n        \"current_risk_level\",\n        \"risk_this_month\",\n        \"latest_readings\",\n        \"thirty_day_average\",\n        \"pending_risk_count\",\n        \"has_open_alert\"\n      ]\n    },\n    {\n      \"label\": \"Care Team & Activity\",\n      \"fields\": [\n        \"patient_name\",\n        \"provider_name\",\n        \"nurse_name\",\n        \"care_manager_name\",\n        \"recent_note\",\n        \"recent_note_author\",\n        \"last_monitoring_contact_display\",\n        \"last_reading_display\",\n        \"monitoring_time_display\",\n        \"active_statuses\"\n      ]\n    }\n  ],\n  \"extra_instructions\": \"\"\n}",
+              "raw": "{\n  \"name\": \"Readings First\",\n  \"content\": \"Start with the latest reading, like 120/80, and the 30-day average. Then the risk level and how it split this month. Mention the patient's name and how far along she is. Include the doctor, nurse and care manager, the latest clinical note and who wrote it, when staff last contacted her and when her last reading came in, her monitoring time this month, her current statuses, how many risk reviews are pending, and whether she has an open alert.\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -4107,7 +4107,7 @@
                 ""
               ]
             },
-            "description": "Make this template the one active template used for every patient summary -- deactivates whichever template was active before it, in the same transaction, so at most one is ever active.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n400 if this template is already active."
+            "description": "Re-activate an older template (e.g. to roll back). It becomes the one active template and the previously active one is deactivated in the same step -- exactly one template is active at all times. A newly saved template is activated automatically, so this is only needed to go back to an older one.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n400 if this template is already active."
           },
           "response": []
         },
@@ -4131,7 +4131,7 @@
                 ""
               ]
             },
-            "description": "Turn off the active template. If nothing else is activated afterward, every patient summary falls back to the built-in default layout -- not an error state.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n400 if this template is not currently active."
+            "description": "Always refused for the active template (400): there must always be exactly one active template, otherwise patients would be left without a summary. To change which template is in use, save a new one (activated automatically) or activate another one -- the current one then switches off by itself. Returns 400 as well if the template is not active.\n\nA starter template, \"Default Summary Template\", is created by migration and is active out of the box.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only."
           },
           "response": []
         },
@@ -4159,10 +4159,10 @@
                 ""
               ]
             },
-            "description": "Review step for a draft template. Send the `sections` you've built so far.\n\nIf any of the 17 fields is still missing, the response is `complete: false` with `missing_fields` and a `message` -- show it as an alert asking the admin to add them; no AI call is made.\n\nOnce every field is covered, the response is `complete: true` with `preview_text`: the entire summary as a patient would see it, rendered from fixed sample data (never a real patient), plus `word_count`/`word_limit`. Unknown or duplicated fields are a 400. Stateless -- nothing is saved; save through Create Platform Summary Template.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n503 if the preview AI call fails after retrying -- try again.",
+            "description": "Review step for a draft template. Send the plain-text `content` you've written.\n\nThe AI first decides which of the 17 pieces of patient information the text covers. If any are missing the response is `complete: false` with `missing_fields`, `missing_labels` (plain English) and a `message` -- show it as an alert asking the admin to add them. Nothing else is generated.\n\nOnce everything is covered, the AI polishes grammar and wording (keeping everything the admin asked for) and the response is `complete: true` with `enhanced_content` (use it or keep the original, then save through Create) and `preview_text`: the entire summary as a patient would see it, rendered from fixed sample data (never a real patient), plus `word_count`/`word_limit`.\n\nBlank text or text over the word limit is a 400. Stateless -- nothing is saved.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n503 if the AI cannot verify coverage, the polish fails, or the polished version dropped a topic or ran over the limit -- try again.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"sections\": [\n    {\n      \"label\": \"Vitals & Risk\",\n      \"fields\": [\n        \"gestational_age\",\n        \"current_risk_level\",\n        \"risk_this_month\",\n        \"latest_readings\",\n        \"thirty_day_average\",\n        \"pending_risk_count\",\n        \"has_open_alert\"\n      ]\n    },\n    {\n      \"label\": \"Care Team & Activity\",\n      \"fields\": [\n        \"patient_name\",\n        \"provider_name\",\n        \"nurse_name\",\n        \"care_manager_name\",\n        \"recent_note\",\n        \"recent_note_author\",\n        \"last_monitoring_contact_display\",\n        \"last_reading_display\",\n        \"monitoring_time_display\",\n        \"active_statuses\"\n      ]\n    }\n  ],\n  \"extra_instructions\": \"mention medication adherence\"\n}",
+              "raw": "{\n  \"content\": \"Start with the latest reading, like 120/80, and the 30-day average. Then the risk level and how it split this month. Mention the patient's name and how far along she is. Include the doctor, nurse and care manager, the latest clinical note and who wrote it, when staff last contacted her and when her last reading came in, her monitoring time this month, her current statuses, how many risk reviews are pending, and whether she has an open alert.\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

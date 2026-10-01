@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from momcare_platform.core.ai.models import AISummary, AISummaryTemplate
-from momcare_platform.core.ai.services import validate_template_sections
+from momcare_platform.core.ai.services import template_word_count, validate_template_content
 
 
 class AISummarySerializer(serializers.ModelSerializer):
@@ -12,37 +12,42 @@ class AISummarySerializer(serializers.ModelSerializer):
 
 class AISummaryTemplateSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source="created_by.get_full_name", read_only=True, default="")
+    word_count = serializers.SerializerMethodField()
 
     class Meta:
         model = AISummaryTemplate
         fields = [
             "id",
             "name",
-            "sections",
+            "content",
+            "word_count",
             "is_active",
             "activated_at",
             "created_at",
             "created_by_name",
         ]
-        read_only_fields = ["is_active", "activated_at", "created_at", "created_by_name"]
+        read_only_fields = ["word_count", "is_active", "activated_at", "created_at", "created_by_name"]
 
-    def validate_sections(self, value):
-        errors = validate_template_sections(value)
+    def get_word_count(self, obj) -> int:
+        return template_word_count(obj.content)
+
+    def validate_content(self, value):
+        errors = validate_template_content(value)
         if errors:
             raise serializers.ValidationError(errors)
         return value
 
 
 class SummaryTemplateReviewRequestSerializer(serializers.Serializer):
-    """Input to the review step -- the admin's draft sections, which may still
-    be missing fields (reported back as an alert, not rejected). Unknown or
-    duplicated fields and malformed sections are still a 400. Nothing here is
-    saved."""
+    """Input to the review step -- the admin's plain-language draft. Blank text
+    or text over the word limit is a 400; whether every field is covered is
+    judged by the AI inside the review itself and reported back as an alert.
+    Nothing here is saved."""
 
-    sections = serializers.JSONField()
+    content = serializers.CharField(trim_whitespace=False)
 
-    def validate_sections(self, value):
-        errors = validate_template_sections(value, allow_missing=True)
+    def validate_content(self, value):
+        errors = validate_template_content(value)
         if errors:
             raise serializers.ValidationError(errors)
         return value

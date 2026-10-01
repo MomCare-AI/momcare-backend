@@ -1,6 +1,7 @@
 """Platform-admin API. AI config is the first real capability this app has
 had -- previously a documented empty skeleton (see CLAUDE.md)."""
 
+from django.db import transaction
 from rest_framework import status
 from rest_framework.generics import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
@@ -14,10 +15,13 @@ from momcare_platform.core.ai.api.serializers import (
 )
 from momcare_platform.core.ai.models import AISummaryTemplate
 from momcare_platform.core.ai.services import (
+    TEMPLATE_FIELD_LABELS,
     ActivationStateError,
     activate_summary_template,
+    check_template_coverage,
     deactivate_summary_template,
     get_ai_config,
+    missing_fields_message,
     review_summary_template,
 )
 from momcare_platform.core.common.pagination import DefaultPagination
@@ -54,8 +58,8 @@ class AIAvailableModelsView(APIView):
 
 
 class AISummaryTemplateListCreateView(APIView):
-    """Summary template history -- the layout of the fixed fields. List/create, never
-    edit/delete -- see AISummaryTemplate's own docstring.
+    """Summary template history -- plain text the platform admin writes. List/create, never edit/delete.
+    Creating a template activates it immediately and deactivates the previous one -- see AISummaryTemplate's own docstring.
 
     create()'s INSERT (organization=None) only satisfies the RLS policy's
     WITH CHECK because TenantAwareJWTAuthentication enters bypass_rls() for
@@ -81,8 +85,27 @@ class AISummaryTemplateListCreateView(APIView):
     def post(self, request):
         serializer = AISummaryTemplateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save(organization=None, created_by=request.user)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        missing = check_template_coverage(serializer.validated_data["content"])
+        if missing is None:
+            return Response(
+                {"detail": "The service is not working right now. Please try again later."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        if missing:
+            return Response(
+                {
+                    "content": [missing_fields_message(missing)],
+                    "missing_fields": missing,
+                    "missing_labels": [TEMPLATE_FIELD_LABELS[f] for f in missing],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with transaction.atomic():
+            template = serializer.save(organization=None, created_by=request.user)
+            # Saving a new template makes it the one in use: it becomes the
+            # active template and the previous one is switched off, together.
+            activate_summary_template(template)
+        return Response(AISummaryTemplateSerializer(template).data, status=status.HTTP_201_CREATED)
 
 
 class AISummaryTemplateActivateView(APIView):
@@ -110,23 +133,25 @@ class AISummaryTemplateDeactivateView(APIView):
 
 
 class AISummaryTemplateEnhanceView(APIView):
-    """Review step for a draft template. The admin sends their ``sections``;
-    if any of the 17 fields is still missing, gets back ``complete: false``
-    with ``missing_fields`` and a message to show as an alert. Once every
-    field is covered, gets back the entire summary as a patient would see it
-    (rendered from fixed sample data, never a real patient). Stateless --
-    nothing is saved here."""
+    """Review step for a draft template. The admin sends the plain-language
+    ``content`` they wrote. The AI decides which of the 17 fields it covers: if
+    any are missing the response is ``complete: false`` with
+    ``missing_labels`` and a message to show as an alert. Once everything is
+    covered, the AI polishes grammar and wording, and the response carries
+    ``enhanced_content`` plus ``preview_text`` -- the entire summary as a
+    patient would see it, rendered from fixed sample data (never a real
+    patient). Stateless -- nothing is saved here."""
 
     permission_classes = [IsAuthenticated, IsPlatformAdmin]
 
     def post(self, request):
         serializer = SummaryTemplateReviewRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        sections = serializer.validated_data["sections"]
-        result = review_summary_template(sections)
+        content = serializer.validated_data["content"]
+        result = review_summary_template(content)
         if result is None:
             return Response(
-                {"detail": "Could not generate the preview right now. Try again."},
+                {"detail": "The service is not working right now. Please try again later."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        return Response({"sections": sections, **result})
+        return Response({"content": content, **result})

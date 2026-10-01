@@ -402,7 +402,7 @@ OPENROUTER_API_KEY = env("DJANGO_OPENROUTER_API_KEY", default="")
 MOMCARE_AI_SUMMARY_DEFAULT_MODEL = env(
     "DJANGO_MOMCARE_AI_SUMMARY_DEFAULT_MODEL", default="google/gemini-2.0-flash-001"
 )
-MOMCARE_AI_SUMMARY_DEFAULT_MAX_WORDS = env.int("DJANGO_MOMCARE_AI_SUMMARY_DEFAULT_MAX_WORDS", default=150)
+MOMCARE_AI_SUMMARY_DEFAULT_MAX_WORDS = env.int("DJANGO_MOMCARE_AI_SUMMARY_DEFAULT_MAX_WORDS", default=130)
 # How stale an AISummary must be before the periodic refresh command touches
 # it. Low-stakes, easy to tune once real cost data exists.
 MOMCARE_AI_SUMMARY_REFRESH_HOURS = env.int("DJANGO_MOMCARE_AI_SUMMARY_REFRESH_HOURS", default=4)

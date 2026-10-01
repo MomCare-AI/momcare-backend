@@ -22,7 +22,7 @@ class AIProviderConfigSerializer(serializers.ModelSerializer):
         if catalog is None:
             # OpenRouter's catalog is briefly unreachable -- fail closed
             # rather than silently accepting a value we can't verify.
-            raise serializers.ValidationError("Could not verify this model against OpenRouter right now.")
+            raise serializers.ValidationError("The service is not working right now. Please try again later.")
         valid_ids = {entry["id"] for entry in catalog}
         if value not in valid_ids:
             raise serializers.ValidationError(f"'{value}' is not a model OpenRouter currently serves.")

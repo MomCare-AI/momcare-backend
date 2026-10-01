@@ -1,7 +1,7 @@
 """Platform-tier template review step --
 POST /api/platform-admin/ai-config/summary-templates/enhance/.
 ROLE_PLATFORM_ADMIN only. Missing fields come back as an alert; a complete
-template gets the entire summary previewed from sample data. Stateless:
+template gets its wording polished and the entire summary previewed from sample data. Stateless:
 nothing is created by calling this."""
 
 import json
@@ -19,8 +19,16 @@ pytestmark = pytest.mark.django_db
 ENHANCE_URL = "/api/platform-admin/ai-config/summary-templates/enhance/"
 
 
-def _full_sections(label="All Fields"):
-    return [{"label": label, "fields": list(TEMPLATE_FIELD_VOCABULARY)}]
+DRAFT = "reading 120/80 first, then risk, then the patient name, and the rest"
+ALL = json.dumps({"covered": list(TEMPLATE_FIELD_VOCABULARY)})
+
+
+@pytest.fixture(autouse=True)
+def no_seeded_template():
+    """Migration 0014 seeds a real active default template into every database,
+    including the test one. These tests count and list templates, so start
+    each from an empty table (rolled back with the test's transaction)."""
+    AISummaryTemplate.objects.all().delete()
 
 
 @pytest.fixture
@@ -46,52 +54,70 @@ def _post(client, auth, payload):
     return client.post(ENHANCE_URL, data=json.dumps(payload), content_type="application/json", **auth)
 
 
-def test_a_complete_template_returns_the_full_preview(client, platform_admin_auth):
-    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="A sample preview."):
-        response = _post(client, platform_admin_auth, {"sections": _full_sections()})
+def test_a_fully_covered_template_returns_enhanced_text_and_the_full_preview(client, platform_admin_auth):
+    with patch(
+        "momcare_platform.core.ai.openrouter_client.generate",
+        side_effect=[ALL, "Polished draft.", ALL, "A sample preview."],
+    ):
+        response = _post(client, platform_admin_auth, {"content": DRAFT})
 
     assert response.status_code == 200
     body = response.json()
     assert body["complete"] is True
     assert body["missing_fields"] == []
+    assert body["enhanced_content"] == "Polished draft."
     assert body["preview_text"] == "A sample preview."
-    assert body["word_limit"] == 150
-    assert body["sections"] == _full_sections()
+    assert body["word_limit"] == 130
+    assert body["content"] == DRAFT
 
 
-def test_an_incomplete_template_alerts_with_the_missing_fields(client, platform_admin_auth):
-    partial = [{"label": "Partial", "fields": ["patient_name"]}]
+def test_an_incomplete_template_alerts_with_what_is_missing_in_plain_words(client, platform_admin_auth):
+    covered = [f for f in TEMPLATE_FIELD_VOCABULARY if f != "recent_note"]
 
-    with patch("momcare_platform.core.ai.openrouter_client.generate") as gen:
-        response = _post(client, platform_admin_auth, {"sections": partial})
+    with patch(
+        "momcare_platform.core.ai.openrouter_client.generate",
+        return_value=json.dumps({"covered": covered}),
+    ) as gen:
+        response = _post(client, platform_admin_auth, {"content": DRAFT})
 
-    gen.assert_not_called()
+    assert gen.call_count == 1
     assert response.status_code == 200
     body = response.json()
     assert body["complete"] is False
+    assert body["missing_fields"] == ["recent_note"]
+    assert body["missing_labels"] == ["the most recent clinical note"]
+    assert "the most recent clinical note" in body["message"]
     assert body["preview_text"] is None
-    assert "patient_name" not in body["missing_fields"]
-    assert len(body["missing_fields"]) == len(TEMPLATE_FIELD_VOCABULARY) - 1
-    assert body["message"]
-    assert body["sections"] == partial
 
 
-def test_an_unknown_field_is_still_a_400(client, platform_admin_auth):
-    response = _post(client, platform_admin_auth, {"sections": [{"label": "Bad", "fields": ["made_up_field"]}]})
+def test_text_over_the_word_limit_is_a_400_and_calls_no_ai(client, platform_admin_auth):
+    too_long = " ".join(f"w{i}" for i in range(131))
 
+    with patch("momcare_platform.core.ai.openrouter_client.generate") as gen:
+        response = _post(client, platform_admin_auth, {"content": too_long})
+
+    gen.assert_not_called()
     assert response.status_code == 400
+    assert "limit is 130" in json.dumps(response.json())
+
+
+def test_blank_content_is_a_400(client, platform_admin_auth):
+    assert _post(client, platform_admin_auth, {"content": "   "}).status_code == 400
 
 
 def test_nothing_is_saved_by_calling_it(client, platform_admin_auth):
-    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="Preview."):
-        _post(client, platform_admin_auth, {"sections": _full_sections()})
+    with patch(
+        "momcare_platform.core.ai.openrouter_client.generate",
+        side_effect=[ALL, "Polished.", ALL, "Preview."],
+    ):
+        _post(client, platform_admin_auth, {"content": DRAFT})
 
     assert not AISummaryTemplate.objects.exists()
 
 
-def test_returns_503_when_the_preview_call_fails(client, platform_admin_auth):
+def test_returns_503_when_the_ai_cannot_be_reached(client, platform_admin_auth):
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value=None):
-        response = _post(client, platform_admin_auth, {"sections": _full_sections()})
+        response = _post(client, platform_admin_auth, {"content": DRAFT})
 
     assert response.status_code == 503
 
@@ -99,6 +125,6 @@ def test_returns_503_when_the_preview_call_fails(client, platform_admin_auth):
 def test_a_hospital_admin_is_refused(client, make_hospital, auth):
     hospital = make_hospital("Enhance Platform Endpoint Refusal Hospital")
 
-    response = _post(client, auth(hospital.admin.email), {"sections": _full_sections()})
+    response = _post(client, auth(hospital.admin.email), {"content": DRAFT})
 
     assert response.status_code == 403

@@ -19,21 +19,22 @@ from momcare_platform.core.patients.services import onboard_patient
 pytestmark = pytest.mark.django_db
 
 
-def _sections(*groups):
-    """groups: list of (label, fields) tuples."""
-    return [{"label": label, "fields": list(fields)} for label, fields in groups]
+def _full_content():
+    return "Readings, then risk, then everything else about the patient."
 
 
-def _full_sections(label="All Fields"):
-    return _sections((label, TEMPLATE_FIELD_VOCABULARY))
+def test_resolve_returns_the_seeded_default_when_nothing_else_is_active():
+    assert _resolve_active_template().name == "Default Summary Template"
 
 
-def test_resolve_returns_none_when_no_template_is_active():
+def test_resolve_returns_none_when_every_template_is_deactivated():
+    AISummaryTemplate.objects.update(is_active=False)
+
     assert _resolve_active_template() is None
 
 
 def test_resolve_returns_the_active_platform_template():
-    template = AISummaryTemplate.objects.create(organization=None, name="Platform", sections=_full_sections())
+    template = AISummaryTemplate.objects.create(organization=None, name="Platform", content=_full_content())
     activate_summary_template(template)
 
     assert _resolve_active_template() == template
@@ -47,27 +48,25 @@ def test_resolve_ignores_an_active_hospital_level_template(make_hospital):
     AISummaryTemplate.objects.create(
         organization=hospital.org,
         name="Stray",
-        sections=_full_sections(),
+        content=_full_content(),
         is_active=True,
     )
 
-    assert _resolve_active_template() is None
+    assert _resolve_active_template().name == "Default Summary Template"
 
 
-def test_an_active_template_reshapes_the_real_generated_prompt(make_hospital):
-    """End-to-end: the active platform template's section labels reach the actual
-    prompt sent to the client, replacing the built-in "Vitals & Risk:"/
-    "Care Team & Activity:" layout entirely."""
+def test_an_active_template_guides_the_real_generated_prompt(make_hospital):
+    """End-to-end: the admin's own plain wording reaches the prompt as
+    guidance, followed by the real patient's data for all 17 fields."""
     hospital = make_hospital("Template Prompt Reshape Hospital")
     patient = onboard_patient(
         organization=hospital.org,
         patient_data={"first_name": "Amina", "last_name": "Yousaf"},
     )
-    other_fields = [f for f in TEMPLATE_FIELD_VOCABULARY if f != "patient_name"]
     template = AISummaryTemplate.objects.create(
         organization=None,
-        name="Name First",
-        sections=_sections(("Who", ["patient_name"]), ("Everything Else", other_fields)),
+        name="Name Last",
+        content="Start with the latest reading like 120/80, then the risk level, and the patient name last.",
     )
     activate_summary_template(template)
 
@@ -75,9 +74,9 @@ def test_an_active_template_reshapes_the_real_generated_prompt(make_hospital):
         generate_patient_summary(patient)
 
     sent_prompt = mock_generate.call_args.args[0]
-    assert "Who:" in sent_prompt
-    assert "Everything Else:" in sent_prompt
+    assert "Start with the latest reading like 120/80" in sent_prompt
+    assert "patient_name: Amina Yousaf" in sent_prompt
+    for field in TEMPLATE_FIELD_VOCABULARY:
+        assert f"- {field}:" in sent_prompt
     assert "Vitals & Risk:" not in sent_prompt
-    assert "Care Team & Activity:" not in sent_prompt
-    who_section = sent_prompt.split("Who:")[1].split("Everything Else:")[0]
-    assert "patient_name: Amina Yousaf" in who_section
+    assert sent_prompt.index("Start with the latest reading") < sent_prompt.index("patient_name: Amina Yousaf")

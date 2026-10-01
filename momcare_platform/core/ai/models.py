@@ -22,7 +22,7 @@ class AIProviderConfig(UUIDPrimaryKeyModel, TimeStampedModel):
         max_length=200,
         help_text="An OpenRouter model id, e.g. 'google/gemini-2.0-flash-001'.",
     )
-    max_words = models.PositiveIntegerField(default=150)
+    max_words = models.PositiveIntegerField(default=130)
 
     def __str__(self) -> str:
         return f"AI config ({self.current_model})"
@@ -58,21 +58,22 @@ class AISummary(UUIDPrimaryKeyModel, TimeStampedModel):
 
 
 class AISummaryTemplate(UUIDPrimaryKeyModel, TimeStampedModel):
-    """A named, historical arrangement of the AI Summary's fixed data fields
-    into ordered, labeled sections. Platform-wide only (organization is always
-    NULL since 2026-10-01 -- hospitals no longer create or see templates; the
+    """A platform-admin-written summary template: plain text in which the admin
+    describes, in their own words and order, what a patient summary should
+    contain (e.g. "Start with the latest readings, then the risk level, then
+    the patient's name ...").
+
+    On save, the AI checks that the text covers every one of the fixed data
+    fields (core.ai.services.TEMPLATE_FIELD_VOCABULARY) and the text may not
+    exceed the platform's configured word limit. A template can reorder and
+    reword freely; it can never introduce a fact that isn't already
+    collected, and it can never touch the base prompt's fixed safety rules
+    (never invent a value, state gaps plainly, the word cap, the closing
+    recommendation) -- those stay in code.
+
+    Platform-wide only (organization is always NULL since 2026-10-01; the
     column stays only to avoid a schema/RLS migration for no benefit).
     Immutable once created, never deleted, at most one active.
-
-    ``sections`` is structured data (an ordered list of {"label", "fields"}), and
-    ``fields`` may only reference the fixed vocabulary
-    core.ai.services.TEMPLATE_FIELD_VOCABULARY, every field exactly once. A
-    template can rearrange which existing fields appear where; it can never
-    introduce a fact that isn't already collected, and it can never touch the
-    base prompt's fixed safety rules (never invent a value, state gaps plainly,
-    the word cap, the closing recommendation) -- those stay in code.
-
-    There is no free-text "extra instructions" field (removed 2026-10-01).
     """
 
     organization = models.ForeignKey(
@@ -83,7 +84,7 @@ class AISummaryTemplate(UUIDPrimaryKeyModel, TimeStampedModel):
         related_name="ai_summary_templates",
     )
     name = models.CharField(max_length=200)
-    sections = models.JSONField()
+    content = models.TextField()
     is_active = models.BooleanField(default=False)
     activated_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
