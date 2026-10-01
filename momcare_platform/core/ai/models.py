@@ -59,27 +59,20 @@ class AISummary(UUIDPrimaryKeyModel, TimeStampedModel):
 
 class AISummaryTemplate(UUIDPrimaryKeyModel, TimeStampedModel):
     """A named, historical arrangement of the AI Summary's fixed data fields
-    into ordered, labeled sections, plus optional extra wording -- organization=None
-    is platform-wide, a set organization is that hospital's own. Immutable once
-    created, never deleted, at most one active per scope.
+    into ordered, labeled sections. Platform-wide only (organization is always
+    NULL since 2026-10-01 -- hospitals no longer create or see templates; the
+    column stays only to avoid a schema/RLS migration for no benefit).
+    Immutable once created, never deleted, at most one active.
 
     ``sections`` is structured data (an ordered list of {"label", "fields"}), and
     ``fields`` may only reference the fixed vocabulary
-    core.ai.services.TEMPLATE_FIELD_VOCABULARY. A template can rearrange which
-    existing fields appear where; it can never introduce a fact that isn't already
-    collected, and it can never touch the base prompt's fixed safety rules (never
-    invent a value, state gaps plainly, the word cap, the closing recommendation)
-    -- those stay in code, never in a template.
+    core.ai.services.TEMPLATE_FIELD_VOCABULARY, every field exactly once. A
+    template can rearrange which existing fields appear where; it can never
+    introduce a fact that isn't already collected, and it can never touch the
+    base prompt's fixed safety rules (never invent a value, state gaps plainly,
+    the word cap, the closing recommendation) -- those stay in code.
 
-    ``extra_instructions`` (added 2026-09-29, merged in from the retired
-    AIInstructionPreset -- see
-    docs/design/2026-09-29-ai-summary-template-merge-design.md) is free-form text
-    appended to the prompt, same job a preset used to do, now saved and activated
-    together with the layout as one unit rather than as a separate resource. Unlike
-    the old preset system (which stacked platform + org text together), this does
-    NOT stack -- the active template (layout AND wording) is picked by the same
-    org-then-platform-then-default precedence _resolve_active_template() already
-    uses, never merged across tiers.
+    There is no free-text "extra instructions" field (removed 2026-10-01).
     """
 
     organization = models.ForeignKey(
@@ -91,7 +84,6 @@ class AISummaryTemplate(UUIDPrimaryKeyModel, TimeStampedModel):
     )
     name = models.CharField(max_length=200)
     sections = models.JSONField()
-    extra_instructions = models.TextField(blank=True)
     is_active = models.BooleanField(default=False)
     activated_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(

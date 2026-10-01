@@ -1,21 +1,9 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status
-from rest_framework.generics import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from momcare_platform.core.ai.api.serializers import (
-    AISummaryTemplateSerializer,
-    SummaryTemplateEnhanceRequestSerializer,
-)
-from momcare_platform.core.ai.models import AISummaryTemplate
-from momcare_platform.core.ai.services import (
-    ActivationStateError,
-    activate_summary_template,
-    deactivate_summary_template,
-    enhance_summary_template_wording,
-)
 from momcare_platform.core.common.pagination import DefaultPagination
 from momcare_platform.core.common.permissions import IsHospitalAdmin, IsHospitalStaff
 from momcare_platform.core.organization.api.serializers import (
@@ -154,92 +142,6 @@ class OrganizationConfidenceThresholdView(APIView):
         return Response(OrganizationSerializer(org, context={"request": request}).data)
 
 
-class OrganizationAISummaryTemplateListCreateView(APIView):
-    """This hospital's own summary template history -- layout arrangement and
-    optional extra wording, saved and activated together. hospital_admin
-    only, same restriction the retired organization-tier instruction presets
-    used -- a setting that shapes a clinical-facing output shouldn't be
-    editable by every staff role."""
-
-    permission_classes = [IsAuthenticated, IsHospitalAdmin]
-
-    def get(self, request):
-        org = request.user.organization
-        if org is None:
-            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
-        templates = AISummaryTemplate.objects.filter(organization=org)
-        paginator = DefaultPagination()
-        page = paginator.paginate_queryset(templates, request, view=self)
-        return paginator.get_paginated_response(AISummaryTemplateSerializer(page, many=True).data)
-
-    def post(self, request):
-        org = request.user.organization
-        if org is None:
-            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
-        serializer = AISummaryTemplateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save(organization=org, created_by=request.user)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-
-class OrganizationAISummaryTemplateActivateView(APIView):
-    permission_classes = [IsAuthenticated, IsHospitalAdmin]
-
-    def post(self, request, template_id):
-        org = request.user.organization
-        if org is None:
-            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
-        template = get_object_or_404(AISummaryTemplate, pk=template_id, organization=org)
-        try:
-            activate_summary_template(template)
-        except ActivationStateError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(AISummaryTemplateSerializer(template).data)
-
-
-class OrganizationAISummaryTemplateDeactivateView(APIView):
-    permission_classes = [IsAuthenticated, IsHospitalAdmin]
-
-    def post(self, request, template_id):
-        org = request.user.organization
-        if org is None:
-            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
-        template = get_object_or_404(AISummaryTemplate, pk=template_id, organization=org)
-        try:
-            deactivate_summary_template(template)
-        except ActivationStateError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(AISummaryTemplateSerializer(template).data)
-
-
-class OrganizationAISummaryTemplateEnhanceView(APIView):
-    """AI-assisted wording for this hospital's own draft, not structure --
-    same shape as the platform-tier equivalent. The admin builds
-    ``sections`` by hand and sends it plus their current extra_instructions
-    draft; gets back polished wording, a word count against the platform's
-    limit, and a live preview using fixed sample data (never one of this
-    hospital's real patients). Stateless, hospital_admin only."""
-
-    permission_classes = [IsAuthenticated, IsHospitalAdmin]
-
-    def post(self, request):
-        org = request.user.organization
-        if org is None:
-            return Response(NO_HOSPITAL, status=status.HTTP_404_NOT_FOUND)
-        serializer = SummaryTemplateEnhanceRequestSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        result = enhance_summary_template_wording(
-            serializer.validated_data["sections"],
-            serializer.validated_data["extra_instructions"],
-        )
-        if result is None:
-            return Response(
-                {"detail": "Could not enhance this template's wording right now. Try again."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        return Response({"sections": serializer.validated_data["sections"], **result})
-
-
 class OrganizationAuditLogView(APIView):
     """This hospital's own PHI-access trail — who looked at what, when.
 
@@ -324,7 +226,7 @@ class NotificationMarkReadView(APIView):
 
         try:
             notification = Notification.objects.get(organization=org, pk=notification_id)
-        except (Notification.DoesNotExist, DjangoValidationError, ValueError):
+        except Notification.DoesNotExist, DjangoValidationError, ValueError:
             return Response({"detail": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
 
         notification.mark_read()

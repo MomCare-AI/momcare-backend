@@ -298,18 +298,11 @@ def _format_group(snapshot: dict, field_names: list[str]) -> str:
     return "\n".join(f"- {key}: {_format_snapshot_value(snapshot[key])}" for key in field_names)
 
 
-def _resolve_active_template(organization):
-    """Precedence for which AISummaryTemplate shapes a summary's data_lines
-    (and extra_instructions): the organization's own active template, else
-    the platform's active template, else None (the caller falls back to the
-    built-in default layout, no extra instructions). Deliberately picks
-    exactly one source rather than merging -- two templates disagreeing
-    about where a field belongs, or what extra wording applies, has no
-    sensible merge, unlike the retired AIInstructionPreset system this
-    replaced, which stacked platform + org text together."""
-    org_template = AISummaryTemplate.objects.filter(organization=organization, is_active=True).first()
-    if org_template is not None:
-        return org_template
+def _resolve_active_template():
+    """The platform's single active AISummaryTemplate, or None (the caller
+    falls back to the built-in default layout). Hospitals have no templates
+    of their own (removed 2026-10-01), so there is no per-organization
+    precedence any more -- every patient's summary uses this one."""
     return AISummaryTemplate.objects.filter(organization__isnull=True, is_active=True).first()
 
 
@@ -330,17 +323,11 @@ def _build_prompt(
             f"Vitals & Risk:\n{_format_group(snapshot, _VITALS_AND_RISK_FIELDS)}\n\n"
             f"Care Team & Activity:\n{_format_group(snapshot, _CARE_TEAM_AND_ACTIVITY_FIELDS)}"
         )
-    sections = [
-        _BASE_PROMPT.format(
-            max_words=config.max_words,
-            data_lines=data_lines,
-            closing_instruction=_DEACTIVATED_CLOSING if deactivated else _ACTIVE_CLOSING,
-        ),
-    ]
-    extra_instructions = template.extra_instructions if template is not None else ""
-    if extra_instructions:
-        sections.append(extra_instructions)
-    return "\n\n".join(sections)
+    return _BASE_PROMPT.format(
+        max_words=config.max_words,
+        data_lines=data_lines,
+        closing_instruction=_DEACTIVATED_CLOSING if deactivated else _ACTIVE_CLOSING,
+    )
 
 
 def _max_tokens_for(max_words: int) -> int:
@@ -397,7 +384,7 @@ def generate_patient_summary(patient, *, deactivated: bool = False, use_rls_bypa
         with read_scope():
             snapshot = _build_data_snapshot(patient)
             config = get_ai_config()
-            template = _resolve_active_template(patient.organization)
+            template = _resolve_active_template()
             prompt = _build_prompt(
                 snapshot,
                 config,
@@ -515,12 +502,14 @@ TEMPLATE_FIELD_VOCABULARY = (
 )
 
 
-def validate_template_sections(sections) -> list[str]:
+def validate_template_sections(sections, *, allow_missing: bool = False) -> list[str]:
     """Every field in TEMPLATE_FIELD_VOCABULARY must appear exactly once
     across all sections -- nothing less (a template can't hide a field by
     omitting it), nothing more (a template can't reference a field that
     doesn't exist). Returns a list of human-readable error strings; an empty
-    list means the sections are valid. Never raises -- the caller (the
+    list means the sections are valid. ``allow_missing`` skips the "every field
+    must appear" check, for the review step that reports missing fields as a
+    friendly alert instead of an error. Never raises -- the caller (the
     serializer) decides what an error list means for the response."""
     errors: list[str] = []
     if not isinstance(sections, list) or not sections:
@@ -539,7 +528,7 @@ def validate_template_sections(sections) -> list[str]:
             else:
                 seen.append(field)
 
-    missing = [f for f in TEMPLATE_FIELD_VOCABULARY if f not in seen]
+    missing = [] if allow_missing else [f for f in TEMPLATE_FIELD_VOCABULARY if f not in seen]
     for field in missing:
         errors.append(f"'{field}' is missing -- every field must appear somewhere.")
 
@@ -551,20 +540,15 @@ def validate_template_sections(sections) -> list[str]:
 
 
 def activate_summary_template(template: AISummaryTemplate) -> None:
-    """At most one active template per scope. ``organization=template.organization``
-    scopes the "deactivate the others" step correctly for both tiers,
-    including the platform tier (organization=None matches only other
-    organization=None rows -- NULL never matches NULL in a WHERE clause via
-    ``=``, but Django's ORM ``filter(organization=None)`` compiles to
-    ``organization_id IS NULL``, not ``= NULL``, so this works)."""
+    """At most one active template, platform-wide. The advisory lock
+    serializes two concurrent activations (see _lock_scope)."""
     if template.is_active:
         raise ActivationStateError("This template is already active.")
     with transaction.atomic():
-        _lock_scope("summary_template", template.organization_id)
-        AISummaryTemplate.objects.filter(
-            organization=template.organization,
-            is_active=True,
-        ).exclude(pk=template.pk).update(is_active=False)
+        _lock_scope("summary_template", None)
+        AISummaryTemplate.objects.filter(organization__isnull=True, is_active=True).exclude(pk=template.pk).update(
+            is_active=False,
+        )
         template.is_active = True
         template.activated_at = timezone.now()
         template.save(update_fields=["is_active", "activated_at", "updated_at"])
@@ -578,9 +562,7 @@ def deactivate_summary_template(template: AISummaryTemplate) -> None:
 
 
 # Fixed, made-up data -- never a real patient. Used only to render a preview
-# of a candidate template during AI-assisted authoring, at both tiers (the
-# platform tier has no single hospital's patient to reach for anyway; using
-# sample data at both keeps the mechanism identical and keeps no real PHI in
+# of a candidate template during platform-admin authoring (no real PHI in
 # what is fundamentally a design/testing tool). Shape matches
 # _build_data_snapshot()'s output exactly -- every TEMPLATE_FIELD_VOCABULARY
 # key is present.
@@ -618,90 +600,42 @@ _SAMPLE_SNAPSHOT = {
     "has_open_alert": False,
 }
 
-_ENHANCE_PROMPT = """You are helping a hospital administrator refine the wording of a clinical summary template's extra instructions. These get appended to the prompt every time a real summary is generated for a real patient.
 
-Rules -- all are hard requirements, never break any:
-- You may only refer to these {field_count} fields -- never mention or imply any other fact about a patient, since no other data will ever be available to fill it in:
-{field_list}
-- The administrator's draft is {draft_word_count} words. Stay close to that length -- polish grammar and clarity only. Never more than roughly double the original word count, and never more than {limit} words regardless.
-- Preserve the administrator's actual intent exactly. Do not invent new guidance they never asked for, and do not turn a short instruction into an elaborate, summary-like passage.
+def review_summary_template(sections) -> dict | None:
+    """The review/"enhance" step of authoring a template. ``sections`` is the
+    admin's draft layout, which may be incomplete.
 
-The administrator's current draft: "{draft}"
+    If any of the TEMPLATE_FIELD_VOCABULARY fields is not yet placed in a
+    section, nothing is generated -- the admin gets back exactly which fields
+    are still missing, to add before the template can be reviewed or saved.
+    Once every field is covered, renders the entire summary exactly as a
+    patient's page would show it, using fixed sample data (never a real
+    patient). Returns None only if that preview call fails after retrying.
+    Stateless: nothing is saved here."""
+    placed = {f for s in sections for f in s["fields"]}
+    missing = [f for f in TEMPLATE_FIELD_VOCABULARY if f not in placed]
+    if missing:
+        return {
+            "complete": False,
+            "missing_fields": missing,
+            "message": "Add the remaining fields to your template before reviewing it: " + ", ".join(missing) + ".",
+            "preview_text": None,
+        }
 
-Respond with ONLY the improved instructions text, no commentary, no quotation marks around it, no markdown."""
-
-_NO_EXTRA_INSTRUCTIONS_MESSAGE = (
-    "No extra instructions written yet. The summary will still include all the standard fields "
-    "for this template -- write something here only if you want to add guidance beyond that."
-)
-
-
-def enhance_summary_template_wording(sections: list, extra_instructions: str) -> dict | None:
-    """The AI-assisted step of authoring a template -- deliberately narrow.
-    The admin builds ``sections`` (which field goes in which group)
-    entirely by hand; 17 fields is simple enough that arranging them
-    doesn't need AI help, a call already made and not revisited here. This
-    only ever polishes the *wording* of ``extra_instructions``, constrained
-    to (a) the fixed field vocabulary -- it can't introduce a fact to
-    mention that isn't one of the 17 -- and (b) staying close to the
-    draft's own length, not ballooning toward the platform's full word
-    budget.
-
-    A blank draft is never sent to the AI at all -- there is nothing to
-    enhance, so this states that plainly instead of fabricating something,
-    the same "never invent" rule that governs the real summary. Caught
-    live: the old code explicitly asked the AI to "suggest a short, useful
-    starting point" from nothing, which produced a ~47-word block that
-    literally listed every field name in prose -- reading like a
-    miniature summary, not a short instruction. A genuinely short draft
-    (e.g. 3 words) was also getting expanded well past its own length,
-    because the only ceiling given to the model was the platform's full
-    150-word summary limit, with no signal to stay close to the original.
-
-    Also renders a live preview using fixed sample data (never a real
-    patient), the same way the real save-time summary will look, using the
-    caller's own ``sections`` unchanged plus the (possibly blank) wording.
-    Returns None only if a non-blank draft's enhance call itself fails
-    after retrying; if only the preview call fails, the wording is still
-    returned with preview_text=None rather than discarding real,
-    already-produced work over a second, independent transient failure."""
     config = get_ai_config()
-    draft = extra_instructions.strip()
-
-    message = None
-    if not draft:
-        enhanced = ""
-        message = _NO_EXTRA_INSTRUCTIONS_MESSAGE
-    else:
-        prompt = _ENHANCE_PROMPT.format(
-            field_count=len(TEMPLATE_FIELD_VOCABULARY),
-            field_list="\n".join(f"- {field}" for field in TEMPLATE_FIELD_VOCABULARY),
-            limit=config.max_words,
-            draft_word_count=len(draft.split()),
-            draft=draft,
-        )
-        raw_enhanced = generate_with_retries(
-            prompt,
-            model=config.current_model,
-            max_tokens=_max_tokens_for(config.max_words),
-        )
-        if raw_enhanced is None:
-            return None
-        enhanced = raw_enhanced
-
-    draft_template = AISummaryTemplate(sections=sections, extra_instructions=enhanced)
+    draft_template = AISummaryTemplate(sections=sections)
     preview_prompt = _build_prompt(_SAMPLE_SNAPSHOT, config, deactivated=False, template=draft_template)
     preview_text = generate_with_retries(
         preview_prompt,
         model=config.current_model,
         max_tokens=_max_tokens_for(config.max_words),
     )
-    result = {
-        "extra_instructions": enhanced,
-        "word_count": len(enhanced.split()),
+    if preview_text is None:
+        return None
+    return {
+        "complete": True,
+        "missing_fields": [],
+        "word_count": len(preview_text.split()),
         "word_limit": config.max_words,
         "preview_text": preview_text,
     }
-    if message is not None:
-        result["message"] = message
-    return result

@@ -32,10 +32,6 @@ from momcare_platform.core.monitoring.api.views import (
 from momcare_platform.core.organization.api.views import (
     MyOrganizationView,
     NotificationMarkReadView,
-    OrganizationAISummaryTemplateActivateView,
-    OrganizationAISummaryTemplateDeactivateView,
-    OrganizationAISummaryTemplateEnhanceView,
-    OrganizationAISummaryTemplateListCreateView,
     OrganizationAuditLogView,
     OrganizationConfidenceThresholdView,
     OrganizationDeactivationRequestView,
@@ -197,26 +193,6 @@ core_urlpatterns = [
         r"^organization/me/confidence-threshold/?$",
         OrganizationConfidenceThresholdView.as_view(),
         name="organization-confidence-threshold",
-    ),
-    re_path(
-        r"^organization/me/summary-templates/?$",
-        OrganizationAISummaryTemplateListCreateView.as_view(),
-        name="organization-summary-templates",
-    ),
-    re_path(
-        r"^organization/me/summary-templates/(?P<template_id>[0-9a-f-]+)/activate/?$",
-        OrganizationAISummaryTemplateActivateView.as_view(),
-        name="organization-summary-template-activate",
-    ),
-    re_path(
-        r"^organization/me/summary-templates/(?P<template_id>[0-9a-f-]+)/deactivate/?$",
-        OrganizationAISummaryTemplateDeactivateView.as_view(),
-        name="organization-summary-template-deactivate",
-    ),
-    re_path(
-        r"^organization/me/summary-templates/enhance/?$",
-        OrganizationAISummaryTemplateEnhanceView.as_view(),
-        name="organization-summary-template-enhance",
     ),
     re_path(
         r"^organization/me/deactivation-request/?$",

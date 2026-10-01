@@ -57,7 +57,7 @@
                 ""
               ]
             },
-            "description": "Sign in with **email + password**. No auth required.\n\nEmail is deliberately the only accepted identifier. Phone sign-in was built and then removed: a phone number has no single global format, so the same number reaches the API as `+923001234567`, `0300 1234567` or `03001234567` depending on who typed it, and an exact-match lookup authenticates only the one spelling stored at signup. Matching them properly means normalising every number to E.164, which needs a country to interpret a bare national number against \u2014 a guess the platform cannot safely make. Email has one worldwide format and no such ambiguity.\n\n`User.phone` is still collected for staff and patients \u2014 it is contact information, not a credential.\n\n**Responses**\n- **200** \u2014 `access` token in the body, refresh token in an HttpOnly cookie.\n- **400** \u2014 email or password missing.\n- **401** \u2014 wrong password, unknown address, or a deactivated account. Byte-for-byte the same response in every case, so it cannot be used to discover who has an account here.\n- **403** \u2014 credentials were right, but the hospital is pending/rejected/suspended (`org_status` says which); or, for a self-registered patient specifically, her email is not yet confirmed (`requires_email_verification: true` \u2014 see Patient Signup > Verify Email)."
+            "description": "Sign in with **email + password**. No auth required.\n\nEmail is deliberately the only accepted identifier. Phone sign-in was built and then removed: a phone number has no single global format, so the same number reaches the API as `+923001234567`, `0300 1234567` or `03001234567` depending on who typed it, and an exact-match lookup authenticates only the one spelling stored at signup. Matching them properly means normalising every number to E.164, which needs a country to interpret a bare national number against — a guess the platform cannot safely make. Email has one worldwide format and no such ambiguity.\n\n`User.phone` is still collected for staff and patients — it is contact information, not a credential.\n\n**Responses**\n- **200** — `access` token in the body, refresh token in an HttpOnly cookie.\n- **400** — email or password missing.\n- **401** — wrong password, unknown address, or a deactivated account. Byte-for-byte the same response in every case, so it cannot be used to discover who has an account here.\n- **403** — credentials were right, but the hospital is pending/rejected/suspended (`org_status` says which); or, for a self-registered patient specifically, her email is not yet confirmed (`requires_email_verification: true` — see Patient Signup > Verify Email)."
           },
           "response": []
         },
@@ -134,7 +134,7 @@
                 ""
               ]
             },
-            "description": "The signed-in user's own identity and role.\n\nCarries `requires_password_reset`. It is `true` for an invited staff member who has not yet chosen a password \u2014 send them to the set-password screen rather than the portal."
+            "description": "The signed-in user's own identity and role.\n\nCarries `requires_password_reset`. It is `true` for an invited staff member who has not yet chosen a password — send them to the set-password screen rather than the portal."
           },
           "response": []
         },
@@ -524,7 +524,7 @@
                 }
               ]
             },
-            "description": "**This hospital's own PHI-access trail** \u2014 who looked at what, when. `hospital_admin` only.\n\nEvery request to `/api/patients`, `/api/pregnancies`, or `/api/alerts` writes one row automatically (see `AuditLogMiddleware`) \u2014 this endpoint is the only way to read that trail back. It is a HIPAA-style compliance record, not a general activity feed: read-only everywhere, nothing here is ever created, edited, or deleted through the API.\n\nScoped through the caller's own hospital \u2014 there is no way to see another hospital's entries, and an entry whose user account has since been deleted is invisible to every hospital (it cannot be attributed to one).\n\nAlways newest-first; no free-text `?ordering=`. Narrow with `?action=` (READ/CREATE/UPDATE/DELETE) and/or `?resource=` (patients/alerts/pregnancies).\n\n**Responses**\n- **200** \u2014 paginated `{count, page, page_size, total_pages, next, previous, results}`.\n- **403** \u2014 caller is not this hospital's admin.\n- **404** \u2014 caller has no hospital (e.g. a platform admin \u2014 use Django admin instead)."
+            "description": "**This hospital's own PHI-access trail** — who looked at what, when. `hospital_admin` only.\n\nEvery request to `/api/patients`, `/api/pregnancies`, or `/api/alerts` writes one row automatically (see `AuditLogMiddleware`) — this endpoint is the only way to read that trail back. It is a HIPAA-style compliance record, not a general activity feed: read-only everywhere, nothing here is ever created, edited, or deleted through the API.\n\nScoped through the caller's own hospital — there is no way to see another hospital's entries, and an entry whose user account has since been deleted is invisible to every hospital (it cannot be attributed to one).\n\nAlways newest-first; no free-text `?ordering=`. Narrow with `?action=` (READ/CREATE/UPDATE/DELETE) and/or `?resource=` (patients/alerts/pregnancies).\n\n**Responses**\n- **200** — paginated `{count, page, page_size, total_pages, next, previous, results}`.\n- **403** — caller is not this hospital's admin.\n- **404** — caller has no hospital (e.g. a platform admin — use Django admin instead)."
           },
           "response": []
         },
@@ -585,149 +585,6 @@
             "body": {
               "mode": "raw",
               "raw": "{}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "List Organization Summary Templates",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/organization/me/summary-templates/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "organization",
-                "me",
-                "summary-templates",
-                ""
-              ]
-            },
-            "description": "This hospital's own history of AI Summary templates, newest first -- same shape as the platform tier (`sections` layout + optional `extra_instructions`), scoped to this hospital only.\n\nPermissions: IsAuthenticated + hospital_admin only.\n\nThis hospital's own active template always wins over the platform's when both exist -- see Get AI Summary."
-          },
-          "response": []
-        },
-        {
-          "name": "Create Organization Summary Template",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/organization/me/summary-templates/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "organization",
-                "me",
-                "summary-templates",
-                ""
-              ]
-            },
-            "description": "Add a new template to this hospital's own history. Created inactive -- creating one does not activate it; call Activate Organization Summary Template separately. `organization` in the request body is ignored -- always forced to the caller's own hospital server-side.\n\nPermissions: IsAuthenticated + hospital_admin only.\n\nRequired: `name`, `sections` (every one of the 17 fixed data fields must appear across the sections exactly once). Optional: `extra_instructions` (must not exceed the platform's configured `max_words` or the create is rejected with 400).",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"Risk First\",\n  \"sections\": [\n    {\n      \"label\": \"Vitals & Risk\",\n      \"fields\": [\n        \"gestational_age\",\n        \"current_risk_level\",\n        \"risk_this_month\",\n        \"latest_readings\",\n        \"thirty_day_average\",\n        \"pending_risk_count\",\n        \"has_open_alert\"\n      ]\n    },\n    {\n      \"label\": \"Care Team & Activity\",\n      \"fields\": [\n        \"patient_name\",\n        \"provider_name\",\n        \"nurse_name\",\n        \"care_manager_name\",\n        \"recent_note\",\n        \"recent_note_author\",\n        \"last_monitoring_contact_display\",\n        \"last_reading_display\",\n        \"monitoring_time_display\",\n        \"active_statuses\"\n      ]\n    }\n  ],\n  \"extra_instructions\": \"\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Activate Organization Summary Template",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/organization/me/summary-templates/{{template_id}}/activate/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "organization",
-                "me",
-                "summary-templates",
-                "{{template_id}}",
-                "activate",
-                ""
-              ]
-            },
-            "description": "Make this template the one active template for this hospital -- deactivates whichever template was active before it, in the same transaction.\n\nPermissions: IsAuthenticated + hospital_admin only.\n\n400 if this template is already active. 404 for another hospital's template id or a platform-tier template id, never 403."
-          },
-          "response": []
-        },
-        {
-          "name": "Deactivate Organization Summary Template",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/organization/me/summary-templates/{{template_id}}/deactivate/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "organization",
-                "me",
-                "summary-templates",
-                "{{template_id}}",
-                "deactivate",
-                ""
-              ]
-            },
-            "description": "Turn off this hospital's active template. If nothing else is activated afterward, this hospital falls back to the platform's own active template, or the built-in default layout if the platform has none either -- not an error state.\n\nPermissions: IsAuthenticated + hospital_admin only.\n\n400 if this template is not currently active. 404 for another hospital's template id or a platform-tier template id, never 403."
-          },
-          "response": []
-        },
-        {
-          "name": "Enhance Organization Summary Template Wording",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/organization/me/summary-templates/enhance/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "organization",
-                "me",
-                "summary-templates",
-                "enhance",
-                ""
-              ]
-            },
-            "description": "AI-assisted wording for this hospital's own draft, never structure -- same shape as the platform-tier equivalent. Send the `sections` you've already built by hand plus your current `extra_instructions` draft; get back polished wording, a word count, and a live preview using fixed sample data (never one of this hospital's real patients). Stateless.\n\nPermissions: IsAuthenticated + hospital_admin only.\n\n503 if the AI call fails after retrying. To actually keep a result, save it through Create Organization Summary Template.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"sections\": [\n    {\n      \"label\": \"Vitals & Risk\",\n      \"fields\": [\n        \"gestational_age\",\n        \"current_risk_level\",\n        \"risk_this_month\",\n        \"latest_readings\",\n        \"thirty_day_average\",\n        \"pending_risk_count\",\n        \"has_open_alert\"\n      ]\n    },\n    {\n      \"label\": \"Care Team & Activity\",\n      \"fields\": [\n        \"patient_name\",\n        \"provider_name\",\n        \"nurse_name\",\n        \"care_manager_name\",\n        \"recent_note\",\n        \"recent_note_author\",\n        \"last_monitoring_contact_display\",\n        \"last_reading_display\",\n        \"monitoring_time_display\",\n        \"active_statuses\"\n      ]\n    }\n  ],\n  \"extra_instructions\": \"mention medication adherence\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1090,7 +947,7 @@
                 ""
               ]
             },
-            "description": "Create a staff account and email them an invitation to activate it.\n\nPermissions: IsAuthenticated, and either hospital_admin (any location) or a location's own manager (only into location(s) they themselves manage). A staff member who manages no location gets 403.\n\n**No password is accepted.** The account is created with an UNUSABLE password and cannot be signed into at all; MomCare emails a one-time link and the staff member chooses their own password. Nobody \u2014 not even the admin who created the account \u2014 ever knows it. That is what makes \"this clinician acknowledged the alert\" provable rather than merely recorded.\n\nRequired: `email` (globally unique \u2014 400 if registered anywhere on the platform), `role_code` (`hospital_admin`/`provider`/`nurse`/`care_manager`, never `platform_admin` or `patient`).\nOptional: `first_name`, `last_name`.\n`locations`: required (at least one) for provider/nurse/care_manager; optional for hospital_admin. A non-admin caller may only list locations they manage.\n\n**The activation flow**\n1. This call \u2192 account created, `has_activated: false`, invitation emailed.\n2. Staff clicks the link \u2192 frontend calls `Auth > Verify Reset Token` to check it is still valid.\n3. They choose a password \u2192 `Auth > Reset Password` with the `uid`/`token` from the link. This clears `requires_password_reset` and they can sign in.\n\nThe link is single-use by construction: the token is derived partly from the password hash, so setting a password invalidates it. If it expires, they use `Auth > Forgot Password` for a fresh one \u2014 no admin involvement needed.\n\nReturns 201. `has_activated` on the staff row stays `false` until step 3.\n\n**`phone` is optional contact information, not a credential.** Sign-in is by email only (see Auth > Login). It is stored so the hospital can reach a clinician about an alert away from the portal. It is UNIQUE platform-wide, so a number already held by another account \u2014 at any hospital \u2014 returns **400**, not 500. Omit it or send `\"\"` and it is stored as NULL."
+            "description": "Create a staff account and email them an invitation to activate it.\n\nPermissions: IsAuthenticated, and either hospital_admin (any location) or a location's own manager (only into location(s) they themselves manage). A staff member who manages no location gets 403.\n\n**No password is accepted.** The account is created with an UNUSABLE password and cannot be signed into at all; MomCare emails a one-time link and the staff member chooses their own password. Nobody — not even the admin who created the account — ever knows it. That is what makes \"this clinician acknowledged the alert\" provable rather than merely recorded.\n\nRequired: `email` (globally unique — 400 if registered anywhere on the platform), `role_code` (`hospital_admin`/`provider`/`nurse`/`care_manager`, never `platform_admin` or `patient`).\nOptional: `first_name`, `last_name`.\n`locations`: required (at least one) for provider/nurse/care_manager; optional for hospital_admin. A non-admin caller may only list locations they manage.\n\n**The activation flow**\n1. This call → account created, `has_activated: false`, invitation emailed.\n2. Staff clicks the link → frontend calls `Auth > Verify Reset Token` to check it is still valid.\n3. They choose a password → `Auth > Reset Password` with the `uid`/`token` from the link. This clears `requires_password_reset` and they can sign in.\n\nThe link is single-use by construction: the token is derived partly from the password hash, so setting a password invalidates it. If it expires, they use `Auth > Forgot Password` for a fresh one — no admin involvement needed.\n\nReturns 201. `has_activated` on the staff row stays `false` until step 3.\n\n**`phone` is optional contact information, not a credential.** Sign-in is by email only (see Auth > Login). It is stored so the hospital can reach a clinician about an alert away from the portal. It is UNIQUE platform-wide, so a number already held by another account — at any hospital — returns **400**, not 500. Omit it or send `\"\"` and it is stored as NULL."
           },
           "response": []
         },
@@ -1116,7 +973,7 @@
           "response": []
         },
         {
-          "name": "Update Staff Profile \u2014 Self-Service",
+          "name": "Update Staff Profile — Self-Service",
           "request": {
             "method": "PATCH",
             "header": [
@@ -1151,7 +1008,7 @@
           "response": []
         },
         {
-          "name": "Update Staff Profile \u2014 Admin/Manager",
+          "name": "Update Staff Profile — Admin/Manager",
           "request": {
             "method": "PATCH",
             "header": [
@@ -1181,7 +1038,7 @@
                 ""
               ]
             },
-            "description": "Hitting the exact same URL as Update Staff Profile (Self-Service) above, but as hospital_admin or a manager of (at least one of) this staff member's locations -- the server picks the wider serializer automatically based on who's calling, same endpoint either way.\n\nPermissions: IsAuthenticated + hospital_admin (any staff at the hospital) or a manager of one of this person's locations.\n\nWritable: everything the self-service path allows, plus `email`, `first_name`, `last_name`, `phone`, `role_code`, and `locations`. All fields optional (omit one to leave it untouched).\n\nSame escalation guard as onboarding: a non-admin caller can never set `role_code` to `hospital_admin`, and may only assign `locations` they themselves manage -- both return 400, not a silent no-op.\n\n**`password` is not settable here.** An admin can change someone's role, locations and credentialing details, but never their password \u2014 see Invite Staff. A staff member who is locked out uses `Auth > Forgot Password` themselves.\n\n**`phone` is optional contact information, not a credential.** Sign-in is by email only (see Auth > Login). It is stored so the hospital can reach a clinician about an alert away from the portal. It is UNIQUE platform-wide, so a number already held by another account \u2014 at any hospital \u2014 returns **400**, not 500. Omit it or send `\"\"` and it is stored as NULL."
+            "description": "Hitting the exact same URL as Update Staff Profile (Self-Service) above, but as hospital_admin or a manager of (at least one of) this staff member's locations -- the server picks the wider serializer automatically based on who's calling, same endpoint either way.\n\nPermissions: IsAuthenticated + hospital_admin (any staff at the hospital) or a manager of one of this person's locations.\n\nWritable: everything the self-service path allows, plus `email`, `first_name`, `last_name`, `phone`, `role_code`, and `locations`. All fields optional (omit one to leave it untouched).\n\nSame escalation guard as onboarding: a non-admin caller can never set `role_code` to `hospital_admin`, and may only assign `locations` they themselves manage -- both return 400, not a silent no-op.\n\n**`password` is not settable here.** An admin can change someone's role, locations and credentialing details, but never their password — see Invite Staff. A staff member who is locked out uses `Auth > Forgot Password` themselves.\n\n**`phone` is optional contact information, not a credential.** Sign-in is by email only (see Auth > Login). It is stored so the hospital can reach a clinician about an alert away from the portal. It is UNIQUE platform-wide, so a number already held by another account — at any hospital — returns **400**, not 500. Omit it or send `\"\"` and it is stored as NULL."
           },
           "response": []
         },
@@ -1335,7 +1192,7 @@
                 ""
               ]
             },
-            "description": "An EXTERNAL clinician referenced on a patient's record \u2014 the doctor at the rural clinic who referred her in and stays involved, or a specialist she also sees elsewhere.\n\n**Not platform staff**: no login, no role, no permissions, never appears in /api/staff/. Do not confuse with:\n- **Staff** (/api/staff/) \u2014 your own employees, who log in and hold care-team slots.\n- **Patient.emergency_contact_*** \u2014 her own husband or mother, stored on HER row because it is personal to her.\n\nThis is a table of its own precisely because ONE such clinician is shared across MANY patients: change their phone number once, not once per patient. `patient_count` on each row shows how many patients currently reference them.\n\nScoped to your hospital \u2014 `organization` is taken from your token, never the request body, and another hospital's referral list is invisible (404, never 403).\n\nPermissions to READ: IsAuthenticated + any hospital-side role \u2014 a nurse needs the referring doctor's number to make a call.\n\n`search` matches name, email or phone. Standard pagination envelope."
+            "description": "An EXTERNAL clinician referenced on a patient's record — the doctor at the rural clinic who referred her in and stays involved, or a specialist she also sees elsewhere.\n\n**Not platform staff**: no login, no role, no permissions, never appears in /api/staff/. Do not confuse with:\n- **Staff** (/api/staff/) — your own employees, who log in and hold care-team slots.\n- **Patient.emergency_contact_*** — her own husband or mother, stored on HER row because it is personal to her.\n\nThis is a table of its own precisely because ONE such clinician is shared across MANY patients: change their phone number once, not once per patient. `patient_count` on each row shows how many patients currently reference them.\n\nScoped to your hospital — `organization` is taken from your token, never the request body, and another hospital's referral list is invisible (404, never 403).\n\nPermissions to READ: IsAuthenticated + any hospital-side role — a nurse needs the referring doctor's number to make a call.\n\n`search` matches name, email or phone. Standard pagination envelope."
           },
           "response": []
         },
@@ -1360,7 +1217,7 @@
                 ""
               ]
             },
-            "description": "Add an external clinician to your hospital's referral list.\n\nPermissions to WRITE: IsAuthenticated + **hospital_admin or care_manager** only. A nurse or provider gets 403 \u2014 curating the referral list is administrative work, not a clinical judgement made mid-shift. (Same Admin|CareManager split the reference platform uses.)\n\nRequired: `name`. Optional: `email`, `phone`, `affiliation`.\n\n`organization` is NEVER read from the body \u2014 sending another hospital's id is ignored and the record still lands in yours.",
+            "description": "Add an external clinician to your hospital's referral list.\n\nPermissions to WRITE: IsAuthenticated + **hospital_admin or care_manager** only. A nurse or provider gets 403 — curating the referral list is administrative work, not a clinical judgement made mid-shift. (Same Admin|CareManager split the reference platform uses.)\n\nRequired: `name`. Optional: `email`, `phone`, `affiliation`.\n\n`organization` is NEVER read from the body — sending another hospital's id is ignored and the record still lands in yours.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"Dr. Ahmed Khan\",\n  \"email\": \"ahmed@ruralclinic.test\",\n  \"phone\": \"03005551234\",\n  \"affiliation\": \"Rural Health Centre, Kahuta\"\n}",
@@ -1390,7 +1247,7 @@
                 ""
               ]
             },
-            "description": "One external clinician, including `patient_count` \u2014 how many of your patients currently reference them.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nAnother hospital's record returns 404, never 403."
+            "description": "One external clinician, including `patient_count` — how many of your patients currently reference them.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nAnother hospital's record returns 404, never 403."
           },
           "response": []
         },
@@ -1416,7 +1273,7 @@
                 ""
               ]
             },
-            "description": "Correct the details. Partial update \u2014 send only what changes.\n\nPermissions: hospital_admin or care_manager only.\n\nThis is the payoff of the shared-record design: one edit updates what every patient referencing this clinician sees.",
+            "description": "Correct the details. Partial update — send only what changes.\n\nPermissions: hospital_admin or care_manager only.\n\nThis is the payoff of the shared-record design: one edit updates what every patient referencing this clinician sees.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"phone\": \"03005559999\",\n  \"affiliation\": \"District HQ Hospital, Rawalpindi\"\n}",
@@ -1446,7 +1303,7 @@
                 ""
               ]
             },
-            "description": "Remove a clinician from the referral list. Returns 204.\n\nPermissions: hospital_admin or care_manager only.\n\nA REAL delete, unlike Patient or Staff \u2014 this is a contact-list entry, not a clinical record. Patients referencing it keep their own record and simply lose the link (`on_delete=SET_NULL`), so nothing clinical is destroyed and the delete is never blocked."
+            "description": "Remove a clinician from the referral list. Returns 204.\n\nPermissions: hospital_admin or care_manager only.\n\nA REAL delete, unlike Patient or Staff — this is a contact-list entry, not a clinical record. Patients referencing it keep their own record and simply lose the link (`on_delete=SET_NULL`), so nothing clinical is destroyed and the delete is never blocked."
           },
           "response": []
         }
@@ -1478,7 +1335,7 @@
                 ""
               ]
             },
-            "description": "A woman signing herself up from the mobile app. **No auth required.**\n\nCreates an account and nothing else \u2014 **no tokens yet**. Her account has no organization and there is no Patient record; that only happens once a hospital approves a later join request.\n\nRequired: `email` (globally unique among *verified* accounts \u2014 see below), `password` (min 8, Django validators), `first_name`. Optional: `last_name`, `phone`.\n\n**201 does not mean she's signed in.** A six-digit code is emailed to her; she must confirm it at **Verify Email** before she can sign in at all \u2014 `LoginView` refuses an unverified patient outright. This is deliberately the *one* signup path on this platform that gets this check: hospital owners are identity-checked by a human reviewer, and staff are invited to a specific address by an admin \u2014 neither needs an OTP on top of that.\n\n**Retrying is safe.** If she abandons this attempt (lost the code, let it expire, mistyped something) and signs up again with the *same* email before verifying, this endpoint quietly replaces the old unverified attempt rather than saying \"email taken\" \u2014 an abandoned first try can never permanently lock her out of her own address. Once verified, that same email is locked for good.",
+            "description": "A woman signing herself up from the mobile app. **No auth required.**\n\nCreates an account and nothing else — **no tokens yet**. Her account has no organization and there is no Patient record; that only happens once a hospital approves a later join request.\n\nRequired: `email` (globally unique among *verified* accounts — see below), `password` (min 8, Django validators), `first_name`. Optional: `last_name`, `phone`.\n\n**201 does not mean she's signed in.** A six-digit code is emailed to her; she must confirm it at **Verify Email** before she can sign in at all — `LoginView` refuses an unverified patient outright. This is deliberately the *one* signup path on this platform that gets this check: hospital owners are identity-checked by a human reviewer, and staff are invited to a specific address by an admin — neither needs an OTP on top of that.\n\n**Retrying is safe.** If she abandons this attempt (lost the code, let it expire, mistyped something) and signs up again with the *same* email before verifying, this endpoint quietly replaces the old unverified attempt rather than saying \"email taken\" — an abandoned first try can never permanently lock her out of her own address. Once verified, that same email is locked for good.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"ayesha@example.test\",\n  \"password\": \"HerOwnPick!2026\",\n  \"first_name\": \"Ayesha\",\n  \"last_name\": \"Bibi\",\n  \"phone\": \"03001234567\"\n}",
@@ -1528,7 +1385,7 @@
                 ""
               ]
             },
-            "description": "The second half of signup. **No auth required** \u2014 she has no token yet; this is what produces her first one.\n\nSubmit the six-digit code emailed to her along with `Sign Up`. On success, sets `is_email_verified=True` and returns real tokens \u2014 she's finally signed in.\n\n**400 for every failure case** \u2014 wrong code, expired (15 minutes), already used, or exhausted (5 wrong attempts invalidates the code entirely, even to the right one afterward) \u2014 all the same generic message. Which one it was is not information worth handing to whoever is submitting codes, same reasoning as `Login`'s wrong-password-vs-unknown-email answer.\n\nIf the code expired or never arrived, use **Resend Verification Code** for a fresh one.",
+            "description": "The second half of signup. **No auth required** — she has no token yet; this is what produces her first one.\n\nSubmit the six-digit code emailed to her along with `Sign Up`. On success, sets `is_email_verified=True` and returns real tokens — she's finally signed in.\n\n**400 for every failure case** — wrong code, expired (15 minutes), already used, or exhausted (5 wrong attempts invalidates the code entirely, even to the right one afterward) — all the same generic message. Which one it was is not information worth handing to whoever is submitting codes, same reasoning as `Login`'s wrong-password-vs-unknown-email answer.\n\nIf the code expired or never arrived, use **Resend Verification Code** for a fresh one.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"ayesha@example.test\",\n  \"code\": \"123456\"\n}",
@@ -1564,7 +1421,7 @@
                 ""
               ]
             },
-            "description": "A fresh code, if the first one expired or never arrived. **No auth required.**\n\n**Always answers 200 with the same generic message**, whether or not that email has a pending signup \u2014 confirming \"yes, someone started signing up with this address\" is itself information a stranger should not get from this endpoint. Same enumeration reasoning as `Forgot Password`.\n\nIssuing a new code invalidates any earlier one for that account \u2014 at most one code is ever live at a time.",
+            "description": "A fresh code, if the first one expired or never arrived. **No auth required.**\n\n**Always answers 200 with the same generic message**, whether or not that email has a pending signup — confirming \"yes, someone started signing up with this address\" is itself information a stranger should not get from this endpoint. Same enumeration reasoning as `Forgot Password`.\n\nIssuing a new code invalidates any earlier one for that account — at most one code is ever live at a time.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"ayesha@example.test\"\n}",
@@ -1603,7 +1460,7 @@
                 }
               ]
             },
-            "description": "The hospitals she can ask to join.\n\nPermissions: any authenticated user.\n\nOnly **approved and active** hospitals appear \u2014 one still under review is not hers to discover. Returns public fields only (name, city, country, phone): never patient counts, licences or staff.\n\n`search` matches name or city; `city` filters exactly. Deliberately a searchable list, NOT distance-sorted \u2014 real 'hospitals near me' needs coordinates the Location model does not carry, and inventing them would be worse than a city filter that is honest about what it is.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
+            "description": "The hospitals she can ask to join.\n\nPermissions: any authenticated user.\n\nOnly **approved and active** hospitals appear — one still under review is not hers to discover. Returns public fields only (name, city, country, phone): never patient counts, licences or staff.\n\n`search` matches name or city; `city` filters exactly. Deliberately a searchable list, NOT distance-sorted — real 'hospitals near me' needs coordinates the Location model does not carry, and inventing them would be worse than a city filter that is honest about what it is.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
           },
           "response": []
         },
@@ -1628,7 +1485,7 @@
                 ""
               ]
             },
-            "description": "Send her details to a hospital and ask to be taken on.\n\nPermissions: IsAuthenticated + **IsPatient**.\n\n`draft` is what she reports about herself. Deliberately a SUBSET of hospital-side onboarding \u2014 no `location`, no `organization`, no care team, no MRN. Every one of those is a hospital's decision and she has no hospital yet.\n\nThe draft is validated NOW (a bad one is a 400 immediately) and **re-validated at approval** before anything is created from it.\n\n**409** if she already has a request waiting with this hospital. **404** if the hospital does not exist or is not approved \u2014 the same response either way.\n\nStill no Patient record at this point.",
+            "description": "Send her details to a hospital and ask to be taken on.\n\nPermissions: IsAuthenticated + **IsPatient**.\n\n`draft` is what she reports about herself. Deliberately a SUBSET of hospital-side onboarding — no `location`, no `organization`, no care team, no MRN. Every one of those is a hospital's decision and she has no hospital yet.\n\nThe draft is validated NOW (a bad one is a 400 immediately) and **re-validated at approval** before anything is created from it.\n\n**409** if she already has a request waiting with this hospital. **404** if the hospital does not exist or is not approved — the same response either way.\n\nStill no Patient record at this point.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"organization\": \"{{organization_id}}\",\n  \"draft\": {\n    \"first_name\": \"Ayesha\",\n    \"last_name\": \"Bibi\",\n    \"phone\": \"03001234567\",\n    \"cnic\": \"61101-7654321-0\",\n    \"blood_group\": \"O+\",\n    \"consent_date\": \"2026-02-10\",\n    \"lmp\": \"2026-02-01\",\n    \"gravida\": 2,\n    \"para\": 1,\n    \"previous_c_section\": \"yes\",\n    \"chronic_hypertension\": \"no\"\n  }\n}",
@@ -1667,7 +1524,7 @@
                 }
               ]
             },
-            "description": "Every request she has sent, with its status and the hospital's decision note.\n\nPermissions: IsAuthenticated + IsPatient.\n\nShe has no organization, so Postgres RLS \u2014 correctly fail-closed \u2014 would show her nothing. This endpoint runs inside `bypass_rls()` with an explicit `user=request.user` filter instead: the filter, not the policy, is what keeps her to her own rows here.\n\nOnce approved, `patient_id` points at her new clinical record.\n\nStatuses: `pending`, `approved`, `rejected`, and `withdrawn` \u2014 the last meaning she was accepted elsewhere while this one was still open.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
+            "description": "Every request she has sent, with its status and the hospital's decision note.\n\nPermissions: IsAuthenticated + IsPatient.\n\nShe has no organization, so Postgres RLS — correctly fail-closed — would show her nothing. This endpoint runs inside `bypass_rls()` with an explicit `user=request.user` filter instead: the filter, not the policy, is what keeps her to her own rows here.\n\nOnce approved, `patient_id` points at her new clinical record.\n\nStatuses: `pending`, `approved`, `rejected`, and `withdrawn` — the last meaning she was accepted elsewhere while this one was still open.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
           },
           "response": []
         },
@@ -1703,7 +1560,7 @@
                 ""
               ]
             },
-            "description": "**The patient takes back a request she has not had answered yet.** Her own token, not the hospital's.\n\nOnly works while the request is still `pending`:\n\n- **200** \u2014 withdrawn. The slot is released, so she can apply to that same hospital again (the one-pending-request-per-hospital rule counts only pending ones).\n- **404** \u2014 not her request. Scoped to her own rows *before* the lookup, so another woman's request is 'not found' rather than found-and-refused.\n- **409** \u2014 already `approved`, `rejected`, or `withdrawn`. Approval created a real Patient row and a care relationship; undoing that is a discharge the hospital performs, not a POST from the phone. Withdrawing a rejection would rewrite the hospital's record of a decision it actually made.\n- **403** \u2014 hospital staff calling it. Withdraw is hers alone; a hospital declining someone is a *rejection*, recorded with who decided it.\n\n**There is deliberately no edit endpoint.** The `draft` is what staff read when deciding, so it must not change under them \u2014 otherwise they could approve details they never saw. Withdraw and send a new request instead."
+            "description": "**The patient takes back a request she has not had answered yet.** Her own token, not the hospital's.\n\nOnly works while the request is still `pending`:\n\n- **200** — withdrawn. The slot is released, so she can apply to that same hospital again (the one-pending-request-per-hospital rule counts only pending ones).\n- **404** — not her request. Scoped to her own rows *before* the lookup, so another woman's request is 'not found' rather than found-and-refused.\n- **409** — already `approved`, `rejected`, or `withdrawn`. Approval created a real Patient row and a care relationship; undoing that is a discharge the hospital performs, not a POST from the phone. Withdrawing a rejection would rewrite the hospital's record of a decision it actually made.\n- **403** — hospital staff calling it. Withdraw is hers alone; a hospital declining someone is a *rejection*, recorded with who decided it.\n\n**There is deliberately no edit endpoint.** The `draft` is what staff read when deciding, so it must not change under them — otherwise they could approve details they never saw. Withdraw and send a new request instead."
           },
           "response": []
         }
@@ -1728,7 +1585,7 @@
                 ""
               ]
             },
-            "description": "Women asking to join YOUR hospital.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nScoped on the request's own `organization` column \u2014 another hospital's queue is invisible. Filter with `status=pending|approved|rejected`.\n\nEach row carries her `draft` plus `applicant_email` / `applicant_name`."
+            "description": "Women asking to join YOUR hospital.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nScoped on the request's own `organization` column — another hospital's queue is invisible. Filter with `status=pending|approved|rejected`.\n\nEach row carries her `draft` plus `applicant_email` / `applicant_name`."
           },
           "response": []
         },
@@ -1755,7 +1612,7 @@
                 ""
               ]
             },
-            "description": "Accept her, and create her clinical record.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n**This is not a second creation path.** Approval re-validates her draft and then calls the same `onboard_patient()` a walk-in goes through, so a self-registered patient and a walk-in are the same kind of record. It also links her login to the new Patient (`patient.user`), so she can see her own record in the app.\n\nIf she reported an LMP or EDD, a pregnancy is opened with her obstetric history carried across.\n\n**409** if the request was already decided. **404** if it belongs to another hospital.\n\nReturns the decided request plus the full new patient record.\n\n**If she asked several hospitals**, the first to approve gets her. Her other pending requests are then marked `withdrawn` automatically \u2014 not `rejected`, because those hospitals never said no.\n\nA second hospital approving afterwards gets **409** ('already accepted by another hospital'), not a crash: one login belongs to one clinical record.",
+            "description": "Accept her, and create her clinical record.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n**This is not a second creation path.** Approval re-validates her draft and then calls the same `onboard_patient()` a walk-in goes through, so a self-registered patient and a walk-in are the same kind of record. It also links her login to the new Patient (`patient.user`), so she can see her own record in the app.\n\nIf she reported an LMP or EDD, a pregnancy is opened with her obstetric history carried across.\n\n**409** if the request was already decided. **404** if it belongs to another hospital.\n\nReturns the decided request plus the full new patient record.\n\n**If she asked several hospitals**, the first to approve gets her. Her other pending requests are then marked `withdrawn` automatically — not `rejected`, because those hospitals never said no.\n\nA second hospital approving afterwards gets **409** ('already accepted by another hospital'), not a crash: one login belongs to one clinical record.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"note\": \"Verified by phone.\"\n}",
@@ -1791,7 +1648,7 @@
                 ""
               ]
             },
-            "description": "Decline the request.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nHer account and her draft both survive \u2014 she can send the same details to a different hospital. No Patient record is created.\n\n`note` is optional and shown to her on her own requests list.\n\n**409** if already decided.",
+            "description": "Decline the request.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nHer account and her draft both survive — she can send the same details to a different hospital. No Patient record is created.\n\n`note` is optional and shown to her on her own requests list.\n\n**409** if already decided.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"note\": \"Outside our catchment area.\"\n}",
@@ -1892,7 +1749,7 @@
                 ""
               ]
             },
-            "description": "Create a patient and, optionally, her current pregnancy \u2014 ONE atomic transaction (patients/services.py::onboard_patient). If any part fails, no patient row is created.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`location` and `organization` are NEVER accepted from the client -- both are resolved server-side from the caller's own hospital, so onboarding cannot place a patient in another tenant.\n\nRequired: `first_name`. Everything else optional.\n\n`cnic` is UNIQUE PER HOSPITAL (not globally -- the same woman may legitimately hold a record at two hospitals). A duplicate within one hospital returns 400 with 'A patient with this CNIC is already registered at this hospital.' Blank CNIC is stored as NULL, so any number of CNIC-less patients coexist fine. `phone` is deliberately NOT unique -- rural households share one number.\n\n`pregnancy.provider` / `.nurse` / `.care_manager` are the care team, one of each at a time. Each is validated three ways: the staff member must belong to YOUR hospital (another hospital's clinician fails as 'does not exist', never confirming they exist elsewhere), their actual role must match the slot (a nurse cannot fill `provider`), and they must not already be at `max_patients` capacity. All three return 400 under `pregnancy`.\n\n`consent_date` is when she agreed to be monitored \u2014 a single optional date, not an event log. A hospital recording consent on paper leaves it blank rather than inventing one.\n\nThe seven obstetric-history answers (`previous_c_section`, `previous_preeclampsia`, `previous_gestational_diabetes`, `previous_preterm_birth`, `chronic_hypertension`, `diabetes`, `multiple_pregnancy`) are plain fields ON the pregnancy. Each is `yes`/`no`/`unknown` and defaults to `unknown` \u2014 deliberately three-state, because \"not asked\" is clinically different from \"no\", and a boolean would silently turn an unknown into a negative. Note the risk model does not currently read them.\n\n`pregnancy` requires at least one of `lmp` or `edd` -- without one, gestational age cannot be derived and no reading can be interpreted.\n\n`program_enrollments` is optional and explicit; today the only valid `program_code` is `rpm` (displayed as 'Maternal Monitoring'). Omitting it opens no enrollment.\n\n`mrn` is SUPPLIED BY YOU, never generated. Hospitals arrive with their own numbering (paper files, lab slips, an older system), and a number this platform invented would become a second competing identifier for the same woman. It is optional -- leave it out and the patient simply has none (stored as NULL, so any number of MRN-less patients coexist). Uniqueness is GLOBAL and case-insensitive (unlike CNIC, which is per-hospital): a duplicate returns 400 on the `mrn` field with 'A patient with this MRN already exists.'\n\nReturns 201 with the full patient detail, including `current_pregnancy` and `consents`.\n\nThere is no separate 'program enrollment' step: MomCare runs one programme, so a patient's enrol-to-discharge episode IS her pregnancy. Open a new one through 'Open New Pregnancy'; close it by setting its `status` and `outcome_date`.",
+            "description": "Create a patient and, optionally, her current pregnancy — ONE atomic transaction (patients/services.py::onboard_patient). If any part fails, no patient row is created.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`location` and `organization` are NEVER accepted from the client -- both are resolved server-side from the caller's own hospital, so onboarding cannot place a patient in another tenant.\n\nRequired: `first_name`. Everything else optional.\n\n`cnic` is UNIQUE PER HOSPITAL (not globally -- the same woman may legitimately hold a record at two hospitals). A duplicate within one hospital returns 400 with 'A patient with this CNIC is already registered at this hospital.' Blank CNIC is stored as NULL, so any number of CNIC-less patients coexist fine. `phone` is deliberately NOT unique -- rural households share one number.\n\n`pregnancy.provider` / `.nurse` / `.care_manager` are the care team, one of each at a time. Each is validated three ways: the staff member must belong to YOUR hospital (another hospital's clinician fails as 'does not exist', never confirming they exist elsewhere), their actual role must match the slot (a nurse cannot fill `provider`), and they must not already be at `max_patients` capacity. All three return 400 under `pregnancy`.\n\n`consent_date` is when she agreed to be monitored — a single optional date, not an event log. A hospital recording consent on paper leaves it blank rather than inventing one.\n\nThe seven obstetric-history answers (`previous_c_section`, `previous_preeclampsia`, `previous_gestational_diabetes`, `previous_preterm_birth`, `chronic_hypertension`, `diabetes`, `multiple_pregnancy`) are plain fields ON the pregnancy. Each is `yes`/`no`/`unknown` and defaults to `unknown` — deliberately three-state, because \"not asked\" is clinically different from \"no\", and a boolean would silently turn an unknown into a negative. Note the risk model does not currently read them.\n\n`pregnancy` requires at least one of `lmp` or `edd` -- without one, gestational age cannot be derived and no reading can be interpreted.\n\n`program_enrollments` is optional and explicit; today the only valid `program_code` is `rpm` (displayed as 'Maternal Monitoring'). Omitting it opens no enrollment.\n\n`mrn` is SUPPLIED BY YOU, never generated. Hospitals arrive with their own numbering (paper files, lab slips, an older system), and a number this platform invented would become a second competing identifier for the same woman. It is optional -- leave it out and the patient simply has none (stored as NULL, so any number of MRN-less patients coexist). Uniqueness is GLOBAL and case-insensitive (unlike CNIC, which is per-hospital): a duplicate returns 400 on the `mrn` field with 'A patient with this MRN already exists.'\n\nReturns 201 with the full patient detail, including `current_pregnancy` and `consents`.\n\nThere is no separate 'program enrollment' step: MomCare runs one programme, so a patient's enrol-to-discharge episode IS her pregnancy. Open a new one through 'Open New Pregnancy'; close it by setting its `status` and `outcome_date`.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"mrn\": \"AC-2026-0042\",\n  \"first_name\": \"Ayesha\",\n  \"last_name\": \"Bibi\",\n  \"date_of_birth\": \"1998-04-12\",\n  \"phone\": \"03001234567\",\n  \"cnic\": \"61101-1234567-8\",\n  \"blood_group\": \"O+\",\n  \"emergency_contact_name\": \"Imran Bibi\",\n  \"emergency_contact_phone\": \"03007654321\",\n  \"emergency_contact_relation\": \"husband\",\n  \"emergency_contact_email\": \"imran@example.test\",\n  \"pregnancy\": {\n    \"lmp\": \"2026-02-01\",\n    \"gravida\": 2,\n    \"para\": 1,\n    \"provider\": \"{{provider_staff_id}}\",\n    \"nurse\": \"{{nurse_staff_id}}\",\n    \"care_manager\": \"{{care_manager_staff_id}}\",\n    \"previous_c_section\": \"yes\",\n    \"previous_preeclampsia\": \"no\",\n    \"chronic_hypertension\": \"unknown\"\n  },\n  \"consent_date\": \"2026-02-10\"\n}",
@@ -2138,7 +1995,7 @@
                 }
               ]
             },
-            "description": "Administrative and care-continuity GAPS \u2014 cases where something procedural is missing, independent of whether today's vitals look bad.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nFlags active pregnancies with: no reading in 7+ days, no obstetric risk history ever answered, or no lead clinician (including one who has since been deactivated -- an assignment to someone who has left is as good as no assignment once alerts start routing).\n\nRows with the MOST gaps sort first. The two day-thresholds are administrative defaults, not clinically validated.\n\n`assigned_to=me` narrows to the caller's own caseload, same semantics as the patient list.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
+            "description": "Administrative and care-continuity GAPS — cases where something procedural is missing, independent of whether today's vitals look bad.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nFlags active pregnancies with: no reading in 7+ days, no obstetric risk history ever answered, or no lead clinician (including one who has since been deactivated -- an assignment to someone who has left is as good as no assignment once alerts start routing).\n\nRows with the MOST gaps sort first. The two day-thresholds are administrative defaults, not clinically validated.\n\n`assigned_to=me` narrows to the caller's own caseload, same semantics as the patient list.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
           },
           "response": []
         },
@@ -2165,7 +2022,7 @@
                 ""
               ]
             },
-            "description": "Deactivate a patient - never delete. Clinical records are kept.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nHer clinical record survives intact \u2014 consent history, pregnancies and notes are all still readable. Deactivation is reversible; deletion is not offered at all.\n\n`reason` is optional and stored on the record alongside who deactivated her and when.",
+            "description": "Deactivate a patient - never delete. Clinical records are kept.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\nHer clinical record survives intact — consent history, pregnancies and notes are all still readable. Deactivation is reversible; deletion is not offered at all.\n\n`reason` is optional and stored on the record alongside who deactivated her and when.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"reason\": \"Moved out of the catchment area\"\n}",
@@ -2483,7 +2340,7 @@
       "name": "Readings & Risk",
       "item": [
         {
-          "name": "Record a Reading \u2014 Device",
+          "name": "Record a Reading — Device",
           "request": {
             "method": "POST",
             "header": [
@@ -2519,7 +2376,7 @@
           "response": []
         },
         {
-          "name": "Record a Reading \u2014 Manual",
+          "name": "Record a Reading — Manual",
           "request": {
             "method": "POST",
             "header": [
@@ -2584,7 +2441,7 @@
           "response": []
         },
         {
-          "name": "List Readings \u2014 2 Days",
+          "name": "List Readings — 2 Days",
           "request": {
             "method": "GET",
             "header": [],
@@ -2612,7 +2469,7 @@
           "response": []
         },
         {
-          "name": "List Readings \u2014 1 Week",
+          "name": "List Readings — 1 Week",
           "request": {
             "method": "GET",
             "header": [],
@@ -2640,7 +2497,7 @@
           "response": []
         },
         {
-          "name": "List Readings \u2014 1 Month",
+          "name": "List Readings — 1 Month",
           "request": {
             "method": "GET",
             "header": [],
@@ -2668,7 +2525,7 @@
           "response": []
         },
         {
-          "name": "List Readings \u2014 3 Months",
+          "name": "List Readings — 3 Months",
           "request": {
             "method": "GET",
             "header": [],
@@ -2696,7 +2553,7 @@
           "response": []
         },
         {
-          "name": "List Readings \u2014 6 Months",
+          "name": "List Readings — 6 Months",
           "request": {
             "method": "GET",
             "header": [],
@@ -2724,7 +2581,7 @@
           "response": []
         },
         {
-          "name": "List Readings \u2014 1 Year",
+          "name": "List Readings — 1 Year",
           "request": {
             "method": "GET",
             "header": [],
@@ -2752,7 +2609,7 @@
           "response": []
         },
         {
-          "name": "List Readings \u2014 Custom Date Range",
+          "name": "List Readings — Custom Date Range",
           "request": {
             "method": "GET",
             "header": [],
@@ -2784,7 +2641,7 @@
           "response": []
         },
         {
-          "name": "List Readings \u2014 Blood Pressure, Past Month (with Statistics)",
+          "name": "List Readings — Blood Pressure, Past Month (with Statistics)",
           "request": {
             "method": "GET",
             "header": [],
@@ -3174,7 +3031,7 @@
           "response": []
         },
         {
-          "name": "Create Clinical Tag \u2014 Org-Level",
+          "name": "Create Clinical Tag — Org-Level",
           "request": {
             "method": "POST",
             "header": [
@@ -3208,7 +3065,7 @@
           "response": []
         },
         {
-          "name": "Create Clinical Tag \u2014 Location-Level",
+          "name": "Create Clinical Tag — Location-Level",
           "request": {
             "method": "POST",
             "header": [
@@ -3769,7 +3626,7 @@
           "response": []
         },
         {
-          "name": "Create Note Template \u2014 Org-Level",
+          "name": "Create Note Template — Org-Level",
           "request": {
             "method": "POST",
             "header": [
@@ -3803,7 +3660,7 @@
           "response": []
         },
         {
-          "name": "Create Note Template \u2014 Location-Level",
+          "name": "Create Note Template — Location-Level",
           "request": {
             "method": "POST",
             "header": [
@@ -3945,7 +3802,7 @@
           "response": []
         },
         {
-          "name": "Create Status Label \u2014 Org-Level",
+          "name": "Create Status Label — Org-Level",
           "request": {
             "method": "POST",
             "header": [
@@ -3979,7 +3836,7 @@
           "response": []
         },
         {
-          "name": "Create Status Label \u2014 Location-Level",
+          "name": "Create Status Label — Location-Level",
           "request": {
             "method": "POST",
             "header": [
@@ -4190,7 +4047,7 @@
                 ""
               ]
             },
-            "description": "The platform-wide history of AI Summary templates, newest first -- each carries both a layout (`sections`: an ordered list of {label, fields}) and optional free-form `extra_instructions` wording, saved and activated together as one unit. Immutable once created, never deleted.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\nOnly platform-tier templates are returned here, never any hospital's own (those live under Organization -> List Organization Summary Templates). A hospital's own active template always wins over the platform's when both exist -- see Get AI Summary."
+            "description": "The platform-wide history of AI Summary templates, newest first -- each is a layout (`sections`: an ordered list of {label, fields}). Immutable once created, never deleted. Platform admin is the only place templates exist; hospitals have no template endpoints.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only."
           },
           "response": []
         },
@@ -4217,7 +4074,7 @@
                 ""
               ]
             },
-            "description": "Add a new template to the platform-wide history. Created inactive -- creating one does not activate it; call Activate Platform Summary Template separately.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\nRequired: `name`, `sections` (every one of the 17 fixed data fields must appear across the sections exactly once -- missing, duplicated, or unknown field names are all rejected with 400). Optional: `extra_instructions` (blank-allowed free text, but if given, must not exceed the platform's configured `max_words` -- see Get AI Config -- or the create is rejected with 400; the response always reports `extra_instructions_word_count`).",
+            "description": "Add a new template to the platform-wide history. Created inactive -- creating one does not activate it; call Activate Platform Summary Template separately.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\nRequired: `name`, `sections` (every one of the 17 fixed data fields must appear across the sections exactly once -- missing, duplicated, or unknown field names are all rejected with 400). There is no extra-instructions field.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"RPM Style\",\n  \"sections\": [\n    {\n      \"label\": \"Vitals & Risk\",\n      \"fields\": [\n        \"gestational_age\",\n        \"current_risk_level\",\n        \"risk_this_month\",\n        \"latest_readings\",\n        \"thirty_day_average\",\n        \"pending_risk_count\",\n        \"has_open_alert\"\n      ]\n    },\n    {\n      \"label\": \"Care Team & Activity\",\n      \"fields\": [\n        \"patient_name\",\n        \"provider_name\",\n        \"nurse_name\",\n        \"care_manager_name\",\n        \"recent_note\",\n        \"recent_note_author\",\n        \"last_monitoring_contact_display\",\n        \"last_reading_display\",\n        \"monitoring_time_display\",\n        \"active_statuses\"\n      ]\n    }\n  ],\n  \"extra_instructions\": \"\"\n}",
@@ -4250,7 +4107,7 @@
                 ""
               ]
             },
-            "description": "Make this template the one active platform-wide template -- deactivates whichever template was active before it, in the same transaction, so at most one is ever active at a time.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n400 if this template is already active. 404 for a template id belonging to a specific hospital rather than the platform tier, never 403."
+            "description": "Make this template the one active template used for every patient summary -- deactivates whichever template was active before it, in the same transaction, so at most one is ever active.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n400 if this template is already active."
           },
           "response": []
         },
@@ -4274,12 +4131,12 @@
                 ""
               ]
             },
-            "description": "Turn off the platform-wide active template. If nothing else is activated afterward, every hospital without its own active template falls back to the built-in default layout, no extra instructions -- not an error state.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n400 if this template is not currently active. 404 for a template id belonging to a specific hospital rather than the platform tier, never 403."
+            "description": "Turn off the active template. If nothing else is activated afterward, every patient summary falls back to the built-in default layout -- not an error state.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n400 if this template is not currently active."
           },
           "response": []
         },
         {
-          "name": "Enhance Platform Summary Template Wording",
+          "name": "Review Platform Summary Template",
           "request": {
             "method": "POST",
             "header": [
@@ -4302,7 +4159,7 @@
                 ""
               ]
             },
-            "description": "AI-assisted wording, never structure. Send the `sections` you've already built by hand (17 fields is simple enough that arranging them doesn't need AI help) plus your current `extra_instructions` draft (may be blank); get back polished wording, a word count against the platform's own limit, and a live preview rendered from fixed sample data (never a real patient). Stateless -- nothing is saved here, click it again for another pass. `sections` is echoed back completely unchanged.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n503 if the AI call fails after retrying -- try again. To actually keep a result, save it through Create Platform Summary Template.",
+            "description": "Review step for a draft template. Send the `sections` you've built so far.\n\nIf any of the 17 fields is still missing, the response is `complete: false` with `missing_fields` and a `message` -- show it as an alert asking the admin to add them; no AI call is made.\n\nOnce every field is covered, the response is `complete: true` with `preview_text`: the entire summary as a patient would see it, rendered from fixed sample data (never a real patient), plus `word_count`/`word_limit`. Unknown or duplicated fields are a 400. Stateless -- nothing is saved; save through Create Platform Summary Template.\n\nPermissions: IsAuthenticated + ROLE_PLATFORM_ADMIN only.\n\n503 if the preview AI call fails after retrying -- try again.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"sections\": [\n    {\n      \"label\": \"Vitals & Risk\",\n      \"fields\": [\n        \"gestational_age\",\n        \"current_risk_level\",\n        \"risk_this_month\",\n        \"latest_readings\",\n        \"thirty_day_average\",\n        \"pending_risk_count\",\n        \"has_open_alert\"\n      ]\n    },\n    {\n      \"label\": \"Care Team & Activity\",\n      \"fields\": [\n        \"patient_name\",\n        \"provider_name\",\n        \"nurse_name\",\n        \"care_manager_name\",\n        \"recent_note\",\n        \"recent_note_author\",\n        \"last_monitoring_contact_display\",\n        \"last_reading_display\",\n        \"monitoring_time_display\",\n        \"active_statuses\"\n      ]\n    }\n  ],\n  \"extra_instructions\": \"mention medication adherence\"\n}",

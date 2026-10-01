@@ -1,8 +1,8 @@
-"""Platform-tier AI-assisted template wording --
+"""Platform-tier template review step --
 POST /api/platform-admin/ai-config/summary-templates/enhance/.
-ROLE_PLATFORM_ADMIN only. The admin builds sections by hand and sends
-them plus their current wording draft; this only ever polishes wording,
-never structure. Stateless: nothing is created by calling this."""
+ROLE_PLATFORM_ADMIN only. Missing fields come back as an alert; a complete
+template gets the entire summary previewed from sample data. Stateless:
+nothing is created by calling this."""
 
 import json
 from unittest.mock import patch
@@ -42,95 +42,56 @@ def platform_admin_auth(client):
     return {"HTTP_AUTHORIZATION": f"Bearer {response.json()['access']}"}
 
 
-def test_a_valid_request_returns_enhanced_wording_word_count_and_preview(client, platform_admin_auth):
-    with patch(
-        "momcare_platform.core.ai.openrouter_client.generate",
-        side_effect=["Always mention medication adherence clearly.", "A sample preview."],
-    ):
-        response = client.post(
-            ENHANCE_URL,
-            data=json.dumps({"sections": _full_sections(), "extra_instructions": "mention adherence"}),
-            content_type="application/json",
-            **platform_admin_auth,
-        )
+def _post(client, auth, payload):
+    return client.post(ENHANCE_URL, data=json.dumps(payload), content_type="application/json", **auth)
+
+
+def test_a_complete_template_returns_the_full_preview(client, platform_admin_auth):
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="A sample preview."):
+        response = _post(client, platform_admin_auth, {"sections": _full_sections()})
 
     assert response.status_code == 200
     body = response.json()
-    assert body["extra_instructions"] == "Always mention medication adherence clearly."
-    assert body["word_count"] == 5
-    assert body["word_limit"] == 150
+    assert body["complete"] is True
+    assert body["missing_fields"] == []
     assert body["preview_text"] == "A sample preview."
+    assert body["word_limit"] == 150
     assert body["sections"] == _full_sections()
 
 
-def test_sections_are_echoed_back_unchanged(client, platform_admin_auth):
-    sections = _full_sections("My Layout")
-    with patch(
-        "momcare_platform.core.ai.openrouter_client.generate",
-        side_effect=["Polished.", "Preview."],
-    ):
-        response = client.post(
-            ENHANCE_URL,
-            data=json.dumps({"sections": sections, "extra_instructions": "draft"}),
-            content_type="application/json",
-            **platform_admin_auth,
-        )
+def test_an_incomplete_template_alerts_with_the_missing_fields(client, platform_admin_auth):
+    partial = [{"label": "Partial", "fields": ["patient_name"]}]
 
-    assert response.json()["sections"] == sections
+    with patch("momcare_platform.core.ai.openrouter_client.generate") as gen:
+        response = _post(client, platform_admin_auth, {"sections": partial})
 
-
-def test_nothing_is_saved_by_calling_enhance(client, platform_admin_auth):
-    with patch(
-        "momcare_platform.core.ai.openrouter_client.generate",
-        side_effect=["Polished.", "Preview."],
-    ):
-        client.post(
-            ENHANCE_URL,
-            data=json.dumps({"sections": _full_sections(), "extra_instructions": "draft"}),
-            content_type="application/json",
-            **platform_admin_auth,
-        )
-
-    assert not AISummaryTemplate.objects.exists()
+    gen.assert_not_called()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["complete"] is False
+    assert body["preview_text"] is None
+    assert "patient_name" not in body["missing_fields"]
+    assert len(body["missing_fields"]) == len(TEMPLATE_FIELD_VOCABULARY) - 1
+    assert body["message"]
+    assert body["sections"] == partial
 
 
-def test_invalid_sections_are_rejected(client, platform_admin_auth):
-    incomplete = [{"label": "Incomplete", "fields": ["patient_name"]}]
-
-    response = client.post(
-        ENHANCE_URL,
-        data=json.dumps({"sections": incomplete, "extra_instructions": "draft"}),
-        content_type="application/json",
-        **platform_admin_auth,
-    )
+def test_an_unknown_field_is_still_a_400(client, platform_admin_auth):
+    response = _post(client, platform_admin_auth, {"sections": [{"label": "Bad", "fields": ["made_up_field"]}]})
 
     assert response.status_code == 400
 
 
-def test_extra_instructions_defaults_to_blank_when_omitted(client, platform_admin_auth):
-    with patch(
-        "momcare_platform.core.ai.openrouter_client.generate",
-        side_effect=["Suggested starting wording.", "Preview."],
-    ) as mock_generate:
-        response = client.post(
-            ENHANCE_URL,
-            data=json.dumps({"sections": _full_sections()}),
-            content_type="application/json",
-            **platform_admin_auth,
-        )
+def test_nothing_is_saved_by_calling_it(client, platform_admin_auth):
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="Preview."):
+        _post(client, platform_admin_auth, {"sections": _full_sections()})
 
-    assert response.status_code == 200
-    assert mock_generate.called
+    assert not AISummaryTemplate.objects.exists()
 
 
-def test_returns_503_when_the_enhance_call_fails(client, platform_admin_auth):
+def test_returns_503_when_the_preview_call_fails(client, platform_admin_auth):
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value=None):
-        response = client.post(
-            ENHANCE_URL,
-            data=json.dumps({"sections": _full_sections(), "extra_instructions": "draft"}),
-            content_type="application/json",
-            **platform_admin_auth,
-        )
+        response = _post(client, platform_admin_auth, {"sections": _full_sections()})
 
     assert response.status_code == 503
 
@@ -138,11 +99,6 @@ def test_returns_503_when_the_enhance_call_fails(client, platform_admin_auth):
 def test_a_hospital_admin_is_refused(client, make_hospital, auth):
     hospital = make_hospital("Enhance Platform Endpoint Refusal Hospital")
 
-    response = client.post(
-        ENHANCE_URL,
-        data=json.dumps({"sections": _full_sections(), "extra_instructions": "draft"}),
-        content_type="application/json",
-        **auth(hospital.admin.email),
-    )
+    response = _post(client, auth(hospital.admin.email), {"sections": _full_sections()})
 
     assert response.status_code == 403

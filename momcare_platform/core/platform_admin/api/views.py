@@ -10,15 +10,15 @@ from rest_framework.views import APIView
 from momcare_platform.core.ai import openrouter_client
 from momcare_platform.core.ai.api.serializers import (
     AISummaryTemplateSerializer,
-    SummaryTemplateEnhanceRequestSerializer,
+    SummaryTemplateReviewRequestSerializer,
 )
 from momcare_platform.core.ai.models import AISummaryTemplate
 from momcare_platform.core.ai.services import (
     ActivationStateError,
     activate_summary_template,
     deactivate_summary_template,
-    enhance_summary_template_wording,
     get_ai_config,
+    review_summary_template,
 )
 from momcare_platform.core.common.pagination import DefaultPagination
 from momcare_platform.core.common.permissions import IsPlatformAdmin
@@ -54,8 +54,7 @@ class AIAvailableModelsView(APIView):
 
 
 class AISummaryTemplateListCreateView(APIView):
-    """Platform-tier summary template history -- layout arrangement and
-    optional extra wording, saved and activated together. List/create, never
+    """Summary template history -- the layout of the fixed fields. List/create, never
     edit/delete -- see AISummaryTemplate's own docstring.
 
     create()'s INSERT (organization=None) only satisfies the RLS policy's
@@ -111,28 +110,23 @@ class AISummaryTemplateDeactivateView(APIView):
 
 
 class AISummaryTemplateEnhanceView(APIView):
-    """AI-assisted wording, not structure: the admin builds ``sections`` by
-    hand (17 fields is simple enough not to need AI for that), and sends
-    that plus their current extra_instructions draft; gets back polished
-    wording, a word count against the platform's own limit, and a live
-    preview. Stateless -- nothing is saved here, "click it again" is just
-    calling it again -- and sections are echoed back unchanged, never
-    touched. The preview always uses fixed sample data, never a real
-    patient -- identical at both tiers, since the platform tier has no
-    single hospital's patient to reach for anyway."""
+    """Review step for a draft template. The admin sends their ``sections``;
+    if any of the 17 fields is still missing, gets back ``complete: false``
+    with ``missing_fields`` and a message to show as an alert. Once every
+    field is covered, gets back the entire summary as a patient would see it
+    (rendered from fixed sample data, never a real patient). Stateless --
+    nothing is saved here."""
 
     permission_classes = [IsAuthenticated, IsPlatformAdmin]
 
     def post(self, request):
-        serializer = SummaryTemplateEnhanceRequestSerializer(data=request.data)
+        serializer = SummaryTemplateReviewRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        result = enhance_summary_template_wording(
-            serializer.validated_data["sections"],
-            serializer.validated_data["extra_instructions"],
-        )
+        sections = serializer.validated_data["sections"]
+        result = review_summary_template(sections)
         if result is None:
             return Response(
-                {"detail": "Could not enhance this template's wording right now. Try again."},
+                {"detail": "Could not generate the preview right now. Try again."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        return Response({"sections": serializer.validated_data["sections"], **result})
+        return Response({"sections": sections, **result})

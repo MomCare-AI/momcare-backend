@@ -103,64 +103,46 @@ def test_calling_it_twice_leaves_exactly_one_row(patient):
     assert AISummary.objects.get(patient=patient).content == "Second."
 
 
-def test_the_word_cap_and_active_organization_templates_extra_instructions_reach_the_prompt(patient):
+def test_the_word_cap_reaches_the_prompt(patient):
+    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
+        generate_patient_summary(patient)
+
+    assert "150" in mock_generate.call_args.args[0]
+
+
+def test_an_active_platform_template_shapes_every_patients_prompt(patient):
     template = AISummaryTemplate.objects.create(
-        organization=patient.organization,
-        name="Adherence",
-        sections=_full_sections(),
-        extra_instructions="Always mention medication adherence.",
+        organization=None,
+        name="Platform-wide",
+        sections=[{"label": "Everything Together", "fields": list(TEMPLATE_FIELD_VOCABULARY)}],
     )
     activate_summary_template(template)
 
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
         generate_patient_summary(patient)
 
-    sent_prompt = mock_generate.call_args.args[0]
-    assert "150" in sent_prompt
-    assert "Always mention medication adherence." in sent_prompt
+    assert "Everything Together:" in mock_generate.call_args.args[0]
 
 
-def test_an_inactive_organization_templates_extra_instructions_never_reach_the_prompt(patient):
+def test_a_hospital_level_template_never_reaches_the_prompt(patient):
     AISummaryTemplate.objects.create(
         organization=patient.organization,
-        name="Never activated",
-        sections=_full_sections(),
-        extra_instructions="Should never appear.",
+        name="Stray hospital row",
+        sections=[{"label": "Should Not Appear", "fields": list(TEMPLATE_FIELD_VOCABULARY)}],
+        is_active=True,
     )
 
     with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
         generate_patient_summary(patient)
 
-    sent_prompt = mock_generate.call_args.args[0]
-    assert "Should never appear." not in sent_prompt
+    assert "Should Not Appear:" not in mock_generate.call_args.args[0]
 
 
-def test_an_active_platform_templates_extra_instructions_reach_every_patients_prompt(patient):
+def test_deactivating_the_only_active_platform_template_falls_back_to_the_default_layout(patient):
     template = AISummaryTemplate.objects.create(
         organization=None,
         name="Platform-wide",
-        sections=_full_sections(),
-        extra_instructions="Always note the hospital's timezone.",
-    )
-    activate_summary_template(template)
-
-    with patch("momcare_platform.core.ai.openrouter_client.generate", return_value="ok") as mock_generate:
-        generate_patient_summary(patient)
-
-    sent_prompt = mock_generate.call_args.args[0]
-    assert "Always note the hospital's timezone." in sent_prompt
-
-
-def test_deactivating_the_only_active_platform_template_leaves_the_prompt_with_no_extra_instructions(patient):
-    """Review Focus item: deactivating the platform's only active template,
-    then generating a summary, must fall back to "no extra instructions"
-    cleanly -- not crash on a missing template, and not keep sending stale
-    content from the now-deactivated row."""
-    template = AISummaryTemplate.objects.create(
-        organization=None,
-        name="Platform-wide",
-        sections=_full_sections(),
-        extra_instructions="Should disappear once deactivated.",
+        sections=[{"label": "Custom Layout", "fields": list(TEMPLATE_FIELD_VOCABULARY)}],
     )
     activate_summary_template(template)
     deactivate_summary_template(template)
@@ -169,7 +151,8 @@ def test_deactivating_the_only_active_platform_template_leaves_the_prompt_with_n
         generate_patient_summary(patient)
 
     sent_prompt = mock_generate.call_args.args[0]
-    assert "Should disappear once deactivated." not in sent_prompt
+    assert "Custom Layout:" not in sent_prompt
+    assert "Vitals & Risk:" in sent_prompt
 
 
 def test_deactivation_flag_changes_the_closing_instruction(patient):
