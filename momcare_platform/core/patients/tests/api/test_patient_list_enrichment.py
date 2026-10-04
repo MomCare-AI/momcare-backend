@@ -209,3 +209,78 @@ def test_display_fields_are_none_with_no_activity(client, make_hospital, patient
     row = body["results"][0]
     assert row["last_reading_display"] is None
     assert row["last_monitoring_contact_display"] is None
+
+
+def _assess(pregnancy, level, *, minutes_ago=0, days_ago=0):
+    from django.apps import apps as django_apps  # noqa: PLC0415
+
+    RiskAssessment = django_apps.get_model("monitoring", "RiskAssessment")
+    row = RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=level,
+        final_risk_level=level,
+        confidence=0.95,
+    )
+    RiskAssessment.objects.filter(pk=row.pk).update(
+        assessed_at=timezone.now() - timedelta(minutes=minutes_ago, days=days_ago),
+    )
+
+
+def _row(client, hospital, auth, name):
+    rows = get_list(client, auth(hospital.admin.email)).json()["results"]
+    return next(r for r in rows if r["full_name"].startswith(name))
+
+
+def test_risk_this_month_is_not_assessed_with_no_readings(client, make_hospital, patient_for, auth):
+    hospital = make_hospital("Row Month None Hospital")
+    patient_for(hospital, "Quiet", pregnancy_data={"lmp": timezone.now().date() - timedelta(weeks=20)})
+
+    row = _row(client, hospital, auth, "Quiet")
+
+    assert row["risk_this_month"] is None
+    assert row["risk_this_month_level"] == "not_assessed"
+
+
+def test_risk_this_month_summarises_the_month_while_risk_level_stays_the_latest(
+    client,
+    make_hospital,
+    patient_for,
+    auth,
+):
+    hospital = make_hospital("Row Month Mixed Hospital")
+    patient = patient_for(hospital, "Mixed", pregnancy_data={"lmp": timezone.now().date() - timedelta(weeks=20)})
+    for minutes_ago, level in [(30, "low"), (20, "low"), (10, "high")]:
+        _assess(patient.current_pregnancy, level, minutes_ago=minutes_ago)
+
+    row = _row(client, hospital, auth, "Mixed")
+
+    assert row["risk_level"] == "high"
+    assert row["risk_this_month_level"] == "low"
+    assert row["risk_this_month"]["counts"] == {"low": 2, "medium": 0, "high": 1}
+    assert row["risk_this_month"]["total_count"] == 3
+
+
+def test_risk_this_month_ignores_last_months_assessments(client, make_hospital, patient_for, auth):
+    hospital = make_hospital("Row Month Old Hospital")
+    patient = patient_for(hospital, "Old", pregnancy_data={"lmp": timezone.now().date() - timedelta(weeks=20)})
+    _assess(patient.current_pregnancy, "high", days_ago=62)
+
+    row = _row(client, hospital, auth, "Old")
+
+    assert row["risk_level"] == "high"
+    assert row["risk_this_month_level"] == "not_assessed"
+
+
+def test_risk_this_month_matches_vitals_summary(client, make_hospital, patient_for, auth):
+    hospital = make_hospital("Row Month Parity Hospital")
+    patient = patient_for(hospital, "Parity", pregnancy_data={"lmp": timezone.now().date() - timedelta(weeks=20)})
+    for minutes_ago, level in [(30, "medium"), (20, "high"), (10, "high")]:
+        _assess(patient.current_pregnancy, level, minutes_ago=minutes_ago)
+
+    row = _row(client, hospital, auth, "Parity")
+    summary = client.get(
+        f"/api/pregnancies/{patient.current_pregnancy.id}/vitals-summary/",
+        **auth(hospital.admin.email),
+    ).json()
+
+    assert row["risk_this_month"] == summary["risk_this_month"]

@@ -575,11 +575,18 @@ def compute_month_risk_breakdown(pregnancy) -> dict | None:
     now_local = timezone.localtime(timezone.now(), timezone=tzinfo)
     start, end = month_bounds(year=now_local.year, month=now_local.month, tzinfo=tzinfo)
 
-    counts = dict.fromkeys([RiskAssessment.LEVEL_LOW, RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH], 0)
     levels = pregnancy.risk_assessments.filter(assessed_at__gte=start, assessed_at__lte=end).values_list(
         "final_risk_level",
         flat=True,
     )
+    return _month_breakdown_from_levels(levels)
+
+
+def _month_breakdown_from_levels(levels) -> dict | None:
+    """Shared by the single-pregnancy and the batch (patient list) paths, so
+    a row, the Vitals Summary and the KPI can never round or tie-break
+    differently. ``None`` when ``levels`` is empty."""
+    counts = dict.fromkeys([RiskAssessment.LEVEL_LOW, RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH], 0)
     for level in levels:
         counts[level] += 1
 
@@ -592,8 +599,7 @@ def compute_month_risk_breakdown(pregnancy) -> dict | None:
     # the wrong side to round a genuinely mixed month towards for a doctor
     # scanning for who needs attention. Severity order, not dict/insertion
     # order, decides ties.
-    severity_order = [RiskAssessment.LEVEL_LOW, RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH]
-    most_common = max(severity_order, key=lambda level: (counts[level], severity_order.index(level)))
+    most_common = max(_RISK_SEVERITY, key=lambda level: (counts[level], _RISK_SEVERITY.index(level)))
 
     return {
         "counts": counts,
@@ -601,3 +607,28 @@ def compute_month_risk_breakdown(pregnancy) -> dict | None:
         "most_common": most_common,
         "total_count": total,
     }
+
+
+def risk_this_month_for_pregnancies(pregnancies) -> dict:
+    """``{pregnancy_id: breakdown or None}`` for a page of pregnancies in one
+    query per location timezone, not one per row -- what the patient list
+    needs for its monthly Risk column. Same shape and rules as
+    ``compute_month_risk_breakdown``."""
+    pregnancies = list(pregnancies)
+    by_location: dict = {}
+    for pregnancy in pregnancies:
+        by_location.setdefault(pregnancy.patient.location, []).append(pregnancy.pk)
+
+    levels: dict = {pregnancy.pk: [] for pregnancy in pregnancies}
+    for location, pregnancy_ids in by_location.items():
+        now_local = timezone.localtime(timezone.now(), timezone=location.timezone)
+        start, end = month_bounds(year=now_local.year, month=now_local.month, tzinfo=location.timezone)
+        rows = (
+            RiskAssessment.objects.filter(pregnancy_id__in=pregnancy_ids, assessed_at__gte=start, assessed_at__lte=end)
+            .order_by()
+            .values_list("pregnancy_id", "final_risk_level")
+        )
+        for pregnancy_id, level in rows:
+            levels[pregnancy_id].append(level)
+
+    return {pregnancy_id: _month_breakdown_from_levels(rows) for pregnancy_id, rows in levels.items()}

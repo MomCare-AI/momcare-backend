@@ -1,3 +1,5 @@
+import importlib
+
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import serializers
@@ -196,6 +198,23 @@ class PregnancyWriteSerializer(PregnancySerializer):
         return attrs
 
 
+def attach_risk_this_month(patients) -> None:
+    """Monthly risk for every patient in ``patients`` in one batch, set on
+    each one's active pregnancy for ``PatientListSerializer`` to read. Call
+    it on any page of patients before serializing with that serializer.
+    Via ``importlib`` -- the calculation lives in ``modules.pregnancy.vitals``,
+    which `core` must never import."""
+    vitals_services = importlib.import_module("momcare_platform.modules.pregnancy.vitals.services")
+    pregnancies = []
+    for patient in patients:
+        for pregnancy in getattr(patient, "active_pregnancies", [])[:1]:
+            pregnancy.patient = patient
+            pregnancies.append(pregnancy)
+    breakdowns = vitals_services.risk_this_month_for_pregnancies(pregnancies)
+    for pregnancy in pregnancies:
+        pregnancy.risk_this_month = breakdowns[pregnancy.pk]
+
+
 class PatientListSerializer(serializers.ModelSerializer):
     """Deliberately lean — a list view should not carry a whole clinical record.
 
@@ -211,6 +230,8 @@ class PatientListSerializer(serializers.ModelSerializer):
     pregnancy_status = serializers.SerializerMethodField()
     risk_level = serializers.SerializerMethodField()
     risk_assessed_at = serializers.SerializerMethodField()
+    risk_this_month = serializers.SerializerMethodField()
+    risk_this_month_level = serializers.SerializerMethodField()
     statuses = serializers.SerializerMethodField()
     provider_name = serializers.SerializerMethodField()
     nurse_name = serializers.SerializerMethodField()
@@ -240,6 +261,8 @@ class PatientListSerializer(serializers.ModelSerializer):
             "pregnancy_status",
             "risk_level",
             "risk_assessed_at",
+            "risk_this_month",
+            "risk_this_month_level",
             "pending_risk_count",
             "needs_risk_review",
             "needs_low_confidence_review",
@@ -296,6 +319,19 @@ class PatientListSerializer(serializers.ModelSerializer):
         interface has to keep the two apart."""
         pregnancy = self._pregnancy(obj)
         return getattr(pregnancy, "latest_risk_level", None) if pregnancy else None
+
+    def get_risk_this_month(self, obj) -> dict | None:
+        """Low/Medium/High counts and percentages across this calendar
+        month's assessments -- the same shape as ``risk_this_month`` on
+        ``GET /vitals-summary/``. None means nothing was assessed this month."""
+        pregnancy = self._pregnancy(obj)
+        return getattr(pregnancy, "risk_this_month", None) if pregnancy else None
+
+    def get_risk_this_month_level(self, obj) -> str:
+        """The month's most common level (ties go to the more severe), or
+        ``not_assessed`` -- never a fabricated Low."""
+        breakdown = self.get_risk_this_month(obj)
+        return breakdown["most_common"] if breakdown else "not_assessed"
 
     def get_risk_assessed_at(self, obj) -> str | None:
         pregnancy = self._pregnancy(obj)

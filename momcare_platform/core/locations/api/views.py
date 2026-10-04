@@ -296,7 +296,10 @@ class LocationPatientsView(LocationScopedView):
     """
 
     def get(self, request, location_id):
-        from momcare_platform.core.patients.api.serializers import PatientListSerializer  # noqa: PLC0415
+        from momcare_platform.core.patients.api.serializers import (  # noqa: PLC0415
+            PatientListSerializer,
+            attach_risk_this_month,
+        )
         from momcare_platform.core.patients.api.views import _active_pregnancy_prefetch  # noqa: PLC0415
         from momcare_platform.core.patients.models import Patient  # noqa: PLC0415
 
@@ -319,4 +322,5 @@ class LocationPatientsView(LocationScopedView):
 
         paginator = DefaultPagination()
         page = paginator.paginate_queryset(patients, request, view=self)
+        attach_risk_this_month(page)
         return paginator.get_paginated_response(PatientListSerializer(page, many=True).data)

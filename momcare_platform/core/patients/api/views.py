@@ -40,6 +40,7 @@ from momcare_platform.core.patients.api.serializers import (
     PregnancySerializer,
     PregnancyWriteSerializer,
     WorklistPatientSerializer,
+    attach_risk_this_month,
 )
 from momcare_platform.core.patients.models import Patient, PatientJoinRequest, Pregnancy
 from momcare_platform.core.patients.services import (
@@ -299,6 +300,7 @@ class PatientListCreateView(PatientScopedView):
 
         paginator = DefaultPagination()
         page = paginator.paginate_queryset(queryset.order_by("-created_at", "id"), request, view=self)
+        attach_risk_this_month(page)
         return paginator.get_paginated_response(PatientListSerializer(page, many=True).data)
 
     def post(self, request):
