@@ -13,6 +13,7 @@ from rest_framework import serializers
 
 from momcare_model import clinical_categories
 from momcare_model.statistics import allocate_percentages, round_metric_value
+from momcare_platform.core.locations.models import Location
 from momcare_platform.core.monitoring.services import month_bounds
 from momcare_platform.core.patients.models import Pregnancy
 from momcare_platform.modules.pregnancy.vitals.models import Device, RiskAssessment, VitalReading
@@ -178,6 +179,74 @@ def patients_needing_low_confidence_review(patients):
         pregnancies__risk_assessments__review_status=RiskAssessment.REVIEW_PENDING,
         pregnancies__risk_assessments__flagged_for_review=True,
     ).distinct()
+
+
+NOT_ASSESSED = "not_assessed"
+_RISK_SEVERITY = [RiskAssessment.LEVEL_LOW, RiskAssessment.LEVEL_MEDIUM, RiskAssessment.LEVEL_HIGH]
+
+
+def _empty_risk_buckets() -> dict:
+    return {RiskAssessment.LEVEL_LOW: 0, RiskAssessment.LEVEL_MEDIUM: 0, RiskAssessment.LEVEL_HIGH: 0, NOT_ASSESSED: 0}
+
+
+def risk_level_breakdown(patients) -> dict:
+    """How many patients in ``patients`` sit at each risk level, counted two
+    ways -- the dashboard's Risk column shows both, so its KPI does too:
+
+    - ``latest``: each patient's most recent ``RiskAssessment`` on an active
+      pregnancy (``final_risk_level``, the level actually acted on).
+    - ``this_month``: each patient's most common level across the current
+      **calendar month** (patient's own location timezone), ties broken
+      toward the more severe level -- the same rule
+      ``compute_month_risk_breakdown`` uses, so the two can never disagree.
+
+    A patient with nothing to count (no active pregnancy, or no assessment
+    yet / none this month) lands in ``not_assessed`` rather than being
+    dropped or called Low, so the four buckets always sum to the number of
+    patients passed in.
+    """
+    patient_ids = list(patients.order_by().values_list("pk", flat=True).distinct())
+    latest = _empty_risk_buckets()
+    this_month = _empty_risk_buckets()
+
+    latest_levels = dict(
+        RiskAssessment.objects.filter(
+            pregnancy__patient_id__in=patient_ids,
+            pregnancy__status=Pregnancy.STATUS_ACTIVE,
+        )
+        .order_by("pregnancy__patient_id", "-assessed_at")
+        .distinct("pregnancy__patient_id")
+        .values_list("pregnancy__patient_id", "final_risk_level"),
+    )
+    for patient_id in patient_ids:
+        latest[latest_levels.get(patient_id, NOT_ASSESSED)] += 1
+
+    month_levels: dict = {}
+    for location in Location.objects.filter(pk__in=patients.order_by().values("location_id")):
+        now_local = timezone.localtime(timezone.now(), timezone=location.timezone)
+        start, end = month_bounds(year=now_local.year, month=now_local.month, tzinfo=location.timezone)
+        rows = (
+            RiskAssessment.objects.filter(
+                pregnancy__patient_id__in=patients.filter(location=location).order_by().values("pk"),
+                pregnancy__status=Pregnancy.STATUS_ACTIVE,
+                assessed_at__gte=start,
+                assessed_at__lte=end,
+            )
+            .order_by()
+            .values_list("pregnancy__patient_id", "final_risk_level")
+        )
+        for patient_id, level in rows:
+            month_levels.setdefault(patient_id, Counter())[level] += 1
+
+    for patient_id in patient_ids:
+        counts = month_levels.get(patient_id)
+        if not counts:
+            this_month[NOT_ASSESSED] += 1
+            continue
+        most_common = max(_RISK_SEVERITY, key=lambda level: (counts[level], _RISK_SEVERITY.index(level)))
+        this_month[most_common] += 1
+
+    return {"latest": latest, "this_month": this_month}
 
 
 # ── Risk review workflow ─────────────────────────────────────────────────────

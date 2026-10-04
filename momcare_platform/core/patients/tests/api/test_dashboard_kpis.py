@@ -61,6 +61,10 @@ def test_shape_with_an_empty_roster(client, make_hospital, auth):
         "active_patients": 0,
         "inactive_patients": 0,
         "pending_join_requests": 0,
+        "risk": {
+            "latest": {"low": 0, "medium": 0, "high": 0, "not_assessed": 0},
+            "this_month": {"low": 0, "medium": 0, "high": 0, "not_assessed": 0},
+        },
         "workflow": {"risk_review": 0, "low_confidence": 0},
         "care_activities": {"monitoring_follow_up": 0, "unseen_readings": 0, "reading_reminder": 0},
     }
@@ -207,3 +211,61 @@ def test_pending_join_requests_is_not_affected_by_roster_filters(client, make_ho
     body = client.get(f"{KPIS}?is_active=true", **auth(hospital.admin.email)).json()
 
     assert body["pending_join_requests"] == 1
+
+
+def _assess(pregnancy, level, *, assessed_at=None):
+    row = RiskAssessment.objects.create(
+        pregnancy=pregnancy,
+        risk_level=level,
+        final_risk_level=level,
+        confidence=0.95,
+    )
+    if assessed_at:
+        RiskAssessment.objects.filter(pk=row.pk).update(assessed_at=assessed_at)
+    return row
+
+
+def test_risk_buckets_count_never_assessed_patients_as_not_assessed(client, make_hospital, patient_for, auth):
+    hospital = make_hospital("Risk Not Assessed Hospital")
+    patient_for(hospital, "NeverRead")
+    patient_for(hospital, "NoPregnancy", with_pregnancy=False)
+
+    body = client.get(KPIS, **auth(hospital.admin.email)).json()
+
+    assert body["risk"]["latest"] == {"low": 0, "medium": 0, "high": 0, "not_assessed": 2}
+    assert body["risk"]["this_month"] == {"low": 0, "medium": 0, "high": 0, "not_assessed": 2}
+
+
+def test_risk_latest_uses_newest_reading_but_this_month_uses_most_common(client, make_hospital, patient_for, auth):
+    hospital = make_hospital("Risk Latest Vs Month Hospital")
+    patient = patient_for(hospital, "Mixed")
+    now = timezone.now()
+    for minutes_ago, level in [(30, "low"), (20, "low"), (10, "high")]:
+        _assess(patient.current_pregnancy, level, assessed_at=now - timedelta(minutes=minutes_ago))
+
+    body = client.get(KPIS, **auth(hospital.admin.email)).json()
+
+    assert body["risk"]["latest"]["high"] == 1
+    assert body["risk"]["this_month"]["low"] == 1
+
+
+def test_risk_this_month_ignores_last_months_assessments(client, make_hospital, patient_for, auth):
+    hospital = make_hospital("Risk Old Month Hospital")
+    patient = patient_for(hospital, "OldOnly")
+    _assess(patient.current_pregnancy, "high", assessed_at=timezone.now() - timedelta(days=62))
+
+    body = client.get(KPIS, **auth(hospital.admin.email)).json()
+
+    assert body["risk"]["latest"]["high"] == 1
+    assert body["risk"]["this_month"]["not_assessed"] == 1
+
+
+def test_risk_buckets_sum_to_total_patients(client, make_hospital, patient_for, auth):
+    hospital = make_hospital("Risk Sum Hospital")
+    _assess(patient_for(hospital, "A").current_pregnancy, "medium")
+    patient_for(hospital, "B")
+
+    body = client.get(KPIS, **auth(hospital.admin.email)).json()
+
+    assert sum(body["risk"]["latest"].values()) == body["total_patients"]
+    assert sum(body["risk"]["this_month"].values()) == body["total_patients"]

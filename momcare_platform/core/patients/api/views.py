@@ -384,6 +384,7 @@ class PatientDashboardKpisView(PatientScopedView):
                 "active_patients": active_patients,
                 "inactive_patients": inactive_patients,
                 "pending_join_requests": pending_join_requests,
+                "risk": vitals_services.risk_level_breakdown(roster),
                 "workflow": {
                     "risk_review": vitals_services.patients_needing_risk_review(roster).count(),
                     "low_confidence": vitals_services.patients_needing_low_confidence_review(roster).count(),
