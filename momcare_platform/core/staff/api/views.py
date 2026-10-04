@@ -15,6 +15,7 @@ from momcare_platform.core.common.pagination import DefaultPagination
 from momcare_platform.core.common.scoping import OrganizationScopedQuerysetMixin
 from momcare_platform.core.locations.models import Location
 from momcare_platform.core.staff.api.serializers import (
+    ADDRESS_FIELDS,
     SecondaryProviderSerializer,
     StaffMemberSerializer,
     StaffOnboardSerializer,
@@ -123,6 +124,7 @@ class StaffListView(HospitalPortalView):
             phone=data.get("phone", ""),
             role_code=data["role_code"],
             locations=data.get("locations") or [],
+            address={f: data.get(f, "") for f in ADDRESS_FIELDS},
         )
 
         # The same token machinery as "forgot password", reused deliberately

@@ -27,6 +27,14 @@ RESEND = "/api/auth/patient/resend-verification/"
 LOGIN = "/api/auth/login/"
 
 PASSWORD = "HerOwnPick!2026"
+ADDRESS = {
+    "address_line1": "House 12, Street 4",
+    "address_line2": "F-7",
+    "city": "Islamabad",
+    "state": "ICT",
+    "postal_code": "44000",
+    "country": "Pakistan",
+}
 
 
 def post(client, url, **body):
@@ -40,7 +48,7 @@ def code_from_email(message):
 
 
 def register(client, email="ayesha@example.test"):
-    response = post(client, REGISTER, email=email, password=PASSWORD, first_name="Ayesha")
+    response = post(client, REGISTER, email=email, password=PASSWORD, first_name="Ayesha", **ADDRESS)
     assert response.status_code == 201, response.content
     return code_from_email(mail.outbox[-1])
 
@@ -170,6 +178,7 @@ def test_registering_again_with_the_same_unverified_email_replaces_the_old_attem
         email="retry@example.test",
         password=PASSWORD,
         first_name="Ayesha Again",
+        **ADDRESS,
     )
     assert new_response.status_code == 201
     new_code = code_from_email(mail.outbox[-1])
@@ -186,7 +195,7 @@ def test_registering_again_with_an_already_verified_email_is_still_blocked(clien
     code = register(client, email="taken@example.test")
     post(client, VERIFY, email="taken@example.test", code=code)
 
-    response = post(client, REGISTER, email="taken@example.test", password=PASSWORD, first_name="Impostor")
+    response = post(client, REGISTER, email="taken@example.test", password=PASSWORD, first_name="Impostor", **ADDRESS)
 
     assert response.status_code == 400
 
@@ -204,6 +213,7 @@ def test_retrying_does_not_delete_a_hospital_admins_account(client, make_hospita
         email=hospital.admin.email,
         password=PASSWORD,
         first_name="Impostor",
+        **ADDRESS,
     )
 
     assert response.status_code == 400, response.content

@@ -244,6 +244,15 @@ class PatientRegisterSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=50)
     last_name = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    # Her address, given once here at registration and stored on her User. It
+    # is copied onto her own Patient record when a hospital approves her.
+    # Every address field is required.
+    address_line1 = serializers.CharField(max_length=255)
+    address_line2 = serializers.CharField(max_length=255)
+    city = serializers.CharField(max_length=120)
+    state = serializers.CharField(max_length=120)
+    postal_code = serializers.CharField(max_length=20)
+    country = serializers.CharField(max_length=100)
 
     def validate_email(self, value):
         value = value.lower().strip()
@@ -293,6 +302,12 @@ class PatientRegisterSerializer(serializers.Serializer):
                 last_name=validated_data.get("last_name", ""),
                 phone=validated_data.get("phone") or None,
                 role=Role.objects.get(code=settings.ROLE_PATIENT),
+                address_line1=validated_data["address_line1"],
+                address_line2=validated_data["address_line2"],
+                city=validated_data["city"],
+                state=validated_data["state"],
+                postal_code=validated_data["postal_code"],
+                country=validated_data["country"],
             )
 
         _, code = EmailVerificationCode.issue(user)

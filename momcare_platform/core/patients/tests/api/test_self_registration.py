@@ -70,6 +70,12 @@ def registered_patient(client):
                 "password": "HerOwnPick!2026",
                 "first_name": "Ayesha",
                 "last_name": "Bibi",
+                "address_line1": "House 12, Street 4",
+                "address_line2": "F-7",
+                "city": "Islamabad",
+                "state": "ICT",
+                "postal_code": "44000",
+                "country": "Pakistan",
             },
         )
         assert response.status_code == 201, response.content
@@ -94,6 +100,12 @@ def test_she_can_register_herself_with_no_hospital(client):
             "email": "selfreg@example.test",
             "password": "HerOwnPick!2026",
             "first_name": "Ayesha",
+            "address_line1": "House 12, Street 4",
+            "address_line2": "F-7",
+            "city": "Islamabad",
+            "state": "ICT",
+            "postal_code": "44000",
+            "country": "Pakistan",
         },
     )
 
@@ -109,7 +121,17 @@ def test_registering_alone_does_not_sign_her_in(client):
     response = post(
         client,
         REGISTER,
-        {"email": "notyet@example.test", "password": "HerOwnPick!2026", "first_name": "Ayesha"},
+        {
+            "email": "notyet@example.test",
+            "password": "HerOwnPick!2026",
+            "first_name": "Ayesha",
+            "address_line1": "House 12, Street 4",
+            "address_line2": "F-7",
+            "city": "Islamabad",
+            "state": "ICT",
+            "postal_code": "44000",
+            "country": "Pakistan",
+        },
     )
 
     assert response.status_code == 201

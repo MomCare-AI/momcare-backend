@@ -2,7 +2,7 @@ from django.conf import settings
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
-from momcare_platform.core.common.models import Deactivatable, TimeStampedModel, UUIDPrimaryKeyModel
+from momcare_platform.core.common.models import AddressMixin, Deactivatable, TimeStampedModel, UUIDPrimaryKeyModel
 from momcare_platform.core.common.obstetrics import (
     calculate_gestational_age,
     edd_from_lmp,
@@ -21,7 +21,7 @@ BLOOD_GROUP_CHOICES = [
 ]
 
 
-class Patient(UUIDPrimaryKeyModel, Deactivatable, TimeStampedModel):
+class Patient(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStampedModel):
     """A person receiving care — the clinical identity.
 
     Deliberately separate from ``User``: a clinical identity is not an

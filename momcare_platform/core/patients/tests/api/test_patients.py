@@ -28,6 +28,12 @@ def enrolment_payload(**overrides):
         "phone": "03001234567",
         "cnic": "61101-1234567-8",
         "blood_group": "O+",
+        "address_line1": "House 12, Street 4",
+        "address_line2": "F-7",
+        "city": "Islamabad",
+        "state": "ICT",
+        "postal_code": "44000",
+        "country": "Pakistan",
     }
     payload.update(overrides)
     return payload

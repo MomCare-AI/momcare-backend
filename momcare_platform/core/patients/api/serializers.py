@@ -10,6 +10,9 @@ from momcare_platform.core.patients.models import Patient, PatientJoinRequest, P
 from momcare_platform.core.staff.api.serializers import SecondaryProviderBriefSerializer
 from momcare_platform.core.staff.models import Staff
 
+# The AddressMixin columns, shared by the patient create/draft/detail serializers.
+ADDRESS_FIELDS = ["address_line1", "address_line2", "city", "state", "postal_code", "country"]
+
 
 class PregnancySerializer(serializers.ModelSerializer):
     """Gestational age is exposed but never accepted — it is derived from the
@@ -450,6 +453,7 @@ class PatientDetailSerializer(serializers.ModelSerializer):
             "emergency_contact_phone",
             "emergency_contact_relation",
             "emergency_contact_email",
+            *ADDRESS_FIELDS,
             "has_app_account",
             "location_name",
             "secondary_provider_detail",
@@ -515,6 +519,15 @@ class PatientCreateSerializer(serializers.Serializer):
     # When she agreed to be monitored. Optional — a hospital that records
     # consent on paper leaves it blank rather than inventing a date.
     consent_date = serializers.DateField(required=False, allow_null=True, default=None)
+    # Her postal address, stored on the Patient row itself (the six
+    # AddressMixin columns) -- not on a linked User, since a walk-in patient
+    # has no User at all. Every address field is required.
+    address_line1 = serializers.CharField(max_length=255)
+    address_line2 = serializers.CharField(max_length=255)
+    city = serializers.CharField(max_length=120)
+    state = serializers.CharField(max_length=120)
+    postal_code = serializers.CharField(max_length=20)
+    country = serializers.CharField(max_length=100)
 
     # allow_null on both optional blocks, not just required=False: a client
     # that builds the whole object and sets the absent parts to null (the
@@ -536,6 +549,7 @@ class PatientCreateSerializer(serializers.Serializer):
         "emergency_contact_relation",
         "emergency_contact_email",
         "consent_date",
+        *ADDRESS_FIELDS,
     ]
 
     def validate_mrn(self, value):

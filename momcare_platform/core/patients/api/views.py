@@ -32,6 +32,7 @@ from momcare_platform.core.common.scoping import (
 )
 from momcare_platform.core.monitoring.models import PatientStatus
 from momcare_platform.core.patients.api.serializers import (
+    ADDRESS_FIELDS,
     PatientCreateSerializer,
     PatientDetailSerializer,
     PatientDraftSerializer,
@@ -992,6 +993,10 @@ class JoinRequestDecisionView(JoinRequestBaseView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         patient_data, pregnancy_data = draft.split()
+        # Her address was given once, at registration, and lives on her User;
+        # the hospital's record starts with a copy of it.
+        applicant = join_request.user
+        patient_data.update({field: getattr(applicant, field) for field in ADDRESS_FIELDS})
 
         try:
             patient = onboard_patient(
