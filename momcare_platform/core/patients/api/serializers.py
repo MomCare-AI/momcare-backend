@@ -231,7 +231,6 @@ class PatientListSerializer(serializers.ModelSerializer):
     risk_level = serializers.SerializerMethodField()
     risk_assessed_at = serializers.SerializerMethodField()
     risk_latest_level = serializers.SerializerMethodField()
-    risk_this_month = serializers.SerializerMethodField()
     risk_this_month_level = serializers.SerializerMethodField()
     statuses = serializers.SerializerMethodField()
     provider_name = serializers.SerializerMethodField()
@@ -263,7 +262,6 @@ class PatientListSerializer(serializers.ModelSerializer):
             "risk_level",
             "risk_assessed_at",
             "risk_latest_level",
-            "risk_this_month",
             "risk_this_month_level",
             "pending_risk_count",
             "needs_risk_review",
@@ -328,17 +326,11 @@ class PatientListSerializer(serializers.ModelSerializer):
         value for every row -- the mirror of ``risk_this_month_level``."""
         return self.get_risk_level(obj) or "not_assessed"
 
-    def get_risk_this_month(self, obj) -> dict | None:
-        """Low/Medium/High counts and percentages across this calendar
-        month's assessments -- the same shape as ``risk_this_month`` on
-        ``GET /vitals-summary/``. None means nothing was assessed this month."""
-        pregnancy = self._pregnancy(obj)
-        return getattr(pregnancy, "risk_this_month", None) if pregnancy else None
-
     def get_risk_this_month_level(self, obj) -> str:
         """The month's most common level (ties go to the more severe), or
         ``not_assessed`` -- never a fabricated Low."""
-        breakdown = self.get_risk_this_month(obj)
+        pregnancy = self._pregnancy(obj)
+        breakdown = getattr(pregnancy, "risk_this_month", None) if pregnancy else None
         return breakdown["most_common"] if breakdown else "not_assessed"
 
     def get_risk_assessed_at(self, obj) -> str | None:
