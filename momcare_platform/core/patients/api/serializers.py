@@ -228,7 +228,6 @@ class PatientListSerializer(serializers.ModelSerializer):
     gestational_age_display = serializers.SerializerMethodField()
     gestational_age_long_display = serializers.SerializerMethodField()
     pregnancy_status = serializers.SerializerMethodField()
-    risk_level = serializers.SerializerMethodField()
     risk_assessed_at = serializers.SerializerMethodField()
     risk_latest_level = serializers.SerializerMethodField()
     risk_this_month_level = serializers.SerializerMethodField()
@@ -259,7 +258,6 @@ class PatientListSerializer(serializers.ModelSerializer):
             "gestational_age_display",
             "gestational_age_long_display",
             "pregnancy_status",
-            "risk_level",
             "risk_assessed_at",
             "risk_latest_level",
             "risk_this_month_level",
@@ -314,17 +312,13 @@ class PatientListSerializer(serializers.ModelSerializer):
         pregnancy = self._pregnancy(obj)
         return pregnancy.status if pregnancy else None
 
-    def get_risk_level(self, obj) -> str | None:
-        """None means never assessed — which is not the same as stable, and the
-        interface has to keep the two apart."""
-        pregnancy = self._pregnancy(obj)
-        return getattr(pregnancy, "latest_risk_level", None) if pregnancy else None
-
     def get_risk_latest_level(self, obj) -> str:
-        """``risk_level`` with the never-assessed case spelled out as
-        ``not_assessed`` instead of null, so the Risk column can render one
-        value for every row -- the mirror of ``risk_this_month_level``."""
-        return self.get_risk_level(obj) or "not_assessed"
+        """Level of the newest assessment (``final_risk_level``, the one
+        actually acted on), or ``not_assessed`` -- never null and never a
+        fabricated Low, since never-assessed is not the same as stable. The
+        mirror of ``risk_this_month_level``."""
+        pregnancy = self._pregnancy(obj)
+        return (getattr(pregnancy, "latest_risk_level", None) if pregnancy else None) or "not_assessed"
 
     def get_risk_this_month_level(self, obj) -> str:
         """The month's most common level (ties go to the more severe), or

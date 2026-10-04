@@ -696,7 +696,7 @@ def test_the_list_carries_the_current_risk_level(client, make_hospital, auth):
 
     row = client.get(PATIENTS, **auth(hospital.admin.email)).json()["results"][0]
 
-    assert row["risk_level"] == "high"
+    assert row["risk_latest_level"] == "high"
     assert row["risk_assessed_at"] is not None
     assert row["pregnancy_id"] == str(pregnancy.id)
 
@@ -713,7 +713,7 @@ def test_a_patient_never_assessed_reports_no_level_rather_than_stable(
 
     row = client.get(PATIENTS, **auth(hospital.admin.email)).json()["results"][0]
 
-    assert row["risk_level"] is None
+    assert row["risk_latest_level"] == "not_assessed"
     assert row["risk_assessed_at"] is None
 
 
