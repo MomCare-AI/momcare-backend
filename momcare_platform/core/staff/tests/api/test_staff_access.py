@@ -27,15 +27,6 @@ pytestmark = pytest.mark.django_db
 
 STAFF = "/api/staff/"
 
-ADDRESS = {
-    "address_line1": "Flat 3, Block B",
-    "address_line2": "Near Park",
-    "city": "Karachi",
-    "state": "Sindh",
-    "postal_code": "75500",
-    "country": "Pakistan",
-}
-
 
 def _onboard_payload(email="new.doctor@example.test", role_code=settings.ROLE_PROVIDER, locations=(), **extra):
     payload = {
@@ -44,7 +35,6 @@ def _onboard_payload(email="new.doctor@example.test", role_code=settings.ROLE_PR
         "last_name": "Doctor",
         "role_code": role_code,
         "locations": [str(loc.id) for loc in locations],
-        **ADDRESS,
     }
     payload.update(extra)
     return payload

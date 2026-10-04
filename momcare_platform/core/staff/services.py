@@ -59,7 +59,6 @@ def onboard_staff(
     role_code: str,
     phone: str = "",
     locations=(),
-    address: dict | None = None,
 ) -> Staff:
     """Create a hospital staff member's account, ready to be activated.
 
@@ -81,9 +80,6 @@ def onboard_staff(
     ``phone`` is optional contact information, not a credential — sign-in is
     by email only. It is stored so a hospital can reach a clinician about an
     alert away from the portal.
-
-    ``address`` is an optional dict of the six ``AddressMixin`` columns
-    (``address_line1`` ... ``country``), stored on the staff member's ``User``.
     """
     role = Role.objects.get(code=role_code)
     user = User.objects.create_user(
@@ -97,7 +93,6 @@ def onboard_staff(
         phone=phone or None,
         role=role,
         requires_password_reset=True,
-        **(address or {}),
     )
     user.organization = organization
     user.save(update_fields=["organization", "updated_at"])

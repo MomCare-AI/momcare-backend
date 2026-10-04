@@ -23,15 +23,6 @@ pytestmark = pytest.mark.django_db
 
 STAFF_URL = "/api/staff/"
 
-ADDRESS = {
-    "address_line1": "Flat 3, Block B",
-    "address_line2": "Near Park",
-    "city": "Karachi",
-    "state": "Sindh",
-    "postal_code": "75500",
-    "country": "Pakistan",
-}
-
 
 def detail_url(staff_id):
     return f"/api/staff/{staff_id}/"
@@ -59,7 +50,6 @@ def invite(client, headers, hospital, email, **extra):
         email=email,
         role_code=settings.ROLE_NURSE,
         locations=[str(location.id)],
-        **ADDRESS,
         **extra,
     )
 

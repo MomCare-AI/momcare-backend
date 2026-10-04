@@ -7,9 +7,6 @@ from momcare_platform.core.staff.models import SecondaryProvider, Staff
 from momcare_platform.core.staff.services import STAFF_ROLE_CODES
 from momcare_platform.core.users.models import Role, User
 
-# The AddressMixin columns, stored on the staff member's User.
-ADDRESS_FIELDS = ("address_line1", "address_line2", "city", "state", "postal_code", "country")
-
 
 class StaffMemberSerializer(serializers.ModelSerializer):
     """A person on the hospital's team, flattened for the staff list."""
@@ -27,12 +24,6 @@ class StaffMemberSerializer(serializers.ModelSerializer):
     # working one otherwise, which is exactly the thing an admin needs to see
     # when a new nurse says she cannot sign in.
     has_activated = serializers.SerializerMethodField()
-    address_line1 = serializers.CharField(source="user.address_line1", read_only=True)
-    address_line2 = serializers.CharField(source="user.address_line2", read_only=True)
-    city = serializers.CharField(source="user.city", read_only=True)
-    state = serializers.CharField(source="user.state", read_only=True)
-    postal_code = serializers.CharField(source="user.postal_code", read_only=True)
-    country = serializers.CharField(source="user.country", read_only=True)
 
     def get_has_activated(self, obj) -> bool:
         return not obj.user.requires_password_reset
@@ -53,12 +44,6 @@ class StaffMemberSerializer(serializers.ModelSerializer):
             "full_name",
             "email",
             "phone",
-            "address_line1",
-            "address_line2",
-            "city",
-            "state",
-            "postal_code",
-            "country",
             "role_code",
             "role_name",
             "is_user_active",
@@ -135,13 +120,6 @@ class StaffOnboardSerializer(serializers.Serializer):
     # off-portal, so it is worth holding even though nothing authenticates
     # against it.
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
-    # Every address field is required, matching patient onboarding.
-    address_line1 = serializers.CharField(max_length=255)
-    address_line2 = serializers.CharField(max_length=255)
-    city = serializers.CharField(max_length=120)
-    state = serializers.CharField(max_length=120)
-    postal_code = serializers.CharField(max_length=20)
-    country = serializers.CharField(max_length=100)
     role_code = serializers.ChoiceField(choices=sorted(STAFF_ROLE_CODES))
     locations = OrgLocationsField(many=True, required=False, default=list)
 
@@ -224,12 +202,6 @@ class StaffUpdateSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=50, required=False, allow_blank=True)
     last_name = serializers.CharField(max_length=50, required=False, allow_blank=True)
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
-    address_line1 = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    address_line2 = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    city = serializers.CharField(max_length=120, required=False, allow_blank=True)
-    state = serializers.CharField(max_length=120, required=False, allow_blank=True)
-    postal_code = serializers.CharField(max_length=20, required=False, allow_blank=True)
-    country = serializers.CharField(max_length=100, required=False, allow_blank=True)
     role_code = serializers.ChoiceField(choices=sorted(STAFF_ROLE_CODES), required=False)
     locations = OrgLocationsField(many=True, required=False)
     photo = serializers.FileField(required=False, allow_null=True)
@@ -291,9 +263,7 @@ class StaffUpdateSerializer(serializers.Serializer):
 
         locations = validated_data.pop("locations", None)
 
-        user_fields = [
-            f for f in ("email", "first_name", "last_name", "phone", *ADDRESS_FIELDS) if f in validated_data
-        ]
+        user_fields = [f for f in ("email", "first_name", "last_name", "phone") if f in validated_data]
         for field in user_fields:
             value = validated_data[field]
             # Clearing a phone must store NULL, not "". User.phone is unique,
