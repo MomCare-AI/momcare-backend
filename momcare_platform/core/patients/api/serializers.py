@@ -230,6 +230,7 @@ class PatientListSerializer(serializers.ModelSerializer):
     pregnancy_status = serializers.SerializerMethodField()
     risk_level = serializers.SerializerMethodField()
     risk_assessed_at = serializers.SerializerMethodField()
+    risk_latest_level = serializers.SerializerMethodField()
     risk_this_month = serializers.SerializerMethodField()
     risk_this_month_level = serializers.SerializerMethodField()
     statuses = serializers.SerializerMethodField()
@@ -261,6 +262,7 @@ class PatientListSerializer(serializers.ModelSerializer):
             "pregnancy_status",
             "risk_level",
             "risk_assessed_at",
+            "risk_latest_level",
             "risk_this_month",
             "risk_this_month_level",
             "pending_risk_count",
@@ -319,6 +321,12 @@ class PatientListSerializer(serializers.ModelSerializer):
         interface has to keep the two apart."""
         pregnancy = self._pregnancy(obj)
         return getattr(pregnancy, "latest_risk_level", None) if pregnancy else None
+
+    def get_risk_latest_level(self, obj) -> str:
+        """``risk_level`` with the never-assessed case spelled out as
+        ``not_assessed`` instead of null, so the Risk column can render one
+        value for every row -- the mirror of ``risk_this_month_level``."""
+        return self.get_risk_level(obj) or "not_assessed"
 
     def get_risk_this_month(self, obj) -> dict | None:
         """Low/Medium/High counts and percentages across this calendar

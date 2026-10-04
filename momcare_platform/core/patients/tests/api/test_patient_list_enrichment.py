@@ -239,6 +239,8 @@ def test_risk_this_month_is_not_assessed_with_no_readings(client, make_hospital,
 
     assert row["risk_this_month"] is None
     assert row["risk_this_month_level"] == "not_assessed"
+    assert row["risk_level"] is None
+    assert row["risk_latest_level"] == "not_assessed"
 
 
 def test_risk_this_month_summarises_the_month_while_risk_level_stays_the_latest(
@@ -255,6 +257,7 @@ def test_risk_this_month_summarises_the_month_while_risk_level_stays_the_latest(
     row = _row(client, hospital, auth, "Mixed")
 
     assert row["risk_level"] == "high"
+    assert row["risk_latest_level"] == "high"
     assert row["risk_this_month_level"] == "low"
     assert row["risk_this_month"]["counts"] == {"low": 2, "medium": 0, "high": 1}
     assert row["risk_this_month"]["total_count"] == 3
