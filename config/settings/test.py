@@ -36,6 +36,8 @@ MEDIA_URL = "http://media.testserver/"
 # Celery
 # ------------------------------------------------------------------------------
 CELERY_TASK_ALWAYS_EAGER = True
+# Care plans are written inside the request here (a test or a dev server wants the result at once).
+CARE_PLAN_GENERATE_IN_BACKGROUND = False
 CELERY_TASK_EAGER_PROPAGATES = True
 CELERY_RESULT_BACKEND = "cache+memory://"
 

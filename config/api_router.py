@@ -85,6 +85,12 @@ from momcare_platform.core.users.api.auth import (
     VerifyPatientEmailView,
     VerifyResetTokenView,
 )
+from momcare_platform.modules.pregnancy.alerts.api.views import (
+    AlertAcknowledgeView,
+    AlertDetailView,
+    AlertListView,
+    AlertResolveView,
+)
 
 # Config wiring is allowed to import modules.pregnancy directly: routes are
 # mounted explicitly here, by name, rather than through the ProgramSpec
@@ -92,11 +98,27 @@ from momcare_platform.core.users.api.auth import (
 # after alerts/monitoring moved out of core (see CLAUDE.md's "structural
 # divergence" section and the `project wiring must not hard-import modules`
 # entry in pyproject.toml, updated the same day this moved).
-from momcare_platform.modules.pregnancy.alerts.api.views import (
-    AlertAcknowledgeView,
-    AlertDetailView,
-    AlertListView,
-    AlertResolveView,
+from momcare_platform.modules.pregnancy.care_plans.api.views import (
+    AdjustmentCreateView,
+    AdjustmentDetailView,
+    AllergiesConditionsView,
+    CarePlanDetailView,
+    CarePlanListView,
+    CurrentCarePlanView,
+    CurrentExerciseView,
+    CurrentNutritionView,
+    FinalizeView,
+    MedicationCreateView,
+    MedicationDetailView,
+    NoteCreateView,
+    NoteDetailView,
+    PreferenceApproveView,
+    PreferenceDeactivateView,
+    PreferenceDetailView,
+    PreferenceListView,
+    PreferenceRejectView,
+    ReopenView,
+    ReviewView,
 )
 from momcare_platform.modules.pregnancy.vitals.api.views import (
     DeviceAssignView,
@@ -545,6 +567,84 @@ core_urlpatterns = [
         r"^platform-admin/ai-config/summary-templates/enhance/?$",
         AISummaryTemplateEnhanceView.as_view(),
         name="platform-admin-summary-template-enhance",
+    ),
+    # Monthly Care Plan -- docs/design/2026-10-05-care-plan-design.md. Reads are
+    # one aggregate response; writes are per section (different permissions).
+    re_path(r"^care-plans/?$", CarePlanListView.as_view(), name="care-plan-list"),
+    re_path(r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/?$", CarePlanDetailView.as_view(), name="care-plan-detail"),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/current-care-plan/?$",
+        CurrentCarePlanView.as_view(),
+        name="current-care-plan",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/current-care-plan/nutrition/?$",
+        CurrentNutritionView.as_view(),
+        name="current-care-plan-nutrition",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/current-care-plan/exercise/?$",
+        CurrentExerciseView.as_view(),
+        name="current-care-plan-exercise",
+    ),
+    re_path(
+        r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/adjustments/?$",
+        AdjustmentCreateView.as_view(),
+        name="care-plan-adjustment-create",
+    ),
+    re_path(
+        r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/adjustments/(?P<adjustment_id>[0-9a-f-]{36})/?$",
+        AdjustmentDetailView.as_view(),
+        name="care-plan-adjustment-detail",
+    ),
+    re_path(
+        r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/medications/?$",
+        MedicationCreateView.as_view(),
+        name="care-plan-medication-create",
+    ),
+    re_path(
+        r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/medications/(?P<medication_id>[0-9a-f-]{36})/?$",
+        MedicationDetailView.as_view(),
+        name="care-plan-medication-detail",
+    ),
+    re_path(
+        r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/notes/?$",
+        NoteCreateView.as_view(),
+        name="care-plan-note-create",
+    ),
+    re_path(
+        r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/notes/(?P<note_id>[0-9a-f-]{36})/?$",
+        NoteDetailView.as_view(),
+        name="care-plan-note-detail",
+    ),
+    re_path(
+        r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/allergies-conditions/?$",
+        AllergiesConditionsView.as_view(),
+        name="care-plan-allergies-conditions",
+    ),
+    re_path(r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/review/?$", ReviewView.as_view(), name="care-plan-review"),
+    re_path(r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/finalize/?$", FinalizeView.as_view(), name="care-plan-finalize"),
+    re_path(r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/reopen/?$", ReopenView.as_view(), name="care-plan-reopen"),
+    re_path(r"^care-plan-preferences/?$", PreferenceListView.as_view(), name="care-plan-preference-list"),
+    re_path(
+        r"^care-plan-preferences/(?P<preference_id>[0-9a-f-]{36})/?$",
+        PreferenceDetailView.as_view(),
+        name="care-plan-preference-detail",
+    ),
+    re_path(
+        r"^care-plan-preferences/(?P<preference_id>[0-9a-f-]{36})/approve/?$",
+        PreferenceApproveView.as_view(),
+        name="care-plan-preference-approve",
+    ),
+    re_path(
+        r"^care-plan-preferences/(?P<preference_id>[0-9a-f-]{36})/reject/?$",
+        PreferenceRejectView.as_view(),
+        name="care-plan-preference-reject",
+    ),
+    re_path(
+        r"^care-plan-preferences/(?P<preference_id>[0-9a-f-]{36})/deactivate/?$",
+        PreferenceDeactivateView.as_view(),
+        name="care-plan-preference-deactivate",
     ),
 ]
 

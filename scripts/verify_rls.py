@@ -141,7 +141,7 @@ def main() -> int:
                     return org.id
 
                 ours = make("Verify Hospital A")
-                make("Verify Hospital B")
+                theirs = make("Verify Hospital B")
 
                 # AISummaryTemplate's platform tier (organization=None) has
                 # to be visible to EVERY hospital session, not just to
@@ -151,13 +151,74 @@ def main() -> int:
                 # would make the platform tier invisible there (NULL never
                 # equals a uuid via =), which is exactly the bug this probe
                 # exists to catch before it reaches production.
-                _template_sections = [{"label": "All Fields", "fields": ["patient_name"]}]
+                _template_content = "Start with the patient's name, then the latest readings."
                 AISummaryTemplate.objects.create(
-                    organization_id=ours, name="Verify Org Template", sections=_template_sections,
+                    organization_id=ours,
+                    name="Verify Org Template",
+                    content=_template_content,
                 )
                 AISummaryTemplate.objects.create(
-                    organization=None, name="Verify Platform Template", sections=_template_sections,
+                    organization=None,
+                    name="Verify Platform Template",
+                    content=_template_content,
                 )
+
+                # One of every care plan table per hospital, so the probe can
+                # tell "sees only its own" from "sees nothing" (see check below).
+                import datetime  # noqa: PLC0415
+
+                from momcare_platform.core.patients.models import Pregnancy  # noqa: PLC0415
+                from momcare_platform.core.users.models import Role, User  # noqa: PLC0415
+                from momcare_platform.modules.pregnancy.care_plans import models as cp  # noqa: PLC0415
+
+                def make_care_plan_rows(org_id, tag: str) -> None:
+                    patient = Patient.objects.get(organization_id=org_id)
+                    user = User.objects.create_user(
+                        email=f"{tag}@rls-verify.test",
+                        password=PASSWORD,
+                        role=Role.objects.get(code="nurse"),
+                    )
+                    today = datetime.date.today()
+                    pregnancy = Pregnancy.objects.create(patient=patient, edd=today + datetime.timedelta(days=140))
+                    plan = cp.CarePlan.objects.create(
+                        pregnancy=pregnancy,
+                        month_number=1,
+                        period_start=today,
+                        period_end=today + datetime.timedelta(days=29),
+                    )
+                    cp.CarePlanSectionVersion.objects.create(
+                        care_plan=plan, section="nutrition", content={}, state_key="k"
+                    )
+                    cp.CarePlanAdjustment.objects.create(
+                        care_plan=plan,
+                        section="nutrition",
+                        item_key="oats",
+                        action="remove",
+                        list_name="meals",
+                        added_by=user,
+                    )
+                    cp.CarePlanMedication.objects.create(care_plan=plan, text="x", added_by=user)
+                    cp.CarePlanNote.objects.create(care_plan=plan, text="x", added_by=user)
+                    week = cp.CareWeek.objects.create(
+                        care_plan=plan, week_number=0, week_start=today, week_end=today + datetime.timedelta(days=6)
+                    )
+                    cp.ReadingAdvice.objects.create(
+                        care_plan=plan, week=week, risk_level="high", state_key="k", content={"tips": ["x"]}
+                    )
+                    cp.PlanCorrection.objects.create(
+                        organization_id=org_id,
+                        patient=patient,
+                        pregnancy=pregnancy,
+                        care_plan=plan,
+                        section="nutrition",
+                        item_key="oats",
+                        action="remove",
+                        edited_by=user,
+                    )
+                    cp.HospitalPreference.objects.create(organization_id=org_id, section="nutrition", item_key="oats")
+
+                make_care_plan_rows(ours, "a")
+                make_care_plan_rows(theirs, "b")
                 connections["default"].close()
 
                 # The scratch database is a full TEMPLATE clone, so it carries
@@ -184,6 +245,33 @@ def main() -> int:
                     count = cur.fetchone()[0]
                     cur.execute("COMMIT")
                     check("scoped to hospital A -> sees exactly 1 row", count == 1)
+
+                    care_plan_tables = [
+                        "care_plans_careplan",
+                        "care_plans_careplansectionversion",
+                        "care_plans_careplanadjustment",
+                        "care_plans_careplanmedication",
+                        "care_plans_careplannote",
+                        "care_plans_careweek",
+                        "care_plans_readingadvice",
+                        "care_plans_plancorrection",
+                        "care_plans_hospitalpreference",
+                    ]
+                    for table in care_plan_tables:
+                        cur.execute("BEGIN")
+                        cur.execute("SELECT count(*) FROM " + table)
+                        unscoped = cur.fetchone()[0]
+                        cur.execute(
+                            "SELECT set_config('app.current_org_id', %s, true)",
+                            [str(ours)],
+                        )
+                        cur.execute("SELECT count(*) FROM " + table)
+                        scoped = cur.fetchone()[0]
+                        cur.execute("COMMIT")
+                        check(
+                            f"{table}: unscoped sees 0, scoped to hospital A sees only its own 1",
+                            (unscoped, scoped) == (0, 1),
+                        )
 
                     cur.execute("BEGIN")
                     cur.execute(

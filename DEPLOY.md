@@ -273,6 +273,66 @@ one step per missed run.
 
 ---
 
+## Scheduled job — weekly care plans (`care_plans.sweep`)
+
+A patient's nutrition and exercise plan is written once per pregnancy week. A week starts at
+12 am in the hospital location's time zone, and this job writes the new week's plan for everyone
+who has readings but no plan yet — without waiting for a reading:
+
+```
+python manage.py sweep_care_plans
+```
+
+**Every 15 minutes** (cron `*/15 * * * *`, or schedule the Celery task `care_plans.sweep` in
+django-celery-beat once a worker runs). Every 15 minutes catches each time zone's midnight within
+minutes, and it is also what retries a week whose plan failed or fell back to the generic plan because
+the AI service was down. Without it a plan is only written when the patient's first reading of the week
+arrives, and a failed week stays on the generic plan until her condition changes.
+
+Safe to run as often as you like: a week that already has a plan is left alone.
+
+### Plans are written by a Celery worker (`care_plans.process_assessment`)
+
+Writing a plan means two live web searches and takes 10-20 seconds, so a reading never waits for
+it: the reading is saved, then a Celery task writes (or updates) the plan after the commit, and
+the app shows "your plan is being prepared" until it is there.
+
+**This needs two things that Railway does not have yet: a Redis queue and a Celery worker.**
+(The other jobs in this file are cron services that run a management command; this one is a
+long-running process.) Set up, in the Railway dashboard, same project:
+
+1. **Redis.** Project → **New** → **Database** → **Add Redis**.
+2. **`web` service → Variables**: `REDIS_URL=${{Redis.REDIS_URL}}`. This is what makes `web` queue
+   the plan instead of writing it inside the request (background writing is on by default only when
+   `REDIS_URL` is set). Also confirm `OPENROUTER_API_KEY` is set on `web`.
+3. **New service `care-plan-worker`**: **New** → **GitHub Repo** → this repository.
+   - **Variables → Raw Editor**: the same names as `web`, one line each pointing at `web`'s value
+     (`DATABASE_URL=${{web.DATABASE_URL}}`, every `DJANGO_*`, `OPENROUTER_API_KEY`,
+     `CORS_ALLOWED_ORIGINS`, ...) plus `REDIS_URL=${{Redis.REDIS_URL}}`. Use `web`'s restricted
+     `DATABASE_URL`, **not** `${{Postgres.DATABASE_URL}}` (the owner role bypasses row-level
+     security), and do **not** add `MIGRATION_DATABASE_URL`.
+   - **Settings → Deploy → Custom Start Command**:
+     `celery -A config.celery_app worker -l info --concurrency 2`
+   - No cron schedule (it runs all the time).
+4. **New service `care-plan-sweep`** (a cron service, like `ai-summary-sweep`): same variables as the
+   worker, **Custom Start Command** `python manage.py sweep_care_plans`, **Cron Schedule**
+   `*/15 * * * *`. The sweep needs no Celery beat.
+5. Deploy `web` last (it runs the migrations, including the new row-level-security ones, through
+   `MIGRATION_DATABASE_URL`).
+6. Check: save a reading for a test patient with an account, then watch `care-plan-worker`'s logs for
+   `Task care_plans.process_assessment[...] succeeded`, and `GET .../current-care-plan/` going from
+   `"preparing": true` to the plan.
+
+- `CARE_PLAN_GENERATE_IN_BACKGROUND` (default: on when `REDIS_URL` is set, off otherwise). Set it to
+  `false` to write plans inside the request (a reading that starts a plan then takes 10-20 s). If the
+  queue is unreachable at that moment the plan is also written inside the request, so a patient is
+  never left without one. **With it on and no worker running**, queued plans are never written; only
+  each week's first plan is rescued by the 15-minute sweep.
+- Nutrition and exercise are requested at the same time (about half the waiting of one after the
+  other). `CELERY_TASK_SOFT_TIME_LIMIT` (60 s) must stay above one plan's time.
+
+---
+
 ## Scheduled job — AI summary refresh (`ai-summary-sweep`)
 
 Patient AI summaries are rebuilt automatically when a patient is registered, when

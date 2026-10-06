@@ -102,3 +102,59 @@ def gestational_age_long_display(age: GestationalAge | None) -> str | None:
     if days:
         parts.append(f"{days} day{'s' if days != 1 else ''}")
     return " ".join(parts)
+
+
+# ── Trimester and care-plan month ──────────────────────────────────────────
+
+# Standard clinical cut-offs (ACOG): first trimester up to 13w6d, second
+# 14w0d-27w6d, third from 28w0d. Defined once here so an obstetrician's
+# correction is a one-line edit. NOT yet reviewed by an obstetrician.
+SECOND_TRIMESTER_STARTS_WEEK = 14
+THIRD_TRIMESTER_STARTS_WEEK = 28
+
+# A care plan covers 30 days counted from day 1 of the pregnancy (EDD - 280).
+# Doctors count in weeks and trimesters; the 30-day "month" is only the unit
+# staff review and sign a plan in, and it deliberately does not line up with
+# the trimester boundaries (week 14 falls inside plan 4, week 28 inside plan 7).
+CARE_PLAN_MONTH_DAYS = 30
+
+
+def trimester_for(age: GestationalAge | None) -> int | None:
+    """1, 2 or 3 -- None when the gestational age is unknown (absent is not zero)."""
+    if age is None:
+        return None
+    if age.weeks < SECOND_TRIMESTER_STARTS_WEEK:
+        return 1
+    if age.weeks < THIRD_TRIMESTER_STARTS_WEEK:
+        return 2
+    return 3
+
+
+def care_plan_month(age: GestationalAge | None) -> int | None:
+    """1-based 30-day block of the pregnancy. Keeps counting past term, so a
+    post-term pregnancy still gets a plan. None when the age is unknown."""
+    if age is None:
+        return None
+    return age.total_days // CARE_PLAN_MONTH_DAYS + 1
+
+
+def care_plan_month_bounds(edd: date, month_number: int) -> tuple[date, date]:
+    """First and last day (inclusive) of care-plan month ``month_number``."""
+    day_one = edd - timedelta(days=PREGNANCY_LENGTH_DAYS)
+    start = day_one + timedelta(days=(month_number - 1) * CARE_PLAN_MONTH_DAYS)
+    return start, start + timedelta(days=CARE_PLAN_MONTH_DAYS - 1)
+
+
+def pregnancy_week(age: GestationalAge | None) -> int | None:
+    """The pregnancy week she is in: completed weeks, so 17w0d-17w6d is week 17.
+    None when the gestational age is unknown."""
+    return None if age is None else age.weeks
+
+
+def pregnancy_week_bounds(edd: date, week_number: int) -> tuple[date, date]:
+    """First and last day (inclusive) of pregnancy week ``week_number``, counted
+    from day 1 of the pregnancy (EDD - 280). Trimester boundaries (14w0d, 28w0d)
+    fall on week starts."""
+    day_one = edd - timedelta(days=PREGNANCY_LENGTH_DAYS)
+    start = day_one + timedelta(days=week_number * 7)
+    return start, start + timedelta(days=6)

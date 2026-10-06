@@ -449,6 +449,8 @@ class PatientDetailSerializer(serializers.ModelSerializer):
             "phone",
             "cnic",
             "blood_group",
+            "food_allergies",
+            "dietary_preference",
             "emergency_contact_name",
             "emergency_contact_phone",
             "emergency_contact_relation",
@@ -512,6 +514,12 @@ class PatientCreateSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
     cnic = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
     blood_group = serializers.CharField(max_length=3, required=False, allow_blank=True, default="")
+    food_allergies = serializers.ListField(
+        child=serializers.CharField(max_length=60), required=False, default=list, max_length=30
+    )
+    dietary_preference = serializers.ChoiceField(
+        choices=["none", "vegetarian", "vegan", "other"], required=False, default="none"
+    )
     emergency_contact_name = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
     emergency_contact_phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
     emergency_contact_relation = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
@@ -544,6 +552,8 @@ class PatientCreateSerializer(serializers.Serializer):
         "phone",
         "cnic",
         "blood_group",
+        "food_allergies",
+        "dietary_preference",
         "emergency_contact_name",
         "emergency_contact_phone",
         "emergency_contact_relation",

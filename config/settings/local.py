@@ -72,6 +72,8 @@ if importlib.util.find_spec("django_extensions"):
 # ------------------------------------------------------------------------------
 # Run tasks synchronously in local dev (no Redis/broker required)
 CELERY_TASK_ALWAYS_EAGER = True
+# Care plans are written inside the request here (a test or a dev server wants the result at once).
+CARE_PLAN_GENERATE_IN_BACKGROUND = False
 CELERY_TASK_EAGER_PROPAGATES = True
 # Use in-memory cache as result backend (no Redis needed locally)
 CELERY_RESULT_BACKEND = "cache+memory://"

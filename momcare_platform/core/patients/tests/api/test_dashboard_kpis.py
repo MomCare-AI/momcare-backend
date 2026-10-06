@@ -65,7 +65,7 @@ def test_shape_with_an_empty_roster(client, make_hospital, auth):
             "latest": {"low": 0, "medium": 0, "high": 0, "not_assessed": 0},
             "this_month": {"low": 0, "medium": 0, "high": 0, "not_assessed": 0},
         },
-        "workflow": {"risk_review": 0, "low_confidence": 0},
+        "workflow": {"risk_review": 0, "low_confidence": 0, "care_plan_review": 0, "care_plan_missing": 0},
         "care_activities": {"monitoring_follow_up": 0, "unseen_readings": 0, "reading_reminder": 0},
     }
 

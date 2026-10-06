@@ -250,6 +250,13 @@ class PatientListCreateView(PatientScopedView):
                 queryset = vitals_services.patients_needing_risk_review(queryset)
             elif workflow == "low_confidence":
                 queryset = vitals_services.patients_needing_low_confidence_review(queryset)
+            elif workflow in ("care_plan_review", "care_plan_missing"):
+                care_plan_services = importlib.import_module("momcare_platform.modules.pregnancy.care_plans.services")
+                queryset = (
+                    care_plan_services.patients_needing_care_plan_review(queryset)
+                    if workflow == "care_plan_review"
+                    else care_plan_services.patients_missing_care_plan(queryset)
+                )
 
         care_activity = request.query_params.get("care_activity")
         if care_activity == "monitoring_follow_up":
@@ -380,6 +387,7 @@ class PatientDashboardKpisView(PatientScopedView):
         ).count()
 
         vitals_services = importlib.import_module("momcare_platform.modules.pregnancy.vitals.services")
+        care_plan_services = importlib.import_module("momcare_platform.modules.pregnancy.care_plans.services")
 
         return Response(
             {
@@ -391,6 +399,8 @@ class PatientDashboardKpisView(PatientScopedView):
                 "workflow": {
                     "risk_review": vitals_services.patients_needing_risk_review(roster).count(),
                     "low_confidence": vitals_services.patients_needing_low_confidence_review(roster).count(),
+                    "care_plan_review": care_plan_services.patients_needing_care_plan_review(roster).count(),
+                    "care_plan_missing": care_plan_services.patients_missing_care_plan(roster).count(),
                 },
                 "care_activities": {
                     "monitoring_follow_up": patients_needing_monitoring_follow_up(roster).count(),

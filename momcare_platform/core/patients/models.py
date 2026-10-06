@@ -9,6 +9,13 @@ from momcare_platform.core.common.obstetrics import (
     gestational_age_long_display,
 )
 
+DIETARY_PREFERENCE_CHOICES = [
+    ("none", "No preference"),
+    ("vegetarian", "Vegetarian"),
+    ("vegan", "Vegan"),
+    ("other", "Other"),
+]
+
 BLOOD_GROUP_CHOICES = [
     ("A+", "A+"),
     ("A-", "A−"),
@@ -87,6 +94,11 @@ class Patient(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStampedModel
     # instead, which the rule can't see, so the exemption is stated by hand.
     cnic = models.CharField(_("CNIC"), max_length=20, blank=True, null=True, db_index=True)  # noqa: DJ001
     blood_group = models.CharField(max_length=3, choices=BLOOD_GROUP_CHOICES, blank=True)
+    # Read by the monthly care plan so generated meals avoid what she cannot
+    # eat. Lives on Patient, not Pregnancy: an allergy does not change between
+    # pregnancies. An empty list means "none recorded", not "verified none".
+    food_allergies = models.JSONField(default=list, blank=True)
+    dietary_preference = models.CharField(max_length=20, choices=DIETARY_PREFERENCE_CHOICES, default="none")
 
     # ── Emergency contact ────────────────────────────────────────────────────
     emergency_contact_name = models.CharField(max_length=100, blank=True)

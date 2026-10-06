@@ -13,9 +13,14 @@ import pytest
 from momcare_platform.core.common.obstetrics import (
     GestationalAge,
     calculate_gestational_age,
+    care_plan_month,
+    care_plan_month_bounds,
     edd_from_lmp,
     gestational_age_long_display,
     is_term,
+    pregnancy_week,
+    pregnancy_week_bounds,
+    trimester_for,
 )
 
 
@@ -128,3 +133,107 @@ def test_singular_month_and_week_and_day_have_no_trailing_s():
 
 def test_zero_gestational_age_falls_back_to_short_form():
     assert gestational_age_long_display(GestationalAge(0, 0)) == "0w 0d"
+
+
+# ── Trimester and care-plan month ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("weeks", "days", "expected"),
+    [
+        (0, 0, 1),
+        (13, 6, 1),  # last day of the first trimester
+        (14, 0, 2),  # first day of the second
+        (27, 6, 2),
+        (28, 0, 3),  # first day of the third
+        (40, 0, 3),
+        (43, 2, 3),  # post-term keeps counting in the third trimester
+    ],
+)
+def test_trimester_boundaries(weeks, days, expected):
+    assert trimester_for(GestationalAge(weeks, days)) == expected
+
+
+def test_unknown_gestational_age_has_no_trimester():
+    assert trimester_for(None) is None
+
+
+@pytest.mark.parametrize(
+    ("weeks", "days", "expected_month"),
+    [
+        (0, 0, 1),
+        (4, 1, 1),  # day 29 -> still plan 1 (days 0-29)
+        (4, 2, 2),  # day 30 -> plan 2
+        (14, 0, 4),  # day 98 -> plan 4 (days 90-119): second trimester begins inside it
+        (27, 6, 7),  # day 195 -> plan 7
+        (28, 0, 7),  # day 196 -> plan 7: third trimester begins inside it
+        (40, 0, 10),  # day 280 -> plan 10
+        (42, 0, 10),  # day 294 -> still plan 10 (270-299)
+        (43, 3, 11),  # day 304 -> post-term pregnancies keep getting plans
+    ],
+)
+def test_care_plan_month_is_thirty_day_blocks_from_day_one(weeks, days, expected_month):
+    assert care_plan_month(GestationalAge(weeks, days)) == expected_month
+
+
+def test_unknown_gestational_age_has_no_care_plan_month():
+    assert care_plan_month(None) is None
+
+
+def test_care_plan_month_bounds_start_from_day_one_of_the_pregnancy():
+    edd = date(2026, 11, 12)
+    day_one = edd - timedelta(days=280)  # 2026-02-05
+
+    first_start, first_end = care_plan_month_bounds(edd, 1)
+    assert first_start == day_one
+    assert first_end == day_one + timedelta(days=29)
+
+    fifth_start, fifth_end = care_plan_month_bounds(edd, 5)
+    assert fifth_start == day_one + timedelta(days=120)
+    assert fifth_end == day_one + timedelta(days=149)
+
+
+def test_consecutive_care_plan_months_do_not_overlap_or_leave_gaps():
+    edd = date(2026, 11, 12)
+    _, end_of_3 = care_plan_month_bounds(edd, 3)
+    start_of_4, _ = care_plan_month_bounds(edd, 4)
+    assert start_of_4 == end_of_3 + timedelta(days=1)
+
+
+# ── Pregnancy weeks ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("weeks", "days", "expected"),
+    [(0, 0, 0), (0, 6, 0), (1, 0, 1), (17, 0, 17), (17, 6, 17), (18, 0, 18), (40, 3, 40)],
+)
+def test_pregnancy_week_is_the_completed_weeks(weeks, days, expected):
+    assert pregnancy_week(GestationalAge(weeks, days)) == expected
+
+
+def test_unknown_gestational_age_has_no_pregnancy_week():
+    assert pregnancy_week(None) is None
+
+
+def test_pregnancy_week_bounds_run_seven_days_from_day_one():
+    edd = date(2026, 11, 12)
+    day_one = edd - timedelta(days=280)
+
+    start, end = pregnancy_week_bounds(edd, 17)
+
+    assert start == day_one + timedelta(days=17 * 7)
+    assert end == start + timedelta(days=6)
+
+
+def test_consecutive_pregnancy_weeks_do_not_overlap_or_leave_gaps():
+    edd = date(2026, 11, 12)
+    _, end_of_16 = pregnancy_week_bounds(edd, 16)
+    start_of_17, _ = pregnancy_week_bounds(edd, 17)
+    assert start_of_17 == end_of_16 + timedelta(days=1)
+
+
+def test_trimesters_start_on_a_week_start():
+    edd = date(2026, 11, 12)
+    start_14, _ = pregnancy_week_bounds(edd, 14)
+    assert trimester_for(calculate_gestational_age(edd, start_14)) == 2
+    assert trimester_for(calculate_gestational_age(edd, start_14 - timedelta(days=1))) == 1

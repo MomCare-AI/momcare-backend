@@ -92,6 +92,9 @@ LOCAL_APPS = [
     # this is a path move, not a schema migration — see each app's apps.py.
     "momcare_platform.modules.pregnancy.vitals",
     "momcare_platform.modules.pregnancy.alerts",
+    # Monthly Care Plan -- nutrition/exercise generated per reading, medications
+    # and notes written by staff. See docs/design/2026-10-05-care-plan-design.md.
+    "momcare_platform.modules.pregnancy.care_plans",
 ]
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
@@ -275,6 +278,13 @@ REDIS_SSL = REDIS_URL.startswith("rediss://")
 if USE_TZ:
     CELERY_TIMEZONE = TIME_ZONE
 CELERY_BROKER_URL = REDIS_URL
+# A reading that needs a care plan saves at once and the plan is written by a Celery worker
+# (the live web search takes 10-20 s). On by default ONLY when REDIS_URL is set (a queue exists);
+# otherwise, or when set to "false", the plan is written inside the request. A worker must be
+# running whenever it is on.
+CARE_PLAN_GENERATE_IN_BACKGROUND = env.bool(
+    "CARE_PLAN_GENERATE_IN_BACKGROUND", default=bool(env("REDIS_URL", default=""))
+)
 CELERY_BROKER_USE_SSL = {"ssl_cert_reqs": ssl.CERT_NONE} if REDIS_SSL else None
 CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_REDIS_BACKEND_USE_SSL = CELERY_BROKER_USE_SSL

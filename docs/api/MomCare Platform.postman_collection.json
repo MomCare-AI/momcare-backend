@@ -1682,7 +1682,7 @@
                 ""
               ]
             },
-            "description": "This hospital's patients only -- scoped through `location__organization`, so another hospital's patient is never in the list.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`search` matches first name, last name, full name, phone, CNIC or MRN (case-insensitive, server-side).\n\n`assigned_to=me` narrows to the caller's own caseload: a provider sees pregnancies where they hold the `provider` slot, a nurse the `nurse` slot, a care_manager the `care_manager` slot. For a hospital_admin it returns an honest EMPTY list -- 'my patients' is not a concept that applies to them, and silently returning everyone under that label would be wrong.\n\n`location`/`is_active`/`care_manager`/`provider`/`nurse` are roster filters matching Neuro_RPM's own `_scoped_queryset()` filter set -- the three staff filters reach through the active pregnancy (that's where care team actually lives). Shared with Get Dashboard KPIs below so the two can never disagree about which patients are in scope.\n\n`workflow=risk_review` / `workflow=low_confidence` and `care_activity=monitoring_follow_up` / `unseen_readings` / `reading_reminder` narrow the roster the same way Neuro_RPM's own `?workflow=`/`?care_activity=` params do -- one endpoint, five filters, replacing what used to be five separate standing queue endpoints. `unseen_readings`/`reading_reminder` only return patients with an active pregnancy (a reading always requires one).\n\nEvery row carries the current risk level, `pending_risk_count`/`needs_risk_review`/`needs_low_confidence_review` (unconditionally, not just when filtered by `workflow=`), care-team names, language, gestational age (short and long display), and the Monitoring Follow-up / Unseen Readings / Reading Reminder signals (`last_monitoring_contact_at`, `last_reading_at`, `monitoring_seconds_this_month`) -- all embedded read-only, ownership stays on Pregnancy/User. `last_reading_display`/`last_monitoring_contact_display` give the humanized \"Today\"/\"Yesterday\"/\"N days ago\" form of the two timestamps above, in the patient's own Location timezone -- `null` when she's never had one, never a fabricated value. Risk columns: `risk_latest_level` is the latest assessment's level (`low`/`medium`/`high`) or `not_assessed`; `risk_this_month_level` is the most common level across this calendar month (ties go to the more severe level) or `not_assessed`, never a fabricated Low -- same rule as `risk_this_month` on Vitals Summary, which has the full percentages. The old `risk_level` field was removed -- use `risk_latest_level`. Standard pagination envelope: {count, page, page_size, total_pages, next, previous, results}."
+            "description": "This hospital's patients only -- scoped through `location__organization`, so another hospital's patient is never in the list.\n\nPermissions: IsAuthenticated + any hospital-side role.\n\n`search` matches first name, last name, full name, phone, CNIC or MRN (case-insensitive, server-side).\n\n`assigned_to=me` narrows to the caller's own caseload: a provider sees pregnancies where they hold the `provider` slot, a nurse the `nurse` slot, a care_manager the `care_manager` slot. For a hospital_admin it returns an honest EMPTY list -- 'my patients' is not a concept that applies to them, and silently returning everyone under that label would be wrong.\n\n`location`/`is_active`/`care_manager`/`provider`/`nurse` are roster filters matching Neuro_RPM's own `_scoped_queryset()` filter set -- the three staff filters reach through the active pregnancy (that's where care team actually lives). Shared with Get Dashboard KPIs below so the two can never disagree about which patients are in scope.\n\n`workflow=risk_review` / `workflow=low_confidence` and `care_activity=monitoring_follow_up` / `unseen_readings` / `reading_reminder` narrow the roster the same way Neuro_RPM's own `?workflow=`/`?care_activity=` params do -- one endpoint, five filters, replacing what used to be five separate standing queue endpoints. `unseen_readings`/`reading_reminder` only return patients with an active pregnancy (a reading always requires one).\n\nEvery row carries the current risk level, `pending_risk_count`/`needs_risk_review`/`needs_low_confidence_review` (unconditionally, not just when filtered by `workflow=`), care-team names, language, gestational age (short and long display), and the Monitoring Follow-up / Unseen Readings / Reading Reminder signals (`last_monitoring_contact_at`, `last_reading_at`, `monitoring_seconds_this_month`) -- all embedded read-only, ownership stays on Pregnancy/User. `last_reading_display`/`last_monitoring_contact_display` give the humanized \"Today\"/\"Yesterday\"/\"N days ago\" form of the two timestamps above, in the patient's own Location timezone -- `null` when she's never had one, never a fabricated value. Risk columns: `risk_latest_level` is the latest assessment's level (`low`/`medium`/`high`) or `not_assessed`; `risk_this_month_level` is the most common level across this calendar month (ties go to the more severe level) or `not_assessed`, never a fabricated Low -- same rule as `risk_this_month` on Vitals Summary, which has the full percentages. The old `risk_level` field was removed -- use `risk_latest_level`. Standard pagination envelope: {count, page, page_size, total_pages, next, previous, results}.\n\n`workflow` also accepts `care_plan_review` (this week's plan exists, nobody has reviewed it, and it is for a medium- or high-risk patient -- low-risk weekly plans need no doctor) and `care_plan_missing` (active pregnancy, but no weekly plan covering today yet)."
           },
           "response": []
         },
@@ -1703,7 +1703,7 @@
                 ""
               ]
             },
-            "description": "The single combined Dashboard KPIs endpoint, matching Neuro_RPM's own `dashboard-kpis` shape with MomCare's own three workflows/care-activities instead of theirs: `{total_patients, active_patients, inactive_patients, pending_join_requests, risk: {latest, this_month}, workflow: {risk_review, low_confidence}, care_activities: {monitoring_follow_up, unseen_readings, reading_reminder}}`.\n\nNo `priority_list`/`manage_careplans` keys -- Neuro_RPM's Priority Patients is a billing-cycle compliance score with no MomCare equivalent (explicitly declined), and MomCare has no CCM care-plan concept either.\n\n`total_patients`/`active_patients`/`inactive_patients` and both `workflow`/`care_activities` counts respect the same `location`/`is_active`/`care_manager`/`provider`/`nurse` filters as List / Search Patients above (`apply_roster_filters`, shared so the two can never disagree about scope), via the same underlying condition functions the `?workflow=`/`?care_activity=` filters on that same endpoint use -- a number here can never disagree with what that filter actually returns.\n\n`pending_join_requests` is a top-level sibling, not nested in `workflow`/`care_activities` -- a `PatientJoinRequest` isn't a `Patient` yet (no row exists until a hospital approves it). Scoped only by organization, not affected by the roster filters above (a join request has no location/care-team assignment for those to narrow). No Neuro_RPM equivalent."
+            "description": "The single combined Dashboard KPIs endpoint, matching Neuro_RPM's own `dashboard-kpis` shape with MomCare's own three workflows/care-activities instead of theirs: `{total_patients, active_patients, inactive_patients, pending_join_requests, risk: {latest, this_month}, workflow: {risk_review, low_confidence, care_plan_review, care_plan_missing}, care_activities: {monitoring_follow_up, unseen_readings, reading_reminder}}`.\n\nNo `priority_list`/`manage_careplans` keys -- Neuro_RPM's Priority Patients is a billing-cycle compliance score with no MomCare equivalent (explicitly declined),. (MomCare's own monthly Care Plan is a different thing: see the Care Plans folder; `care_plan_review` / `care_plan_missing` count it here.)\n\n`total_patients`/`active_patients`/`inactive_patients` and both `workflow`/`care_activities` counts respect the same `location`/`is_active`/`care_manager`/`provider`/`nurse` filters as List / Search Patients above (`apply_roster_filters`, shared so the two can never disagree about scope), via the same underlying condition functions the `?workflow=`/`?care_activity=` filters on that same endpoint use -- a number here can never disagree with what that filter actually returns.\n\n`pending_join_requests` is a top-level sibling, not nested in `workflow`/`care_activities` -- a `PatientJoinRequest` isn't a `Patient` yet (no row exists until a hospital approves it). Scoped only by organization, not affected by the roster filters above (a join request has no location/care-team assignment for those to narrow). No Neuro_RPM equivalent."
           },
           "response": []
         },
@@ -4173,6 +4173,752 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Care Plans",
+      "item": [
+        {
+          "name": "List Care Plans",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/care-plans/?pregnancy={{pregnancy_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "care-plans",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "pregnancy",
+                  "value": "{{pregnancy_id}}"
+                }
+              ]
+            },
+            "description": "Care plans of one pregnancy, newest first, in the standard pagination envelope. Optional `pregnancy` filter.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).\n\nEvery plan is the same aggregate shape as Get Care Plan. Another hospital's plans never appear (scoped through the pregnancy's patient's location to the hospital)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "const value = (body.results && body.results[0]) ? body.results[0].id : null;",
+                  "if (value) pm.collectionVariables.set('care_plan_id', value);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Care Plan",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                ""
+              ]
+            },
+            "description": "One monthly care plan, everything in one response: month number, week range, trimester, status, `nutrition`, `exercise`, `medications`, `notes`, `allergies_and_conditions`, disclaimer and warning signs.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).\n\nA plan covers a 30-day block counted from day 1 of the pregnancy (EDD - 280); the trimester decides what the advice says, and the AI sections change when the patient's condition changes (tighten at once, loosen after two readings in a row). Each nutrition/exercise item carries `source`: `ai` or `staff`. `clinical_review: \"unreviewed\"` -- the generator's rules and thresholds have not been reviewed by an obstetrician or dietitian.\n\nAnother hospital's plan returns 404, never 403. EACH SECTION CARRIES ITS OWN `progress` ({facts, text}, computed by code from her readings, in the plan response and in the nutrition-only / exercise-only responses): nutrition reports hemoglobin, blood glucose and blood pressure; exercise reports heart rate, activity score, stress and blood pressure; the plan-level `progress` is the overall summary. PLANS ARE WRITTEN IN THE BACKGROUND: a reading saves at once and a worker writes the plan 10-20 seconds later, so this response also carries `preparing` (she has readings but no plan for this week yet: show `status_message`, \"Your plan is being prepared\"), `update_pending` (the plan shown has not yet looked at her newest reading: \"Your plan is being updated\") and `status_message`. Poll this endpoint every few seconds while either is true. A patient with no readings has `care_plan: null` and `preparing: false` (she is in the Care Plan Missing workflow).\n\nEach of `nutrition` and `exercise` carries its own `basis`, `sources`, `source_links`, `generated_by_ai_notice` and `generated_at` (`basis` says where the plan comes from: `web_search` = the AI searched the web, for THIS plan, for the official guidance of the patient's country and `source_links` ([{title, url, host}]) are the pages it really read (recorded by code from the search, never typed by the model); `ai_only` = no official document was found (or the search was unavailable), so the plan is the AI's own work and `generated_by_ai_notice` says so -- show it; `baseline` = MomCare's fixed generic plan. `sources` is the same as readable text. `sources_verified` stays false: the content is not checked against the pages), and each of the current plan's sections is also available as its own response (Get Current Nutrition / Get Current Exercise).\n\nWEEKLY STRUCTURE (docs/design/2026-10-06-weekly-care-plan-design.md): nutrition and exercise are written once per PREGNANCY WEEK (week 17 = 17w0d-17w6d, counted from day 1), by the first reading of the week or by the sweep job. The response adds: `week` ({week_number, week_start, week_end, replans, last_replan_reason}); `progress` ({facts, text}: last week's readings as percentages by risk level, the main concerns, the trend against earlier readings this month, and the areas to work on -- computed by code from her readings, never by the AI); `reading_advice` (short quick advice for the latest medium/high or worse-than-plan reading, with `tips`, `contact_care_team`/`contact_message` -- always set for high risk -- and the weekly plan's `basis`, `sources`, `source_links`, `generated_by_ai_notice`, `sources_verified: false`; it disappears once the week has been re-planned, and it never replaces the weekly plan); and `weeks` (this monthly plan's weeks with their trend).\n\nWHEN THE WEEKLY PLAN CHANGES: at the start of each pregnancy week; at once if her allergies, diet, conditions or stage of pregnancy change; and mid-week only if a worse-than-plan condition PERSISTS (3 consecutive worse readings, counted in readings only -- there is no time rule). A single worse reading only produces the quick advice. A new pregnancy week's plan is written at 12 am local time (where she lives) by a scheduled job, not at her first reading."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "const value = (body.notes && body.notes[0]) ? body.notes[0].id : null;",
+                  "if (value) pm.collectionVariables.set('care_plan_note_id', value);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Current Nutrition",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "The current plan's nutrition alone, or `{\"care_plan\": null}` before any reading. Permissions: any hospital-side role, or the patient herself (own pregnancy only, read-only, without staff bookkeeping).\n\nNutrition and exercise are separate pieces of advice, generated by separate AI requests. This returns the section on its own: `content` (staff edits applied; each item tagged `source: ai|staff`), `basis`, `sources`, `source_links` and `generated_by_ai_notice` (`basis` says where the plan comes from: `web_search` = the AI searched the web, for THIS plan, for the official guidance of the patient's country and `source_links` ([{title, url, host}]) are the pages it really read (recorded by code from the search, never typed by the model); `ai_only` = no official document was found (or the search was unavailable), so the plan is the AI's own work and `generated_by_ai_notice` says so -- show it; `baseline` = MomCare's fixed generic plan. `sources` is the same as readable text. `sources_verified` stays false: the content is not checked against the pages), `generated_at` (when this version was created), `label`, `status`, disclaimer and warning signs.\n\nThis is the current WEEK's plan (it is rewritten weekly, and mid-week only when a worse condition persists).",
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/current-care-plan/nutrition/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "current-care-plan",
+                "nutrition",
+                ""
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Current Exercise",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "The current plan's physical-activity plan alone, or `{\"care_plan\": null}` before any reading. Permissions: any hospital-side role, or the patient herself (own pregnancy only, read-only).\n\nNutrition and exercise are separate pieces of advice, generated by separate AI requests. This returns the section on its own: `content` (staff edits applied; each item tagged `source: ai|staff`), `basis`, `sources`, `source_links` and `generated_by_ai_notice` (`basis` says where the plan comes from: `web_search` = the AI searched the web, for THIS plan, for the official guidance of the patient's country and `source_links` ([{title, url, host}]) are the pages it really read (recorded by code from the search, never typed by the model); `ai_only` = no official document was found (or the search was unavailable), so the plan is the AI's own work and `generated_by_ai_notice` says so -- show it; `baseline` = MomCare's fixed generic plan. `sources` is the same as readable text. `sources_verified` stays false: the content is not checked against the pages), `generated_at` (when this version was created), `label`, `status`, disclaimer and warning signs.\n\nThis is the current WEEK's plan (it is rewritten weekly, and mid-week only when a worse condition persists).",
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/current-care-plan/exercise/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "current-care-plan",
+                "exercise",
+                ""
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Current Care Plan",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/current-care-plan/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "current-care-plan",
+                ""
+              ]
+            },
+            "description": "The plan holding the pregnancy week she is in (a week belongs to the month containing its first day), or the latest plan, or `{\"care_plan\": null}` if no reading has generated one yet. GET never creates a plan.\n\nPermissions: IsAuthenticated + any hospital-side role, OR the patient herself -- a patient only ever reaches her own pregnancy and gets the same payload read-only, without staff bookkeeping (reviewer names, clinical_review, evaluation time). A patient who asks for someone else's pregnancy gets 404.\n\nWEEKLY STRUCTURE (docs/design/2026-10-06-weekly-care-plan-design.md): nutrition and exercise are written once per PREGNANCY WEEK (week 17 = 17w0d-17w6d, counted from day 1), by the first reading of the week or by the sweep job. The response adds: `week` ({week_number, week_start, week_end, replans, last_replan_reason}); `progress` ({facts, text}: last week's readings as percentages by risk level, the main concerns, the trend against earlier readings this month, and the areas to work on -- computed by code from her readings, never by the AI); `reading_advice` (short quick advice for the latest medium/high or worse-than-plan reading, with `tips`, `contact_care_team`/`contact_message` -- always set for high risk -- and the weekly plan's `basis`, `sources`, `source_links`, `generated_by_ai_notice`, `sources_verified: false`; it disappears once the week has been re-planned, and it never replaces the weekly plan); and `weeks` (this monthly plan's weeks with their trend).\n\nWHEN THE WEEKLY PLAN CHANGES: at the start of each pregnancy week; at once if her allergies, diet, conditions or stage of pregnancy change; and mid-week only if a worse-than-plan condition PERSISTS (3 consecutive worse readings, counted in readings only -- there is no time rule). A single worse reading only produces the quick advice. A new pregnancy week's plan is written at 12 am local time (where she lives) by a scheduled job, not at her first reading."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Care Plan Adjustment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/adjustments/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "adjustments",
+                ""
+              ]
+            },
+            "description": "Add, replace or remove an item in the AI-generated nutrition or exercise section.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).\n\n`action` is `add` (new item; `content.text` required), `edit` (replace a generated item, identified by `item_key`) or `remove` (hide a generated item). `list_name` is one of meals / foods_to_eat / foods_to_avoid (nutrition) or activities / avoid (exercise).\n\nAdjustments are a layer applied on top of the newest generated version, so regenerating never destroys them, and a removed item is never shown again for this patient. `content.text` is checked: mention of medicines, tablets, supplements, doses or calorie/weight targets returns 400. Every edit/remove is also logged automatically as a PlanCorrection (three distinct staff correcting the same item produce a suggestion for the hospital admin).\n\nNever physically deleted: DELETE deactivates (who/when kept). A finalized plan is locked (409) until reopened; editing a reviewed plan returns it to in_progress.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"section\": \"nutrition\",\n  \"list_name\": \"meals\",\n  \"action\": \"edit\",\n  \"item_key\": \"oats\",\n  \"content\": {\n    \"text\": \"Paratha with yogurt\",\n    \"slot\": \"breakfast\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Care Plan Adjustment",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/adjustments/{{adjustment_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "adjustments",
+                "{{adjustment_id}}",
+                ""
+              ]
+            },
+            "description": "Reword a staff-written add/edit adjustment.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).\n\nA removal has no content to edit (400); deactivate it instead.\n\nNever physically deleted: DELETE deactivates (who/when kept). A finalized plan is locked (409) until reopened; editing a reviewed plan returns it to in_progress.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": {\n    \"text\": \"Paratha with yogurt and a banana\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Care Plan Adjustment",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/adjustments/{{adjustment_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "adjustments",
+                "{{adjustment_id}}",
+                ""
+              ]
+            },
+            "description": "Deactivates the adjustment (nothing is deleted). Deactivating a removal brings the generated item back.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).\n\nNever physically deleted: DELETE deactivates (who/when kept). A finalized plan is locked (409) until reopened; editing a reviewed plan returns it to in_progress.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Care Plan Medication",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/medications/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "medications",
+                ""
+              ]
+            },
+            "description": "Add a medication line to this month's plan.\n\nPermissions: IsAuthenticated + provider only -- medication is a clinician's decision. The AI never writes or mentions medicines or supplements anywhere in a plan.\n\nThe patient sees medications read-only. A finalized plan is locked (409).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"As prescribed in clinic\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Care Plan Medication",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/medications/{{care_plan_medication_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "medications",
+                "{{care_plan_medication_id}}",
+                ""
+              ]
+            },
+            "description": "Reword a medication line. Permissions: provider only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"As prescribed in clinic\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Care Plan Medication",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/medications/{{care_plan_medication_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "medications",
+                "{{care_plan_medication_id}}",
+                ""
+              ]
+            },
+            "description": "Deactivates a medication line (who/when/why kept; hidden from the plan and from the patient). Permissions: provider only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Stopped\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Care Plan Note",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/notes/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "notes",
+                ""
+              ]
+            },
+            "description": "Write a note for the patient.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).\n\nCare plan notes are ALWAYS visible to the patient (\"Notes for the patient\") -- write them for her to read. Private clinical remarks belong in Clinical Notes (`/api/patients/{id}/monitoring/`), which stays staff-only.\n\nNever physically deleted: DELETE deactivates (who/when kept). A finalized plan is locked (409) until reopened; editing a reviewed plan returns it to in_progress.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Please rest more this week and drink plenty of water.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Care Plan Note",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/notes/{{care_plan_note_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "notes",
+                "{{care_plan_note_id}}",
+                ""
+              ]
+            },
+            "description": "Reword a note. Permissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Please rest more this week.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Care Plan Note",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/notes/{{care_plan_note_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "notes",
+                "{{care_plan_note_id}}",
+                ""
+              ]
+            },
+            "description": "Deactivates a note. Permissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Allergies and Conditions",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/allergies-conditions/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "allergies-conditions",
+                ""
+              ]
+            },
+            "description": "Edit the patient's food allergies, dietary preference and pregnancy conditions from inside the care plan.\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).\n\nWrites straight through to the patient and pregnancy records (one copy -- the patient page shows the change at once), then re-evaluates the plan so a newly recorded allergy is reflected immediately. `dietary_preference`: none / vegetarian / vegan / other. Each condition (previous_c_section, previous_preeclampsia, previous_gestational_diabetes, previous_preterm_birth, chronic_hypertension, diabetes, multiple_pregnancy) is yes / no / unknown. Send at least one field.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"food_allergies\": [\n    \"peanut\"\n  ],\n  \"dietary_preference\": \"vegetarian\",\n  \"diabetes\": \"yes\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Review Care Plan",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/review/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "review",
+                ""
+              ]
+            },
+            "description": "Mark the plan reviewed (in_progress -> reviewed), recording who and when. The patient already sees the plan -- review changes its label from \"suggested automatically\" to \"reviewed by your provider\".\n\nPermissions: IsAuthenticated + any hospital-side role (hospital_admin, provider, nurse, care_manager).\n\n409 if the plan is not in progress."
+          },
+          "response": []
+        },
+        {
+          "name": "Finalize Care Plan",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/finalize/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "finalize",
+                ""
+              ]
+            },
+            "description": "Sign off a reviewed plan (reviewed -> finalized), recording who and when. A finalized plan is locked.\n\nPermissions: IsAuthenticated + provider or hospital_admin. 409 if the plan is not reviewed."
+          },
+          "response": []
+        },
+        {
+          "name": "Reopen Care Plan",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/reopen/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "care-plans",
+                "{{care_plan_id}}",
+                "reopen",
+                ""
+              ]
+            },
+            "description": "Return a reviewed or finalized plan to in_progress, clearing the review/finalize stamps.\n\nPermissions: IsAuthenticated + provider or hospital_admin. 409 if already in progress."
+          },
+          "response": []
+        }
+      ],
+      "description": "Monthly Care Plan: one per pregnancy per 30-day block from day 1 of the pregnancy, holding that month's weeks. Nutrition and exercise are written per pregnancy week (OpenRouter, validated in code) with a code-computed progress summary; short reading advice appears for medium/high or worse-than-plan readings; medications (provider only) and notes (always visible to the patient) are written by staff. See docs/design/2026-10-05-care-plan-design.md and 2026-10-06-weekly-care-plan-design.md. Clinical thresholds and generator rules are not yet reviewed by an obstetrician or dietitian."
+    },
+    {
+      "name": "Care Plan Preferences",
+      "item": [
+        {
+          "name": "List Hospital Preferences",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/care-plan-preferences/?status=suggested",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "care-plan-preferences",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "suggested"
+                }
+              ]
+            },
+            "description": "This hospital's care-plan preferences, newest first, standard pagination. Optional `status`: suggested / approved / rejected / inactive.\n\nPermissions: IsAuthenticated + hospital_admin only.\n\nA preference is created as `suggested` automatically when 3 distinct staff members in this hospital correct the same item (same region, trimester and section). Only `approved` preferences are added to later AI prompts, as plain data -- never as instructions. Nothing crosses hospitals."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "const value = (body.results && body.results[0]) ? body.results[0].id : null;",
+                  "if (value) pm.collectionVariables.set('preference_id', value);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Hospital Preference",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/care-plan-preferences/{{preference_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "care-plan-preferences",
+                "{{preference_id}}",
+                ""
+              ]
+            },
+            "description": "One preference: region, trimester, section, item_key, guidance text, the replacements staff used, supporting staff count, who decided and when. hospital_admin only; another hospital's preference returns 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Hospital Preference",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/care-plan-preferences/{{preference_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "care-plan-preferences",
+                "{{preference_id}}",
+                ""
+              ]
+            },
+            "description": "Reword a suggestion's guidance before approving it. Only a `suggested` preference can be reworded (409 otherwise). Text mentioning medicines, supplements, doses or calorie/weight targets returns 400. hospital_admin only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"guidance\": \"Prefer local breakfast foods such as paratha or roti.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Approve Hospital Preference",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/care-plan-preferences/{{preference_id}}/approve/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "care-plan-preferences",
+                "{{preference_id}}",
+                "approve",
+                ""
+              ]
+            },
+            "description": "Approve a suggestion (optionally with new `guidance` wording in the same call); it is then included in later prompts for this hospital's patients in the same region and trimester. Records who and when. hospital_admin only; 409 unless `suggested`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"guidance\": \"Prefer local breakfast foods such as paratha or roti.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reject Hospital Preference",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/care-plan-preferences/{{preference_id}}/reject/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "care-plan-preferences",
+                "{{preference_id}}",
+                "reject",
+                ""
+              ]
+            },
+            "description": "Reject a suggestion. Patients whose plans were already edited keep their edits; the same item is not suggested again until 3 new corrections by distinct staff arrive after this decision. hospital_admin only; 409 unless `suggested`."
+          },
+          "response": []
+        },
+        {
+          "name": "Deactivate Hospital Preference",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/care-plan-preferences/{{preference_id}}/deactivate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "care-plan-preferences",
+                "{{preference_id}}",
+                "deactivate",
+                ""
+              ]
+            },
+            "description": "Stop using an approved preference in prompts. hospital_admin only; 409 unless `approved`."
+          },
+          "response": []
+        }
+      ],
+      "description": "Hospital-level guidance distilled from staff corrections; approved by the hospital admin."
     }
   ],
   "auth": {
@@ -4292,6 +5038,26 @@
     },
     {
       "key": "template_id",
+      "value": ""
+    },
+    {
+      "key": "care_plan_id",
+      "value": ""
+    },
+    {
+      "key": "adjustment_id",
+      "value": ""
+    },
+    {
+      "key": "care_plan_medication_id",
+      "value": ""
+    },
+    {
+      "key": "care_plan_note_id",
+      "value": ""
+    },
+    {
+      "key": "preference_id",
       "value": ""
     }
   ]
