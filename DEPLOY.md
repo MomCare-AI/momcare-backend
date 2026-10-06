@@ -283,13 +283,25 @@ who has readings but no plan yet — without waiting for a reading:
 python manage.py sweep_care_plans
 ```
 
-**Every 15 minutes** (cron `*/15 * * * *`, or schedule the Celery task `care_plans.sweep` in
-django-celery-beat once a worker runs). Every 15 minutes catches each time zone's midnight within
+**Every 15 minutes** (cron `*/15 * * * *`). On Railway it does **not** get its own service: the existing
+`ai-summary-sweep` service runs `python manage.py run_ai_sweeps` on `*/15 * * * *`, which runs this sweep and
+then the AI summary refresh (below), each independent of the other's failure (see "One service for both AI
+sweeps"). The Celery task `care_plans.sweep` is an alternative once a worker runs. Every 15 minutes catches each time zone's midnight within
 minutes, and it is also what retries a week whose plan failed or fell back to the generic plan because
 the AI service was down. Without it a plan is only written when the patient's first reading of the week
 arrives, and a failed week stays on the generic plan until her condition changes.
 
 Safe to run as often as you like: a week that already has a plan is left alone.
+
+### One service for both AI sweeps (`run_ai_sweeps`)
+
+`python manage.py run_ai_sweeps` runs the care plan sweep, then the AI summary refresh. If one raises, the
+other still runs, and the command then exits with an error so the cron run shows as failed. Both are
+idempotent, so running them every 15 minutes is cheap: a summary is rewritten only when it is missing or
+older than `MOMCARE_AI_SUMMARY_REFRESH_HOURS` (default 4), so each one is still rewritten about every 4 hours
+and OpenRouter cost does not change. On Railway, in the `ai-summary-sweep` service: **Settings → Deploy →
+Custom Start Command** `python manage.py run_ai_sweeps` and **Cron Schedule** `*/15 * * * *`. The two
+separate commands remain available.
 
 ### Plans are written by a Celery worker (`care_plans.process_assessment`)
 
@@ -314,9 +326,9 @@ long-running process.) Set up, in the Railway dashboard, same project:
    - **Settings → Deploy → Custom Start Command**:
      `celery -A config.celery_app worker -l info --concurrency 2`
    - No cron schedule (it runs all the time).
-4. **New service `care-plan-sweep`** (a cron service, like `ai-summary-sweep`): same variables as the
-   worker, **Custom Start Command** `python manage.py sweep_care_plans`, **Cron Schedule**
-   `*/15 * * * *`. The sweep needs no Celery beat.
+4. **No new service for the sweep.** Change the existing `ai-summary-sweep` service instead: **Custom Start
+   Command** `python manage.py run_ai_sweeps`, **Cron Schedule** `*/15 * * * *` (see "One service for both AI
+   sweeps"). The sweep needs no Celery beat.
 5. Deploy `web` last (it runs the migrations, including the new row-level-security ones, through
    `MIGRATION_DATABASE_URL`).
 6. Check: save a reading for a test patient with an account, then watch `care-plan-worker`'s logs for
