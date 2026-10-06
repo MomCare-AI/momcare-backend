@@ -199,6 +199,7 @@ def _check_items(items, label, *, text_key="text"):
         if not isinstance(item, dict) or not isinstance(item.get(text_key), str) or not item[text_key].strip():
             raise InvalidPlan(f"{label} has an item without text")
         item = dict(item)
+        item[text_key] = item[text_key].replace("_", " ")  # a model sometimes copies the key into the text
         item["item_key"] = normalize_item_key(item.get("item_key") or item[text_key])
         if not item["item_key"]:
             raise InvalidPlan(f"{label} has an item without a usable key")
@@ -338,7 +339,24 @@ def _normal_url(url: str) -> str:
     return url.strip().split("#")[0].rstrip("/").lower()
 
 
-def build_sources(citations, official_pages=None) -> dict:
+_TOPIC_WORDS = {
+    "nutrition": re.compile(r"nutri|diet|food|\beat|meal", re.IGNORECASE),
+    "exercise": re.compile(r"exercise|physical|activity|fitness|workout", re.IGNORECASE),
+}
+
+
+def _is_off_topic(section: str | None, title: str, url: str) -> bool:
+    """A page about the OTHER section's topic (a nutrition guideline cited for an exercise
+    plan, or the reverse) is not a source for this one. A general antenatal page that is
+    about neither is kept."""
+    if section not in _TOPIC_WORDS:
+        return False
+    other = "exercise" if section == "nutrition" else "nutrition"
+    text = f"{title} {url}"
+    return bool(_TOPIC_WORDS[other].search(text)) and not _TOPIC_WORDS[section].search(text)
+
+
+def build_sources(citations, official_pages=None, section: str | None = None) -> dict:
     """``{"basis", "sources", "source_links"}`` from the pages a web search really
     returned (``[{"title", "url"}]``).
 
@@ -355,6 +373,8 @@ def build_sources(citations, official_pages=None) -> dict:
             continue
         host = _host(url)
         if _normal_url(url) not in chosen or not is_official_host(host):
+            continue
+        if _is_off_topic(section, str(cite.get("title") or ""), url):
             continue
         seen.add(url)
         links.append({"title": _source_title(str(cite.get("title") or ""), host), "url": url, "host": host})
@@ -480,6 +500,18 @@ _CAPS = {
 _INTENSITY_RANK = {"light": 0, "moderate": 1, "vigorous": 2}
 
 
+_STRENUOUS_WORDS_RE = re.compile(
+    r"\b(brisk(ly)?|fast(-paced)?|quick(ly)?|vigorous(ly)?|intense(ly)?|intensive|power|speed)\s+", re.IGNORECASE
+)
+
+
+def _soften(text: str) -> str:
+    """ "Brisk walking" -> "Walking": the code caps an activity's intensity and minutes, but
+    the words a patient reads must not contradict that."""
+    softened = _STRENUOUS_WORDS_RE.sub("", text).strip()
+    return softened[:1].upper() + softened[1:] if softened else text
+
+
 def cap_exercise(exercise: dict, risk: str) -> dict:
     """Enforce the per-risk activity ceiling on a copy of an exercise section."""
     exercise = copy.deepcopy(exercise)
@@ -498,6 +530,8 @@ def cap_exercise(exercise: dict, risk: str) -> dict:
                 }
             ]
     for activity in activities:
+        if risk != "low":  # medium, high and unknown risk: nothing brisk, fast or intense in the wording
+            activity["text"] = _soften(activity["text"])
         if _INTENSITY_RANK.get(activity.get("intensity", "light"), 0) > _INTENSITY_RANK[max_intensity]:
             activity["intensity"] = max_intensity
         minutes = activity.get("duration_minutes")
@@ -601,7 +635,7 @@ def finalize_section(raw: str | None, section: str, *, risk: str, allergens, cit
         data = data[section]
     official_pages = data.get("official_pages")  # read before links are stripped from the text
     data = strip_links(data)
-    sources = build_sources(citations, official_pages)
+    sources = build_sources(citations, official_pages, section)
     if section == "nutrition":
         content = validate_nutrition(data)
         limit = NUTRITION_MAX_WORDS

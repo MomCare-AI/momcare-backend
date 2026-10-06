@@ -58,10 +58,8 @@ HIGH = {
 
 SOURCES = ["WHO recommendations on antenatal care"]
 # What the fake web search returns by default: one official-looking page.
-CITATIONS = [
-    {"title": "National antenatal nutrition guideline", "url": "https://www.health.gov.example/antenatal.pdf"}
-]
-SOURCE_NAME = "National antenatal nutrition guideline (health.gov.example)"
+CITATIONS = [{"title": "National antenatal care guideline", "url": "https://www.health.gov.example/antenatal.pdf"}]
+SOURCE_NAME = "National antenatal care guideline (health.gov.example)"
 
 
 def plan_json(*, meals=None, activities=None, extra_tip=None, sources=SOURCES, official=None) -> str:

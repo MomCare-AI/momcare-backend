@@ -81,7 +81,7 @@ def raw(data) -> str:
 
 
 # What a live web search returned (the model never writes these).
-PAGES = [{"title": "Pakistan Maternal Nutrition Strategy 2022-27", "url": "https://www.unicef.org/pakistan/guide.pdf"}]
+PAGES = [{"title": "Pakistan Antenatal Care Strategy 2022-27", "url": "https://www.unicef.org/pakistan/guide.pdf"}]
 
 
 # -- banned content ----------------------------------------------------------
@@ -367,7 +367,7 @@ def test_pages_the_search_returned_become_the_sources_with_their_links():
     assert result["source_links"] == [
         {"title": PAGES[0]["title"], "url": PAGES[0]["url"], "host": "unicef.org"},
     ]
-    assert result["sources"] == ["Pakistan Maternal Nutrition Strategy 2022-27 (unicef.org)"]
+    assert result["sources"] == ["Pakistan Antenatal Care Strategy 2022-27 (unicef.org)"]
 
 
 def test_no_page_found_means_the_plan_says_it_was_generated_by_ai():
@@ -698,3 +698,67 @@ def test_no_dietary_preference_removes_nothing():
     content, removed = finalize_section(raw(_diet_plan()), "nutrition", risk="low", allergens=[], citations=PAGES)
     assert removed == []
     assert "Chicken: high-quality protein" in [i["text"] for i in content["foods_to_eat"]]
+
+
+# -- what the production review found -------------------------------------------
+
+
+NUTRITION_PAGE = {"title": "Guidelines for Maternal Nutrition", "url": "https://sogp.org/maternal-nutrition.pdf"}
+EXERCISE_PAGE = {"title": "Physical activity in pregnancy", "url": "https://www.health.gov.pk/physical-activity.pdf"}
+GENERAL_PAGE = {"title": "WHO recommendations on antenatal care", "url": "https://www.who.int/antenatal-care.pdf"}
+
+
+def test_a_nutrition_guideline_is_not_a_source_for_the_exercise_plan_and_the_reverse():
+    chosen = [p["url"] for p in (NUTRITION_PAGE, EXERCISE_PAGE, GENERAL_PAGE)]
+    pages = [NUTRITION_PAGE, EXERCISE_PAGE, GENERAL_PAGE]
+
+    exercise = build_sources(pages, chosen, "exercise")
+    nutrition = build_sources(pages, chosen, "nutrition")
+
+    assert [link["url"] for link in exercise["source_links"]] == [EXERCISE_PAGE["url"], GENERAL_PAGE["url"]]
+    assert [link["url"] for link in nutrition["source_links"]] == [NUTRITION_PAGE["url"], GENERAL_PAGE["url"]]
+
+
+def test_an_exercise_plan_whose_only_page_is_a_nutrition_guideline_says_generated_by_ai():
+    result = build_sources([NUTRITION_PAGE], [NUTRITION_PAGE["url"]], "exercise")
+    assert result["basis"] == BASIS_AI and result["source_links"] == []
+
+
+def test_without_a_section_every_official_page_counts():
+    assert build_sources([NUTRITION_PAGE], [NUTRITION_PAGE["url"]])["basis"] == BASIS_WEB
+
+
+def test_underscores_a_model_copies_from_the_key_into_the_text_are_removed():
+    data = validate_schema(
+        plan(
+            nutrition__meals=[
+                {"slot": "lunch", "item_key": "chapati", "text": "whole-wheat_chapati with grilled_chicken"}
+            ]
+        )
+    )
+    assert data["nutrition"]["meals"][0]["text"] == "whole-wheat chapati with grilled chicken"
+    assert data["nutrition"]["meals"][0]["item_key"] == "roti"  # chapati is folded into roti
+
+
+@pytest.mark.parametrize("risk", ["medium", "high"])
+def test_nothing_brisk_or_fast_is_left_in_an_activity_at_medium_or_high_risk(risk):
+    data = validate_schema(
+        _activities(
+            {"item_key": "walking", "text": "Brisk walking", "intensity": "moderate", "duration_minutes": 30},
+            {
+                "item_key": "walking",
+                "text": "Fast-paced walking for fitness",
+                "intensity": "light",
+                "duration_minutes": 10,
+            },
+        )
+    )
+    texts = [a["text"] for a in cap_activity(data, risk)["exercise"]["activities"]]
+    assert texts == ["Walking", "Walking for fitness"]
+
+
+def test_a_low_risk_patient_keeps_the_wording_the_model_wrote():
+    data = validate_schema(
+        _activities({"item_key": "walking", "text": "Brisk walking", "intensity": "moderate", "duration_minutes": 30})
+    )
+    assert cap_activity(data, "low")["exercise"]["activities"][0]["text"] == "Brisk walking"
