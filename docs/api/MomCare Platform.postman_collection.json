@@ -134,7 +134,7 @@
                 ""
               ]
             },
-            "description": "The signed-in user's own identity and role.\n\nCarries `requires_password_reset`. It is `true` for an invited staff member who has not yet chosen a password — send them to the set-password screen rather than the portal."
+            "description": "The signed-in user's own identity and role.\n\nCarries `requires_password_reset`. It is `true` for an invited staff member who has not yet chosen a password — send them to the set-password screen rather than the portal.\n\nFor a PATIENT account the response also carries `patient_id` and `pregnancy_id` (her own record and her current active pregnancy; `pregnancy_id` is null when she has none). Her app uses `pregnancy_id` to build `/pregnancies/{id}/current-care-plan/` and her readings URLs. Staff, hospital-admin and platform-admin responses do NOT include these keys, and the login response is unchanged."
           },
           "response": []
         },

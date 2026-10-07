@@ -18,6 +18,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from momcare_platform.core.common.jwt_auth import issue_tokens_for
 from momcare_platform.core.common.mail import send_application_received, send_email_otp, send_password_reset
+from momcare_platform.core.common.permissions import user_role_code
 from momcare_platform.core.common.rls import bypass_rls
 from momcare_platform.core.users.api.serializers import (
     ForgotPasswordSerializer,
@@ -286,13 +287,32 @@ class LogoutView(APIView):
         return response
 
 
+def _own_patient_ids(user) -> dict:
+    """The signed-in patient's own ``patient_id`` and current ``pregnancy_id`` (None when
+    she has no patient record yet, e.g. a self-registered account awaiting approval, or no
+    active pregnancy). Reads only the record linked to this very account."""
+    patient = getattr(user, "patient_profile", None)
+    pregnancy = patient.current_pregnancy if patient is not None else None
+    return {
+        "patient_id": str(patient.id) if patient is not None else None,
+        "pregnancy_id": str(pregnancy.id) if pregnancy is not None else None,
+    }
+
+
 class MeView(APIView):
     """Return the authenticated user's profile."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(UserMeSerializer(request.user).data)
+        data = dict(UserMeSerializer(request.user).data)
+        if user_role_code(request.user) == settings.ROLE_PATIENT:
+            # A patient has no patient list to find her own ids in, and every URL she may
+            # call (her care plan, her readings...) is built from them. ONLY a patient
+            # account gets these two keys: staff, hospital admins and platform admins get
+            # exactly the response they always had.
+            data.update(_own_patient_ids(request.user))
+        return Response(data)
 
 
 def _revoke_outstanding_refresh_tokens(user) -> None:
