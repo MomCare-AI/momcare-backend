@@ -7,6 +7,7 @@ identifier a caller could tamper with to reach another hospital's patients.
 """
 
 import importlib
+import uuid
 from datetime import timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -30,12 +31,13 @@ from momcare_platform.core.common.scoping import (
     OrganizationScopedQuerysetMixin,
     scope_to_assigned_staff,
 )
+from momcare_platform.core.locations.models import Location
 from momcare_platform.core.monitoring.models import PatientStatus
+from momcare_platform.core.patients import profile as patient_profile
 from momcare_platform.core.patients.api.serializers import (
-    ADDRESS_FIELDS,
+    MyProfileSerializer,
     PatientCreateSerializer,
     PatientDetailSerializer,
-    PatientDraftSerializer,
     PatientJoinRequestSerializer,
     PatientListSerializer,
     PregnancySerializer,
@@ -45,9 +47,11 @@ from momcare_platform.core.patients.api.serializers import (
 )
 from momcare_platform.core.patients.models import Patient, PatientJoinRequest, Pregnancy
 from momcare_platform.core.patients.services import (
+    AlreadyOnboardedError,
     OnboardingError,
     create_pregnancy,
     deactivate_patient,
+    onboard_from_join_request,
     onboard_patient,
     reactivate_patient,
 )
@@ -302,7 +306,7 @@ class PatientListCreateView(PatientScopedView):
                 | Q(last_name__icontains=search)
                 | Q(_full_name__icontains=search)
                 | Q(phone__icontains=search)
-                | Q(cnic__icontains=search)
+                | Q(national_id__icontains=search)
                 | Q(mrn__icontains=search),
             )
 
@@ -311,10 +315,47 @@ class PatientListCreateView(PatientScopedView):
         attach_risk_this_month(page)
         return paginator.get_paginated_response(PatientListSerializer(page, many=True).data)
 
+    @staticmethod
+    def _join_request_or_refusal(org, raw_id):
+        """The pending join request this onboarding form answers, or the refusal to send.
+
+        ``(None, None)`` when the form is not about a join request at all (a walk-in).
+        An id that is not a UUID is left for the serializer to report as a 400.
+        Looked up inside this hospital only, so a request addressed to another
+        hospital is "not found", never "found and refused".
+        """
+        if not raw_id:
+            return None, None
+        try:
+            request_uuid = uuid.UUID(str(raw_id))
+        except ValueError:
+            return None, None
+        join_request = (
+            PatientJoinRequest.objects.select_related("user", "location")
+            .filter(pk=request_uuid, organization=org)
+            .first()
+        )
+        if join_request is None:
+            return None, Response({"detail": "Request not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not join_request.is_pending:
+            return None, Response(
+                {"detail": f"This request was already {join_request.status}."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return join_request, None
+
     def post(self, request):
         org, error = self.hospital_or_error(request)
         if error:
             return error
+
+        # The request is resolved BEFORE the form is validated. A second tap on Save
+        # sends the very same form, and validating it first would answer "national ID
+        # already registered" -- true only because the first save worked -- instead of
+        # saying the request is already decided.
+        join_request, refusal = self._join_request_or_refusal(org, request.data.get("join_request"))
+        if refusal:
+            return refusal
 
         # Context carries the request so the nested care-team fields can
         # narrow its queryset to this hospital's own clinicians.
@@ -323,11 +364,22 @@ class PatientListCreateView(PatientScopedView):
         patient_data, pregnancy_data = serializer.split()
 
         try:
-            patient = onboard_patient(
-                organization=org,
-                patient_data=patient_data,
-                pregnancy_data=pregnancy_data,
-            )
+            if join_request is not None:
+                patient = onboard_from_join_request(
+                    join_request=join_request,
+                    organization=org,
+                    patient_data=patient_data,
+                    pregnancy_data=pregnancy_data,
+                    decided_by=request.user,
+                )
+            else:
+                patient = onboard_patient(
+                    organization=org,
+                    patient_data=patient_data,
+                    pregnancy_data=pregnancy_data,
+                )
+        except AlreadyOnboardedError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         except OnboardingError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -731,6 +783,23 @@ class PatientSelfView(APIView):
         return PatientJoinRequest.objects.filter(user=request.user).select_related("organization", "patient")
 
 
+class MyProfileView(PatientSelfView):
+    """Her own details, filled in once and reused by every join request.
+
+    Reads and writes only request.user's rows, so there is no identifier in the
+    URL or body that could point at somebody else's profile.
+    """
+
+    def get(self, request):
+        return Response(patient_profile.payload(request.user))
+
+    def patch(self, request):
+        serializer = MyProfileSerializer(data=request.data, partial=True, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        patient_profile.save_profile(request.user, serializer.validated_data)
+        return Response(patient_profile.payload(request.user))
+
+
 class HospitalDirectoryView(APIView):
     """The hospitals a woman can ask to join.
 
@@ -764,6 +833,9 @@ class HospitalDirectoryView(APIView):
             if city:
                 hospitals = hospitals.filter(city__iexact=city)
 
+            hospitals = hospitals.prefetch_related(
+                Prefetch("locations", queryset=Location.objects.filter(is_active=True).order_by("name", "id")),
+            )
             page = paginator.paginate_queryset(hospitals.order_by("name", "id"), request, view=self)
             rows = [
                 {
@@ -772,6 +844,13 @@ class HospitalDirectoryView(APIView):
                     "city": h.city,
                     "country": h.country,
                     "phone": h.phone,
+                    # Her choice of branch. Only what she needs to pick one: no
+                    # manager, no counts. Empty for a hospital that has not set
+                    # one up yet -- it then admits her to its default location.
+                    "locations": [
+                        {"id": str(loc.id), "name": loc.name, "city": loc.city, "state": loc.state}
+                        for loc in h.locations.all()
+                    ],
                 }
                 for h in page
             ]
@@ -791,8 +870,14 @@ class PatientJoinRequestView(PatientSelfView):
     def post(self, request):
         from momcare_platform.core.organization.models import Organization
 
-        draft = PatientDraftSerializer(data=request.data.get("draft") or {})
-        draft.is_valid(raise_exception=True)
+        # Her profile is what travels, so it has to be whole before anything is
+        # sent: a hospital should never be handed a request it cannot act on.
+        missing = patient_profile.missing_fields(request.user)
+        if missing:
+            return Response(
+                {"detail": "Complete your profile before sending a request.", "missing_fields": missing},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         organization_id = request.data.get("organization")
         if not organization_id:
@@ -815,6 +900,21 @@ class PatientJoinRequestView(PatientSelfView):
                 # approved — a rejected application is not hers to discover.
                 return Response({"detail": "Hospital not found."}, status=status.HTTP_404_NOT_FOUND)
 
+            location = None
+            location_id = request.data.get("location")
+            if location_id:
+                # Only an active branch of THIS hospital: a branch id from anywhere
+                # else would otherwise put her on another tenant's patient list.
+                try:
+                    location = Location.objects.filter(pk=location_id, organization=hospital, is_active=True).first()
+                except DjangoValidationError, ValueError:
+                    location = None
+                if location is None:
+                    return Response(
+                        {"location": ["Choose one of this hospital's branches."]},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             already_waiting = (
                 self.my_requests(request)
                 .filter(organization=hospital, status=PatientJoinRequest.STATUS_PENDING)
@@ -829,11 +929,11 @@ class PatientJoinRequestView(PatientSelfView):
             join_request = PatientJoinRequest.objects.create(
                 user=request.user,
                 organization=hospital,
-                # Store the raw submitted JSON, not validated_data — dates come
-                # back as date objects, which JSONField cannot hold. It has
-                # already passed validation above, and is re-validated at
-                # approval time before anything is created from it.
-                draft=request.data.get("draft") or {},
+                location=location,
+                # Built here from her own profile, never from the request body:
+                # the hospital reads this to decide, so she cannot be allowed to
+                # hand-write it.
+                draft=patient_profile.snapshot(request.user),
             )
             body = PatientJoinRequestSerializer(join_request).data
         return Response(body, status=status.HTTP_201_CREATED)
@@ -886,14 +986,21 @@ class JoinRequestWithdrawView(PatientSelfView):
             return Response(PatientJoinRequestSerializer(join_request).data)
 
 
-class JoinRequestBaseView(PatientScopedView):
-    """Scoping shared by the hospital's queue and its approve/reject actions.
+def _review_row(join_request) -> dict:
+    return {
+        **PatientJoinRequestSerializer(join_request).data,
+        "applicant_email": join_request.user.email,
+        "applicant_name": join_request.user.get_full_name(),
+    }
 
-    Deliberately a sibling base rather than the decision view subclassing the
-    queue view: their URLs pass different kwargs (``request_id``/``decision``
-    vs none), so inheriting the queue's ``get`` made ``GET`` on
-    ``/patient-requests/<id>/approve/`` raise TypeError and return 500 instead
-    of a clean 405.
+
+class JoinRequestBaseView(PatientScopedView):
+    """Scoping shared by the hospital's queue, one request, and its reject action.
+
+    Deliberately a sibling base rather than the other views subclassing the
+    queue view: their URLs pass different kwargs (``request_id`` vs none), so
+    inheriting the queue's ``get`` made ``GET`` on a reject URL raise TypeError
+    and return 500 instead of a clean 405.
     """
 
     organization_lookup = "organization"
@@ -919,43 +1026,35 @@ class JoinRequestReviewView(JoinRequestBaseView):
         if state:
             queryset = queryset.filter(status=state)
 
-        rows = [
-            {
-                **PatientJoinRequestSerializer(r).data,
-                "applicant_email": r.user.email,
-                "applicant_name": r.user.get_full_name(),
-            }
-            for r in queryset.order_by("-created_at")
-        ]
+        rows = [_review_row(r) for r in queryset.order_by("-created_at")]
         return Response({"count": len(rows), "results": rows})
 
 
-class JoinRequestDecisionView(JoinRequestBaseView):
-    """Approve or reject one request."""
+class JoinRequestDetailView(JoinRequestBaseView):
+    """One request, with her profile snapshot: what pre-fills the onboarding form."""
 
-    def get_request_or_404(self, request_id):
-        try:
-            return self.requests().get(pk=request_id), None
-        except PatientJoinRequest.DoesNotExist, DjangoValidationError, ValueError:
-            return None, Response({"detail": "Request not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    def _decide(self, join_request, request, *, new_status, patient=None):
-        join_request.status = new_status
-        join_request.patient = patient
-        join_request.decision_note = request.data.get("note", "")
-        join_request.decided_at = timezone.now()
-        join_request.decided_by = request.user
-        join_request.save(
-            update_fields=["status", "patient", "decision_note", "decided_at", "decided_by", "updated_at"],
-        )
-
-    def post(self, request, request_id, decision):
-        org, error = self.hospital_or_error(request)
+    def get(self, request, request_id):
+        _, error = self.hospital_or_error(request)
         if error:
             return error
-        join_request, missing = self.get_request_or_404(request_id)
-        if missing:
-            return missing
+        try:
+            join_request = self.requests().get(pk=request_id)
+        except PatientJoinRequest.DoesNotExist, DjangoValidationError, ValueError:
+            return Response({"detail": "Request not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_review_row(join_request))
+
+
+class JoinRequestRejectView(JoinRequestBaseView):
+    """Decline a request. Approving is not here: saving the onboarding form is the approval."""
+
+    def post(self, request, request_id):
+        _, error = self.hospital_or_error(request)
+        if error:
+            return error
+        try:
+            join_request = self.requests().get(pk=request_id)
+        except PatientJoinRequest.DoesNotExist, DjangoValidationError, ValueError:
+            return Response({"detail": "Request not found."}, status=status.HTTP_404_NOT_FOUND)
         if not join_request.is_pending:
             # 409, not 404: the request WAS found. It has simply already been
             # decided, and saying so is more useful than a second meaning for
@@ -965,87 +1064,10 @@ class JoinRequestDecisionView(JoinRequestBaseView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        if decision == PatientJoinRequest.STATUS_REJECTED:
-            self._decide(join_request, request, new_status=PatientJoinRequest.STATUS_REJECTED)
-            # Her account and draft survive — she can ask a different hospital.
-            return Response(PatientJoinRequestSerializer(join_request).data)
-
-        # She may have asked several hospitals at once; the first to approve
-        # gets her. Patient.user is a one-to-one, so a second approval would
-        # otherwise hit an IntegrityError and surface as a 500 — 409 says the
-        # true thing instead: the request is fine, her situation has changed.
-        #
-        # bypass_rls for the same reason as the withdrawal below: the record
-        # that already claims her belongs to a DIFFERENT hospital, so a scoped
-        # read cannot see it. Without this the guard would never fire in
-        # production and the 500 would come straight back — and no test could
-        # show it, because local and test databases bypass RLS anyway.
-        with bypass_rls():
-            already = Patient.objects.filter(user=join_request.user).first()
-        if already is not None:
-            return Response(
-                {
-                    "detail": (
-                        "This applicant has already been accepted by another hospital and is under their care."
-                    ),
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        # Approval re-validates her draft through the same serializer that
-        # accepted it, then creates the record through the same
-        # onboard_patient() a walk-in uses. One creation path, so a
-        # self-registered patient and a walk-in are the same kind of record.
-        draft = PatientDraftSerializer(data=join_request.draft or {})
-        if not draft.is_valid():
-            return Response(
-                {"detail": "This applicant's details are no longer valid.", "errors": draft.errors},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        patient_data, pregnancy_data = draft.split()
-        # Her address was given once, at registration, and lives on her User;
-        # the hospital's record starts with a copy of it.
-        applicant = join_request.user
-        patient_data.update({field: getattr(applicant, field) for field in ADDRESS_FIELDS})
-
-        try:
-            patient = onboard_patient(
-                organization=org,
-                patient_data=patient_data,
-                pregnancy_data=pregnancy_data,
-            )
-        except OnboardingError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Link her login to the clinical record now that one exists.
-        patient.user = join_request.user
-        patient.save(update_fields=["user", "updated_at"])
-
-        self._decide(join_request, request, new_status=PatientJoinRequest.STATUS_APPROVED, patient=patient)
-
-        # Close her remaining open requests. WITHDRAWN, not REJECTED — those
-        # hospitals never said no, and a record claiming they did would be a
-        # lie about a decision nobody made.
-        #
-        # bypass_rls is required, not incidental: these rows belong to OTHER
-        # hospitals, and this session is scoped to this one, so the fail-closed
-        # policy would match zero rows and silently withdraw nothing. Local and
-        # test databases use a BYPASSRLS role, so no test can catch that —
-        # it would only ever have shown up in production, as her other requests
-        # staying pending forever against a woman already under someone's care.
-        with bypass_rls():
-            PatientJoinRequest.objects.filter(
-                user=join_request.user,
-                status=PatientJoinRequest.STATUS_PENDING,
-            ).exclude(pk=join_request.pk).update(
-                status=PatientJoinRequest.STATUS_WITHDRAWN,
-                decided_at=timezone.now(),
-                decision_note="Withdrawn automatically — she was accepted by another hospital.",
-            )
-
-        return Response(
-            {
-                **PatientJoinRequestSerializer(join_request).data,
-                "patient": PatientDetailSerializer(patient).data,
-            },
-        )
+        join_request.status = PatientJoinRequest.STATUS_REJECTED
+        join_request.decision_note = request.data.get("note", "")
+        join_request.decided_at = timezone.now()
+        join_request.decided_by = request.user
+        join_request.save(update_fields=["status", "decision_note", "decided_at", "decided_by", "updated_at"])
+        # Her account and profile survive — she can ask a different hospital.
+        return Response(PatientJoinRequestSerializer(join_request).data)

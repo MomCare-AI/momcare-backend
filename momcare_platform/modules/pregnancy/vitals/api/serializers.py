@@ -56,6 +56,14 @@ class VitalReadingSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class PatientVitalReadingSerializer(VitalReadingSerializer):
+    """A reading as its owner sees it: the values and when, without the internal device id."""
+
+    class Meta(VitalReadingSerializer.Meta):
+        fields = [f for f in VitalReadingSerializer.Meta.fields if f != "device"]
+        read_only_fields = fields
+
+
 class VitalReadingCreateSerializer(serializers.Serializer):
     """One reading event, from a device or entered by staff.
 
@@ -284,6 +292,31 @@ class RiskAssessmentSerializer(serializers.ModelSerializer):
             "needs_review",
             "verified_at",
             "verified_by_name",
+        ]
+        read_only_fields = fields
+
+
+class PatientRiskAssessmentSerializer(serializers.ModelSerializer):
+    """A risk assessment as its owner sees it: the level that was acted on, the category of each
+    vital, when, and the reading behind it. Nothing of the staff review workflow -- the model's raw
+    answer, its confidence, whether it was flagged, review status, who confirmed it."""
+
+    final_risk_level_display = serializers.CharField(source="get_final_risk_level_display", read_only=True)
+    reading = PatientVitalReadingSerializer(read_only=True)
+
+    class Meta:
+        model = RiskAssessment
+        fields = [
+            "id",
+            "final_risk_level",
+            "final_risk_level_display",
+            "bp_category",
+            "heart_rate_category",
+            "temperature_category",
+            "glucose_category",
+            "hemoglobin_category",
+            "assessed_at",
+            "reading",
         ]
         read_only_fields = fields
 

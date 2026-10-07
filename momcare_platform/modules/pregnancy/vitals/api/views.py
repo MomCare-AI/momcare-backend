@@ -31,14 +31,12 @@ from momcare_platform.modules.pregnancy.vitals.services import (
     MonitoringError,
     assign_device,
     bulk_resolve_risk_reviews,
-    compute_reading_statistics,
     compute_vitals_summary,
     current_risk,
     escalate_risk,
     latest_readings,
+    readings_in_window,
     reassess_risk,
-    resolve_custom_reading_range,
-    resolve_reading_period,
     review_risk,
     unassign_device,
 )
@@ -92,33 +90,10 @@ class ReadingListCreateView(MonitoringView):
         if missing:
             return missing
 
-        readings = pregnancy.readings.all()
-        tzinfo = pregnancy.patient.location.timezone
-
-        since = request.query_params.get("since")
-        if since:
-            readings = readings.filter(recorded_at__gte=since)
-
-        start_date = request.query_params.get("start_date")
-        end_date = request.query_params.get("end_date")
-        period = request.query_params.get("period")
         try:
-            if start_date or end_date:
-                start, end = resolve_custom_reading_range(start_date, end_date, tzinfo)
-                readings = readings.filter(recorded_at__gte=start, recorded_at__lte=end)
-            elif period:
-                start, end = resolve_reading_period(period, tzinfo)
-                readings = readings.filter(recorded_at__gte=start, recorded_at__lte=end)
+            readings, statistics = readings_in_window(pregnancy, request.query_params)
         except serializers.ValidationError as exc:
             return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
-
-        statistics: dict = {}
-        reading_type = request.query_params.get("reading_type")
-        if reading_type:
-            try:
-                statistics = compute_reading_statistics(readings, reading_type)
-            except serializers.ValidationError as exc:
-                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
 
         paginator = DefaultPagination()
         page = paginator.paginate_queryset(readings.order_by("-recorded_at", "id"), request, view=self)

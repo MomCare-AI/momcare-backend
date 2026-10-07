@@ -5,13 +5,13 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from momcare_platform.core.common.formatting import humanize_days_ago
+from momcare_platform.core.common.rls import bypass_rls
 from momcare_platform.core.monitoring.services import format_duration
-from momcare_platform.core.patients.models import Patient, PatientJoinRequest, Pregnancy
+from momcare_platform.core.patients.models import BLOOD_GROUP_CHOICES, Patient, PatientJoinRequest, Pregnancy
+from momcare_platform.core.patients.profile import ADDRESS_FIELDS
 from momcare_platform.core.staff.api.serializers import SecondaryProviderBriefSerializer
 from momcare_platform.core.staff.models import Staff
-
-# The AddressMixin columns, shared by the patient create/draft/detail serializers.
-ADDRESS_FIELDS = ["address_line1", "address_line2", "city", "state", "postal_code", "country"]
+from momcare_platform.core.users.models import User
 
 
 class PregnancySerializer(serializers.ModelSerializer):
@@ -254,7 +254,7 @@ class PatientListSerializer(serializers.ModelSerializer):
             "mrn",
             "full_name",
             "phone",
-            "cnic",
+            "national_id",
             "date_of_birth",
             "language",
             "pregnancy_id",
@@ -445,9 +445,8 @@ class PatientDetailSerializer(serializers.ModelSerializer):
             "last_name",
             "full_name",
             "date_of_birth",
-            "gender",
             "phone",
-            "cnic",
+            "national_id",
             "blood_group",
             "food_allergies",
             "dietary_preference",
@@ -510,9 +509,8 @@ class PatientCreateSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=50)
     last_name = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
     date_of_birth = serializers.DateField(required=False, allow_null=True)
-    gender = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
-    cnic = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    national_id = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True, default="")
     blood_group = serializers.CharField(max_length=3, required=False, allow_blank=True, default="")
     food_allergies = serializers.ListField(
         child=serializers.CharField(max_length=60), required=False, default=list, max_length=30
@@ -537,6 +535,12 @@ class PatientCreateSerializer(serializers.Serializer):
     postal_code = serializers.CharField(max_length=20)
     country = serializers.CharField(max_length=100)
 
+    # Set when staff are saving the onboarding form for a woman who asked to join
+    # (the form was pre-filled from her request). Saving it IS the approval; the
+    # view resolves it inside the caller's own hospital. Not a patient field, so
+    # it is deliberately absent from PATIENT_FIELDS.
+    join_request = serializers.UUIDField(required=False, allow_null=True)
+
     # allow_null on both optional blocks, not just required=False: a client
     # that builds the whole object and sets the absent parts to null (the
     # normal way a JS or Dart frontend expresses "no pregnancy yet") means
@@ -548,9 +552,8 @@ class PatientCreateSerializer(serializers.Serializer):
         "first_name",
         "last_name",
         "date_of_birth",
-        "gender",
         "phone",
-        "cnic",
+        "national_id",
         "blood_group",
         "food_allergies",
         "dietary_preference",
@@ -569,30 +572,30 @@ class PatientCreateSerializer(serializers.Serializer):
         # in validate() below.
         return value or None
 
-    def validate_cnic(self, value):
+    def validate_national_id(self, value):
         return value or None
 
     def validate(self, attrs):
         # Every applicable problem is collected into one dict and raised once,
         # rather than failing on the first: a caller fixing a duplicate MRN
-        # shouldn't then discover a duplicate CNIC on the next round trip.
+        # shouldn't then discover a duplicate national ID on the next round trip.
         errors = {}
 
         mrn = attrs.get("mrn")
         if mrn and Patient.objects.filter(mrn__iexact=mrn).exists():
             errors["mrn"] = ["A patient with this MRN already exists."]
 
-        cnic = attrs.get("cnic")
+        national_id = attrs.get("national_id")
         organization_id = getattr(self.context["request"].user, "organization_id", None)
         # A caller with no hospital (platform_admin) is skipped rather than
         # filtered on organization_id=None: that lookup would ask for patients
         # whose hospital is NULL, which is a column Patient cannot hold, so it
-        # would quietly pass every duplicate CNIC instead of catching one.
-        # The database's unique_cnic_per_organization constraint is the real
+        # would quietly pass every duplicate national ID instead of catching one.
+        # The database's unique_national_id_per_organization constraint is the real
         # guarantee; this check exists to turn it into a clean 400 first.
-        if cnic and organization_id is not None:
-            if Patient.objects.filter(organization_id=organization_id, cnic__iexact=cnic).exists():
-                errors["cnic"] = ["A patient with this CNIC is already registered at this hospital."]
+        if national_id and organization_id is not None:
+            if Patient.objects.filter(organization_id=organization_id, national_id__iexact=national_id).exists():
+                errors["national_id"] = ["A patient with this national ID is already registered at this hospital."]
 
         if errors:
             raise serializers.ValidationError(errors)
@@ -629,77 +632,14 @@ class WorklistPatientSerializer(serializers.Serializer):
     reasons = WorklistReasonSerializer(many=True)
 
 
-class PatientDraftSerializer(serializers.Serializer):
-    """What a woman can say about herself before any hospital has her.
-
-    Deliberately a subset of ``PatientCreateSerializer``: no location, no
-    organization, no care team, no MRN. Every one of those is a hospital's
-    decision, and she has no hospital yet — offering the fields would invite
-    a client to send values that are silently ignored.
-    """
-
-    first_name = serializers.CharField(max_length=50)
-    last_name = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
-    date_of_birth = serializers.DateField(required=False, allow_null=True)
-    phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
-    cnic = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
-    blood_group = serializers.CharField(max_length=3, required=False, allow_blank=True, default="")
-    emergency_contact_name = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
-    emergency_contact_phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
-    emergency_contact_relation = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
-    emergency_contact_email = serializers.EmailField(required=False, allow_blank=True, default="")
-    consent_date = serializers.DateField(required=False, allow_null=True)
-
-    # Her pregnancy as she reports it — dating and history only. Status and
-    # outcome belong to a clinician.
-    lmp = serializers.DateField(required=False, allow_null=True)
-    edd = serializers.DateField(required=False, allow_null=True)
-    gravida = serializers.IntegerField(required=False, allow_null=True, min_value=0)
-    para = serializers.IntegerField(required=False, allow_null=True, min_value=0)
-
-    PATIENT_FIELDS = [
-        "first_name",
-        "last_name",
-        "date_of_birth",
-        "phone",
-        "cnic",
-        "blood_group",
-        "emergency_contact_name",
-        "emergency_contact_phone",
-        "emergency_contact_relation",
-        "emergency_contact_email",
-        "consent_date",
-    ]
-    PREGNANCY_FIELDS = ["lmp", "edd", "gravida", "para", *Pregnancy.FACTOR_FIELDS]
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # The seven obstetric answers, declared once from the model so this
-        # never drifts from Pregnancy.FACTOR_FIELDS.
-        for field in Pregnancy.FACTOR_FIELDS:
-            self.fields[field] = serializers.ChoiceField(
-                choices=Pregnancy.ANSWER_CHOICES,
-                required=False,
-                default=Pregnancy.UNKNOWN,
-            )
-
-    def split(self) -> tuple[dict, dict | None]:
-        """Into the two dicts ``onboard_patient`` takes."""
-        data = self.validated_data
-        patient_data = {k: v for k, v in data.items() if k in self.PATIENT_FIELDS}
-        pregnancy_data = {k: v for k, v in data.items() if k in self.PREGNANCY_FIELDS}
-        # A pregnancy needs a start; without either date there is nothing to
-        # open and she is simply registered as a patient.
-        if not (pregnancy_data.get("lmp") or pregnancy_data.get("edd")):
-            return patient_data, None
-        return patient_data, pregnancy_data
-
-
 class PatientJoinRequestSerializer(serializers.ModelSerializer):
     organization_name = serializers.CharField(source="organization.name", read_only=True)
     organization_city = serializers.CharField(source="organization.city", read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     patient_id = serializers.UUIDField(source="patient.id", read_only=True, default=None)
+    location_name = serializers.CharField(source="location.name", read_only=True, default=None)
+    # The frozen copy of her profile -- stored as ``draft``, shown as ``profile``.
+    profile = serializers.JSONField(source="draft", read_only=True)
 
     class Meta:
         model = PatientJoinRequest
@@ -708,12 +648,71 @@ class PatientJoinRequestSerializer(serializers.ModelSerializer):
             "organization",
             "organization_name",
             "organization_city",
+            "location",
+            "location_name",
             "status",
             "status_display",
-            "draft",
+            "profile",
             "decision_note",
             "decided_at",
             "patient_id",
             "created_at",
         ]
         read_only_fields = fields
+
+
+class MyProfileSerializer(serializers.Serializer):
+    """What a woman may change in her own profile.
+
+    Write-only in effect (the response is built by profile.payload), and always
+    used with partial=True: the app saves one section at a time. Email is
+    deliberately absent -- it is her sign-in identity and changing it needs its
+    own verified flow, not a profile field.
+
+    Nothing here may be blanked once given: a required detail that can be
+    emptied again would let a woman undo her way back to an incomplete profile
+    that hospitals have already been sent.
+    """
+
+    first_name = serializers.CharField(max_length=50)
+    last_name = serializers.CharField(max_length=50)
+    phone = serializers.CharField(max_length=20)
+    date_of_birth = serializers.DateField()
+    address_line1 = serializers.CharField(max_length=255)
+    address_line2 = serializers.CharField(max_length=255)
+    city = serializers.CharField(max_length=120)
+    state = serializers.CharField(max_length=120)
+    postal_code = serializers.CharField(max_length=20)
+    country = serializers.CharField(max_length=100)
+
+    # Optional: not every country issues a national ID, and many women do not
+    # know their blood group.
+    national_id = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True)
+    blood_group = serializers.ChoiceField(choices=BLOOD_GROUP_CHOICES, required=False, allow_blank=True)
+
+    emergency_contact_name = serializers.CharField(max_length=100)
+    emergency_contact_phone = serializers.CharField(max_length=20)
+    emergency_contact_relation = serializers.CharField(max_length=50)
+    emergency_contact_email = serializers.EmailField()
+
+    def validate_phone(self, value):
+        # Her own row excluded, so re-saving the number she already has is not
+        # a conflict. bypass_rls because the check has to see every account on
+        # the platform, not just the ones this session can read.
+        user = self.context["request"].user
+        with bypass_rls():
+            taken = User.objects.filter(phone=value).exclude(pk=user.pk).exists()
+        if taken:
+            raise serializers.ValidationError("This phone number is already registered.")
+        return value
+
+    def validate_date_of_birth(self, value):
+        if value > timezone.localdate():
+            raise serializers.ValidationError("Date of birth cannot be in the future.")
+        if value.year < 1900:
+            raise serializers.ValidationError("Enter a valid date of birth.")
+        return value
+
+    def validate_national_id(self, value):
+        # Stored as NULL, never "": two women with no national ID must not collide.
+        return value or None

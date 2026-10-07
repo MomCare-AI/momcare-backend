@@ -242,7 +242,7 @@ class PatientRegisterSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, min_length=8)
     first_name = serializers.CharField(max_length=50)
-    last_name = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    last_name = serializers.CharField(max_length=50)
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
     # Her address, given once here at registration and stored on her User. It
     # is copied onto her own Patient record when a hospital approves her.
@@ -299,7 +299,7 @@ class PatientRegisterSerializer(serializers.Serializer):
                 email=validated_data["email"],
                 password=validated_data["password"],
                 first_name=validated_data["first_name"],
-                last_name=validated_data.get("last_name", ""),
+                last_name=validated_data["last_name"],
                 phone=validated_data.get("phone") or None,
                 role=Role.objects.get(code=settings.ROLE_PATIENT),
                 address_line1=validated_data["address_line1"],

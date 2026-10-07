@@ -47,6 +47,7 @@ from .serializers import (
     OptionalGuidanceSerializer,
     ReasonSerializer,
     TextSerializer,
+    items_section_payload,
     plan_payload,
     preference_payload,
     section_payload,
@@ -120,7 +121,9 @@ class CurrentCarePlanView(OrganizationScopedQuerysetMixin, APIView):
     permission_classes = [IsAuthenticated, IsHospitalStaff | IsPatient]
     organization_lookup = "patient__location__organization"
 
-    section: str | None = None  # None: the whole plan; "nutrition"/"exercise": that section alone
+    # None: the whole plan; otherwise that section alone -- "nutrition"/"exercise" (generated)
+    # or "medications"/"notes" (written by staff).
+    section: str | None = None
 
     def get(self, request, pregnancy_id):
         is_patient = user_role_code(request.user) == settings.ROLE_PATIENT
@@ -147,6 +150,8 @@ class CurrentCarePlanView(OrganizationScopedQuerysetMixin, APIView):
         flags = services.plan_progress_flags(pregnancy, plan, week is not None)
         if plan is None:
             return Response({"care_plan": None, **flags})
+        if self.section in ("medications", "notes"):
+            return Response({"care_plan": items_section_payload(plan, self.section), **flags})
         if self.section:
             return Response({"care_plan": section_payload(plan, self.section, for_patient=is_patient), **flags})
         return Response({"care_plan": plan_payload(plan, for_patient=is_patient), **flags})
@@ -158,6 +163,57 @@ class CurrentNutritionView(CurrentCarePlanView):
 
 class CurrentExerciseView(CurrentCarePlanView):
     section = "exercise"
+
+
+class CurrentMedicationsView(CurrentCarePlanView):
+    section = "medications"
+
+
+class CurrentNotesView(CurrentCarePlanView):
+    section = "notes"
+
+
+class MyCarePlansMixin(OrganizationScopedQuerysetMixin):
+    """A patient's own plans -- read-only, every month of her pregnancy.
+
+    The staff routes (``/care-plans/``) stay staff-only; she gets her own
+    ``/my-care-plans/`` so neither side's permissions are bent for the other. Scoped to her
+    hospital first (her token carries it once she is onboarded) and then to herself, so
+    another woman's plan -- even in the same hospital -- is "not found".
+    """
+
+    permission_classes = [IsAuthenticated, IsPatient]
+    organization_lookup = "pregnancy__patient__location__organization"
+
+    def my_plans(self):
+        return self.scope_to_organization(
+            CarePlan.objects.select_related("pregnancy__patient__organization", "reviewed_by", "finalized_by").filter(
+                pregnancy__patient__user=self.request.user
+            )
+        )
+
+
+class MyCarePlanListView(MyCarePlansMixin, APIView):
+    def get(self, request):
+        plans = self.my_plans().order_by("-period_start")
+        pregnancy = request.query_params.get("pregnancy")
+        if pregnancy:
+            try:
+                plans = plans.filter(pregnancy_id=pregnancy)
+            except _LOOKUP_ERRORS:
+                return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(plans, request, view=self)
+        return paginator.get_paginated_response([plan_payload(p, for_patient=True) for p in page])
+
+
+class MyCarePlanDetailView(MyCarePlansMixin, APIView):
+    def get(self, request, plan_id):
+        try:
+            plan = self.my_plans().get(pk=plan_id)
+        except (CarePlan.DoesNotExist, *_LOOKUP_ERRORS):
+            return Response(NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        return Response(plan_payload(plan, for_patient=True))
 
 
 # -- staff edits on generated sections ---------------------------------------

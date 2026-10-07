@@ -517,7 +517,7 @@ def test_a_high_risk_patient_is_never_given_more_than_the_gentle_baseline(
 
 def test_the_prompt_never_contains_who_the_patient_is(make_hospital, make_patient, add_reading, fake_model):
     patient = make_patient(
-        make_hospital("Privacy Hospital"), first_name="Zainab", cnic="35202-1234567-1", phone="03001234567"
+        make_hospital("Privacy Hospital"), first_name="Zainab", national_id="35202-1234567-1", phone="03001234567"
     )
 
     add_reading(patient, MEDIUM)

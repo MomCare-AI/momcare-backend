@@ -20,6 +20,7 @@ from momcare_platform.core.common.jwt_auth import issue_tokens_for
 from momcare_platform.core.common.mail import send_application_received, send_email_otp, send_password_reset
 from momcare_platform.core.common.permissions import user_role_code
 from momcare_platform.core.common.rls import bypass_rls
+from momcare_platform.core.patients import profile as patient_profile
 from momcare_platform.core.users.api.serializers import (
     ForgotPasswordSerializer,
     PasswordChangeSerializer,
@@ -312,6 +313,9 @@ class MeView(APIView):
             # account gets these two keys: staff, hospital admins and platform admins get
             # exactly the response they always had.
             data.update(_own_patient_ids(request.user))
+            # Tells the app, in the one call it already makes on launch, whether to
+            # show the profile form or go straight on to choosing a hospital.
+            data["profile_complete"] = patient_profile.is_complete(request.user)
         return Response(data)
 
 

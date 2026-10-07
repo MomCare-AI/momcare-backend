@@ -153,11 +153,36 @@ def test_sending_a_real_join_request_shows_up_in_the_feed(client, make_hospital,
         is_email_verified=True,
     )
 
+    her = auth(applicant.email, "ApplicantPass!2026")
+    # A request cannot be sent until her profile is complete.
+    filled = client.patch(
+        "/api/my-profile/",
+        data=json.dumps(
+            {
+                "phone": "03001239999",
+                "date_of_birth": "1996-04-12",
+                "address_line1": "House 12, Street 4",
+                "address_line2": "F-7",
+                "city": "Islamabad",
+                "state": "ICT",
+                "postal_code": "44000",
+                "country": "Pakistan",
+                "emergency_contact_name": "Bilal Ahmed",
+                "emergency_contact_phone": "03007654321",
+                "emergency_contact_relation": "Husband",
+                "emergency_contact_email": "bilal@example.test",
+            },
+        ),
+        content_type="application/json",
+        **her,
+    )
+    assert filled.status_code == 200, filled.content
+
     response = client.post(
         "/api/my-requests/",
-        data=json.dumps({"organization": str(hospital.org.id), "draft": {"first_name": "Real"}}),
+        data=json.dumps({"organization": str(hospital.org.id)}),
         content_type="application/json",
-        **auth(applicant.email, "ApplicantPass!2026"),
+        **her,
     )
     assert response.status_code == 201
 

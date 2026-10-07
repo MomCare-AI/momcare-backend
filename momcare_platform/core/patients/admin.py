@@ -16,12 +16,12 @@ class PregnancyInline(admin.TabularInline):
 class PatientAdmin(admin.ModelAdmin):
     list_display = ["mrn", "full_name", "hospital", "phone", "app_account", "is_active", "created_at"]
     list_filter = ["is_active", "blood_group", "location__organization"]
-    search_fields = ["mrn", "first_name", "last_name", "phone", "cnic"]
+    search_fields = ["mrn", "first_name", "last_name", "phone", "national_id"]
     readonly_fields = ["mrn", "created_at", "updated_at"]
     inlines = [PregnancyInline]
     fieldsets = (
-        ("Identity", {"fields": ("mrn", "first_name", "last_name", "date_of_birth", "gender")}),
-        ("Contact", {"fields": ("phone", "cnic", "blood_group")}),
+        ("Identity", {"fields": ("mrn", "first_name", "last_name", "date_of_birth")}),
+        ("Contact", {"fields": ("phone", "national_id", "blood_group")}),
         (
             "Emergency contact",
             {

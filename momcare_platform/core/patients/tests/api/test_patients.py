@@ -26,7 +26,7 @@ def enrolment_payload(**overrides):
         "first_name": "Ayesha",
         "last_name": "Bibi",
         "phone": "03001234567",
-        "cnic": "61101-1234567-8",
+        "national_id": "61101-1234567-8",
         "blood_group": "O+",
         "address_line1": "House 12, Street 4",
         "address_line2": "F-7",
@@ -97,8 +97,8 @@ def test_two_patients_without_an_mrn_do_not_collide(client, make_hospital, auth)
     hospital = make_hospital("Blank MRN Hospital")
     headers = auth(hospital.admin.email)
 
-    first = post_patient(client, headers, first_name="One", cnic="", mrn="")
-    second = post_patient(client, headers, first_name="Two", cnic="", mrn="")
+    first = post_patient(client, headers, first_name="One", national_id="", mrn="")
+    second = post_patient(client, headers, first_name="Two", national_id="", mrn="")
 
     assert first.status_code == 201
     assert second.status_code == 201
@@ -110,7 +110,7 @@ def test_a_duplicate_mrn_is_rejected(client, make_hospital, auth):
     headers = auth(hospital.admin.email)
     post_patient(client, headers, first_name="One", mrn="DUP-001")
 
-    response = post_patient(client, headers, first_name="Two", cnic="", mrn="DUP-001")
+    response = post_patient(client, headers, first_name="Two", national_id="", mrn="DUP-001")
 
     assert response.status_code == 400
     assert "mrn" in response.json()
@@ -121,14 +121,14 @@ def test_a_duplicate_mrn_is_rejected_case_insensitively(client, make_hospital, a
     headers = auth(hospital.admin.email)
     post_patient(client, headers, first_name="One", mrn="abc-001")
 
-    response = post_patient(client, headers, first_name="Two", cnic="", mrn="ABC-001")
+    response = post_patient(client, headers, first_name="Two", national_id="", mrn="ABC-001")
 
     assert response.status_code == 400
     assert "mrn" in response.json()
 
 
 def test_mrn_is_unique_across_hospitals(client, make_hospital, auth):
-    """MRN uniqueness is global, unlike CNIC which is scoped per hospital."""
+    """MRN uniqueness is global, unlike national ID which is scoped per hospital."""
     alpha = make_hospital("Alpha MRN")
     beta = make_hospital("Beta MRN")
     post_patient(client, auth(alpha.admin.email), mrn="SHARED-001")
@@ -146,9 +146,9 @@ def test_two_hospitals_sharing_a_name_prefix_can_both_onboard(client, make_hospi
     second = make_hospital("APITEST Rival Hospital")
 
     for index in range(6):
-        post_patient(client, auth(first.admin.email), first_name=f"P{index}", cnic=f"61101-111111{index}-1")
+        post_patient(client, auth(first.admin.email), first_name=f"P{index}", national_id=f"61101-111111{index}-1")
 
-    response = post_patient(client, auth(second.admin.email), first_name="Rival", cnic="")
+    response = post_patient(client, auth(second.admin.email), first_name="Rival", national_id="")
 
     assert response.status_code == 201
 
@@ -524,7 +524,7 @@ def test_search_matches_each_identifier(client, make_hospital, auth, term):
     hospital = make_hospital("Search Hospital")
     headers = auth(hospital.admin.email)
     post_patient(client, headers)
-    post_patient(client, headers, first_name="Sana", last_name="Malik", phone="03119999999", cnic="")
+    post_patient(client, headers, first_name="Sana", last_name="Malik", phone="03119999999", national_id="")
 
     results = client.get(f"{PATIENTS}?search={term}", **headers).json()["results"]
 
@@ -546,7 +546,7 @@ def test_list_is_paginated(client, make_hospital, auth):
     hospital = make_hospital("Paged Hospital")
     headers = auth(hospital.admin.email)
     for i in range(3):
-        post_patient(client, headers, first_name=f"Patient{i}", cnic="", phone="")
+        post_patient(client, headers, first_name=f"Patient{i}", national_id="", phone="")
 
     body = client.get(PATIENTS, **headers).json()
 
@@ -745,7 +745,7 @@ def test_listing_more_patients_does_not_cost_more_queries(
     hospital = make_hospital("Volume Hospital")
     headers = auth(hospital.admin.email)
     for index in range(6):
-        post_patient(client, headers, first_name=f"Patient{index}", cnic=f"61101-000000{index}-1")
+        post_patient(client, headers, first_name=f"Patient{index}", national_id=f"61101-000000{index}-1")
 
     with django_assert_max_num_queries(15):
         response = client.get(PATIENTS, **headers)
@@ -754,7 +754,7 @@ def test_listing_more_patients_does_not_cost_more_queries(
     assert response.json()["count"] == 6
 
 
-# ── Organization column, CNIC uniqueness, emergency contact email ─────────────
+# ── Organization column, national ID uniqueness, emergency contact email ─────────────
 
 
 def test_patient_organization_is_set_from_the_enrolling_hospital(client, make_hospital, auth):
@@ -765,35 +765,35 @@ def test_patient_organization_is_set_from_the_enrolling_hospital(client, make_ho
     assert patient.organization_id == hospital.org.id
 
 
-def test_cnic_is_unique_within_a_hospital(client, make_hospital, auth):
-    hospital = make_hospital("CNIC Unique Hospital")
+def test_national_id_is_unique_within_a_hospital(client, make_hospital, auth):
+    hospital = make_hospital("national ID Unique Hospital")
     headers = auth(hospital.admin.email)
-    post_patient(client, headers, first_name="First", cnic="61101-1111111-1")
+    post_patient(client, headers, first_name="First", national_id="61101-1111111-1")
 
-    response = post_patient(client, headers, first_name="Second", cnic="61101-1111111-1")
+    response = post_patient(client, headers, first_name="Second", national_id="61101-1111111-1")
 
     assert response.status_code == 400
 
 
-def test_cnic_can_repeat_across_different_hospitals(client, make_hospital, auth):
-    alpha = make_hospital("CNIC Alpha")
-    beta = make_hospital("CNIC Beta")
+def test_national_id_can_repeat_across_different_hospitals(client, make_hospital, auth):
+    alpha = make_hospital("national ID Alpha")
+    beta = make_hospital("national ID Beta")
 
-    first = post_patient(client, auth(alpha.admin.email), cnic="61101-2222222-2")
-    second = post_patient(client, auth(beta.admin.email), cnic="61101-2222222-2")
+    first = post_patient(client, auth(alpha.admin.email), national_id="61101-2222222-2")
+    second = post_patient(client, auth(beta.admin.email), national_id="61101-2222222-2")
 
     assert first.status_code == 201
     assert second.status_code == 201
 
 
-def test_two_patients_without_cnic_do_not_collide(client, make_hospital, auth):
-    """Blank CNIC is stored as NULL, never '', so two blank values never
+def test_two_patients_without_national_id_do_not_collide(client, make_hospital, auth):
+    """Blank national ID is stored as NULL, never '', so two blank values never
     false-positive collide under the unique constraint."""
-    hospital = make_hospital("No CNIC Hospital")
+    hospital = make_hospital("No national ID Hospital")
     headers = auth(hospital.admin.email)
 
-    first = post_patient(client, headers, first_name="First", cnic="")
-    second = post_patient(client, headers, first_name="Second", cnic="")
+    first = post_patient(client, headers, first_name="First", national_id="")
+    second = post_patient(client, headers, first_name="Second", national_id="")
 
     assert first.status_code == 201
     assert second.status_code == 201
@@ -855,14 +855,14 @@ def test_assigned_to_me_returns_patients_where_caller_is_the_nurse(
         client,
         auth(hospital.admin.email),
         first_name="Mine",
-        cnic="61101-3333333-1",
+        national_id="61101-3333333-1",
         pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
     )
     post_patient(
         client,
         auth(hospital.admin.email),
         first_name="NotMine",
-        cnic="61101-3333333-2",
+        national_id="61101-3333333-2",
         pregnancy={"lmp": "2026-01-01", "nurse": str(other_nurse.staff.id)},
     )
 
@@ -885,10 +885,10 @@ def test_assigned_to_me_returns_patients_where_caller_is_the_provider(
         client,
         auth(hospital.admin.email),
         first_name="Mine",
-        cnic="61101-4444444-1",
+        national_id="61101-4444444-1",
         pregnancy={"lmp": "2026-01-01", "provider": str(provider.staff.id)},
     )
-    post_patient(client, auth(hospital.admin.email), first_name="NotMine", cnic="61101-4444444-2")
+    post_patient(client, auth(hospital.admin.email), first_name="NotMine", national_id="61101-4444444-2")
 
     response = client.get(f"{PATIENTS}?assigned_to=me", **auth("provider@providerassigned.test"))
 
@@ -947,7 +947,7 @@ def test_assigning_a_staff_member_already_at_capacity_is_rejected(client, make_h
         client,
         auth(hospital.admin.email),
         first_name="First",
-        cnic="61101-5555555-1",
+        national_id="61101-5555555-1",
         pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
     )
 
@@ -955,7 +955,7 @@ def test_assigning_a_staff_member_already_at_capacity_is_rejected(client, make_h
         client,
         auth(hospital.admin.email),
         first_name="Second",
-        cnic="61101-5555555-2",
+        national_id="61101-5555555-2",
         pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
     )
 
@@ -973,14 +973,14 @@ def test_a_staff_member_with_no_max_patients_is_never_at_capacity(client, make_h
         client,
         auth(hospital.admin.email),
         first_name="First",
-        cnic="61101-6666666-1",
+        national_id="61101-6666666-1",
         pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
     )
     second = post_patient(
         client,
         auth(hospital.admin.email),
         first_name="Second",
-        cnic="61101-6666666-2",
+        national_id="61101-6666666-2",
         pregnancy={"lmp": "2026-01-01", "nurse": str(nurse.staff.id)},
     )
 

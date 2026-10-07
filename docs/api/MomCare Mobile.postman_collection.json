@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "805ca678-3012-48bd-bd6e-fbc93350b909",
     "name": "MomCare Mobile",
-    "description": "MomCare patient-side API for the Flutter mobile app. The hospital-staff web app (Next.js) has its own collection, `MomCare Platform`.\n\nSetup:\n1. Set `base_url` (default http://localhost:8000).\n2. Sign up (Patient Signup -> Sign Up), confirm the emailed code (Verify Email), then call Auth -> Login -- it auto-saves `access_token` used by every protected request.\n3. The refresh token is an HttpOnly cookie set by Login; Refresh/Logout read it automatically.\n4. Browse Hospitals -> Send Request to Hospital. Once the hospital approves, Auth -> Me returns her `patient_id` and `pregnancy_id` (both null until then). Set `pregnancy_id` to use My Care Plan.\n\nConventions:\n- Every endpoint works WITH or WITHOUT a trailing slash.\n- All endpoints require `Authorization: Bearer {{access_token}}` except Login, Forgot/Verify/Reset Password and the three sign-up verification calls.\n- IDs are UUID strings, never integers.\n- A patient only ever reaches her own records; anything else resolves to 404, never 403.\n- Pagination envelope on list endpoints: `{count, page, page_size, total_pages, next, previous, results}`.\n- Auth and My Care Plan requests are shared with the web collection (staff use them too); keep the two in sync when they change.",
+    "description": "MomCare patient-side API for the Flutter mobile app. The hospital-staff web app (Next.js) has its own collection, `MomCare Platform`.\n\nSetup:\n1. Set `base_url` (default http://localhost:8000).\n2. Sign up (Patient Signup -> Sign Up), confirm the emailed code (Verify Email), then call Auth -> Login -- it auto-saves `access_token` used by every protected request.\n3. The refresh token is an HttpOnly cookie set by Login; Refresh/Logout read it automatically.\n4. Fill in her profile once (My Profile -> Update My Profile). Auth -> Me says `profile_complete`.\n5. Join a Hospital -> Browse Hospitals, set `organization_id` (and optionally `location_id`), then Send Request to Hospital. A request cannot be sent until the profile is complete.\n6. The hospital opens her request, completes the clinical details at her visit and saves the onboarding form -- that is the approval. After that Auth -> Me returns `organization_id`, `patient_id` and (once a clinician opens a pregnancy) `pregnancy_id`; set `pregnancy_id` to use My Care Plan (her plan appears once a reading has been recorded for her; the folder is read-only -- she can see the plan, nutrition, exercise, medications, notes and earlier months, but change none of it).\n\n7. My Readings is read-only: she sees her readings (with the 2 days / 1 week / 1 month / 3 months / 6 months / 1 year / custom filters and averages), her latest reading, the 30-day summary and her risk. Readings are entered by the hospital, never in the app.\n\nConventions:\n- Every endpoint works WITH or WITHOUT a trailing slash.\n- All endpoints require `Authorization: Bearer {{access_token}}` except Login, Forgot/Verify/Reset Password and the three sign-up verification calls.\n- IDs are UUID strings, never integers.\n- A patient only ever reaches her own records; anything else resolves to 404, never 403.\n- Pagination envelope on list endpoints: `{count, page, page_size, total_pages, next, previous, results}`.\n- Her profile is identity only. Medical history, allergies and pregnancy dating are recorded by the hospital at her visit, never asked in the app.\n- Auth and My Care Plan requests are shared with the web collection (staff use them too); keep the two in sync when they change.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -134,7 +134,7 @@
                 ""
               ]
             },
-            "description": "The signed-in user's own identity and role.\n\nCarries `requires_password_reset`. It is `true` for an invited staff member who has not yet chosen a password — send them to the set-password screen rather than the portal.\n\nFor a PATIENT account the response also carries `patient_id` and `pregnancy_id` (her own record and her current active pregnancy; `pregnancy_id` is null when she has none). Her app uses `pregnancy_id` to build `/pregnancies/{id}/current-care-plan/` and her readings URLs. Staff, hospital-admin and platform-admin responses do NOT include these keys, and the login response is unchanged."
+            "description": "The signed-in user's own identity and role.\n\nCarries `requires_password_reset`. It is `true` for an invited staff member who has not yet chosen a password — send them to the set-password screen rather than the portal.\n\nFor a PATIENT account the response also carries `patient_id` and `pregnancy_id` (her own record and her current active pregnancy; `pregnancy_id` is null when she has none). Her app uses `pregnancy_id` to build `/pregnancies/{id}/current-care-plan/` and her readings URLs. Staff, hospital-admin and platform-admin responses do NOT include these keys, and the login response is unchanged.\n\n**Patient accounts also get:** `patient_id` and `pregnancy_id` (null until a hospital onboards her / a pregnancy is opened) and `profile_complete` -- false means show the profile form (My Profile). Staff accounts get none of these three keys."
           },
           "response": []
         },
@@ -329,7 +329,7 @@
                 ""
               ]
             },
-            "description": "A woman signing herself up from the mobile app. **No auth required.**\n\nCreates an account and nothing else — **no tokens yet**. Her account has no organization and there is no Patient record; that only happens once a hospital approves a later join request.\n\nRequired: `email` (globally unique among *verified* accounts — see below), `password` (min 8, Django validators), `first_name`. Optional: `last_name`, `phone`.\n\n**201 does not mean she's signed in.** A six-digit code is emailed to her; she must confirm it at **Verify Email** before she can sign in at all — `LoginView` refuses an unverified patient outright. This is deliberately the *one* signup path on this platform that gets this check: hospital owners are identity-checked by a human reviewer, and staff are invited to a specific address by an admin — neither needs an OTP on top of that.\n\n**Retrying is safe.** If she abandons this attempt (lost the code, let it expire, mistyped something) and signs up again with the *same* email before verifying, this endpoint quietly replaces the old unverified attempt rather than saying \"email taken\" — an abandoned first try can never permanently lock her out of her own address. Once verified, that same email is locked for good. Address: all six fields are required -- `address_line1`, `address_line2`, `city`, `state`, `postal_code`, `country`. It is stored on her account here, once, and copied onto her own Patient record when a hospital approves her join request.",
+            "description": "A woman signing herself up from the mobile app. **No auth required.**\n\nCreates an account and nothing else — **no tokens yet**. Her account has no organization and there is no Patient record; that only happens once a hospital approves a later join request.\n\nRequired: `email` (globally unique among *verified* accounts — see below), `password` (min 8, Django validators), `first_name`, `last_name`. Optional: `phone` (asked for again, and required, at the profile step).\n\n**201 does not mean she's signed in.** A six-digit code is emailed to her; she must confirm it at **Verify Email** before she can sign in at all — `LoginView` refuses an unverified patient outright. This is deliberately the *one* signup path on this platform that gets this check: hospital owners are identity-checked by a human reviewer, and staff are invited to a specific address by an admin — neither needs an OTP on top of that.\n\n**Retrying is safe.** If she abandons this attempt (lost the code, let it expire, mistyped something) and signs up again with the *same* email before verifying, this endpoint quietly replaces the old unverified attempt rather than saying \"email taken\" — an abandoned first try can never permanently lock her out of her own address. Once verified, that same email is locked for good. Address: all six fields are required -- `address_line1`, `address_line2`, `city`, `state`, `postal_code`, `country`. It is stored on her account here, once, and copied onto her own Patient record when a hospital approves her join request.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"ayesha@example.test\",\n  \"password\": \"HerOwnPick!2026\",\n  \"first_name\": \"Ayesha\",\n  \"last_name\": \"Bibi\",\n  \"phone\": \"03001234567\",\n  \"address_line1\": \"House 12, Street 4\",\n  \"address_line2\": \"F-7\",\n  \"city\": \"Islamabad\",\n  \"state\": \"ICT\",\n  \"postal_code\": \"44000\",\n  \"country\": \"Pakistan\"\n}",
@@ -427,7 +427,71 @@
             }
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "My Profile",
+      "item": [
+        {
+          "name": "Get My Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/my-profile/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "my-profile",
+                ""
+              ]
+            },
+            "description": "Her own profile -- the details she enters **once** and every join request reuses.\n\nPermissions: IsAuthenticated + **IsPatient**. Only ever her own rows.\n\n**When to call it:** straight after the first login (and on launch, when `GET /auth/me/` says `profile_complete` is false). If `is_complete` is false, show the profile form; `missing_fields` lists exactly which fields to highlight.\n\nIdentity only: nothing medical. Name, phone, date of birth and address are `User` columns (name and address came from sign-up); `national_id`, `blood_group` and the emergency contact are her `PatientProfile`.\n\n**Required before she can send a join request:** `first_name`, `last_name`, `phone`, `date_of_birth`, the six address fields and all four `emergency_contact_*` fields. **Optional:** `national_id` (not every country issues one) and `blood_group`.\n\nResponse: every field above, plus `email` (read-only), `is_complete` and `missing_fields`."
+          },
+          "response": []
         },
+        {
+          "name": "Update My Profile",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/my-profile/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "my-profile",
+                ""
+              ]
+            },
+            "description": "Save part or all of her profile. Send only the fields being changed -- the app can save one section at a time.\n\nPermissions: IsAuthenticated + **IsPatient**.\n\nReturns the whole profile with the new `is_complete` / `missing_fields`.\n\n**400** cases: a required field blanked (a given detail can be changed but not emptied), a phone number already used by another account, a date of birth in the future, an unknown `blood_group`, a malformed emergency-contact email. `national_id` may be blank. `email` cannot be changed here.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"03001234567\",\n  \"date_of_birth\": \"1996-04-12\",\n  \"national_id\": \"61101-7654321-0\",\n  \"blood_group\": \"O+\",\n  \"emergency_contact_name\": \"Bilal Ahmed\",\n  \"emergency_contact_phone\": \"03007654321\",\n  \"emergency_contact_relation\": \"Husband\",\n  \"emergency_contact_email\": \"bilal@example.test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Join a Hospital",
+      "item": [
         {
           "name": "Browse Hospitals",
           "request": {
@@ -454,7 +518,7 @@
                 }
               ]
             },
-            "description": "The hospitals she can ask to join.\n\nPermissions: any authenticated user.\n\nOnly **approved and active** hospitals appear — one still under review is not hers to discover. Returns public fields only (name, city, country, phone): never patient counts, licences or staff.\n\n`search` matches name or city; `city` filters exactly. Deliberately a searchable list, NOT distance-sorted — real 'hospitals near me' needs coordinates the Location model does not carry, and inventing them would be worse than a city filter that is honest about what it is.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
+            "description": "The hospitals she can ask to join. Searchable (`search`, `city`).\n\nPermissions: IsAuthenticated. Approved, active hospitals only; only public-facing fields.\n\nEach hospital lists its active branches under `locations` (`id`, `name`, `city`, `state`). Pass one of those ids as `location` when sending a request to be onboarded at that branch. A hospital that has not set up a branch yet returns an empty list, and then admits her to its default location."
           },
           "response": []
         },
@@ -479,10 +543,10 @@
                 ""
               ]
             },
-            "description": "Send her details to a hospital and ask to be taken on.\n\nPermissions: IsAuthenticated + **IsPatient**.\n\n`draft` is what she reports about herself. Deliberately a SUBSET of hospital-side onboarding — no `location`, no `organization`, no care team, no MRN. Every one of those is a hospital's decision and she has no hospital yet.\n\nThe draft is validated NOW (a bad one is a 400 immediately) and **re-validated at approval** before anything is created from it.\n\n**409** if she already has a request waiting with this hospital. **404** if the hospital does not exist or is not approved — the same response either way.\n\nStill no Patient record at this point. No address in the draft -- her address comes from her account (given at registration) and is copied onto the Patient on approval.",
+            "description": "Ask a hospital to take her on. **The body is only the hospital** (and optionally one of its branches) -- everything else comes from her profile.\n\nPermissions: IsAuthenticated + **IsPatient**.\n\n`organization` is required. `location` is optional: one of that hospital's active branches from Browse Hospitals; leave it out to be admitted to the hospital's default location.\n\nThe server copies her profile into the request as a frozen snapshot (`profile` in the response). Editing her profile afterwards does not change a request already sent; a request sent later carries the newer details. Nothing the client sends can alter the snapshot.\n\n**400** with `missing_fields` if her profile is incomplete (see My Profile -> Get My Profile). **400** if `location` is not an active branch of that hospital. **404** if the hospital does not exist or is not approved (same response either way). **409** if she already has a request waiting with this hospital.\n\nThe request stays `pending` until the hospital saves her onboarding form, which may be after she visits in person. Still no Patient record until then.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"organization\": \"{{organization_id}}\",\n  \"draft\": {\n    \"first_name\": \"Ayesha\",\n    \"last_name\": \"Bibi\",\n    \"phone\": \"03001234567\",\n    \"cnic\": \"61101-7654321-0\",\n    \"blood_group\": \"O+\",\n    \"consent_date\": \"2026-02-10\",\n    \"lmp\": \"2026-02-01\",\n    \"gravida\": 2,\n    \"para\": 1,\n    \"previous_c_section\": \"yes\",\n    \"chronic_hypertension\": \"no\"\n  }\n}",
+              "raw": "{\n  \"organization\": \"{{organization_id}}\",\n  \"location\": \"{{location_id}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -518,7 +582,7 @@
                 }
               ]
             },
-            "description": "Every request she has sent, with its status and the hospital's decision note.\n\nPermissions: IsAuthenticated + IsPatient.\n\nShe has no organization, so Postgres RLS — correctly fail-closed — would show her nothing. This endpoint runs inside `bypass_rls()` with an explicit `user=request.user` filter instead: the filter, not the policy, is what keeps her to her own rows here.\n\nOnce approved, `patient_id` points at her new clinical record.\n\nStatuses: `pending`, `approved`, `rejected`, and `withdrawn` — the last meaning she was accepted elsewhere while this one was still open.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
+            "description": "Every request she has sent, with its status and the hospital's decision note.\n\nPermissions: IsAuthenticated + IsPatient.\n\nShe has no organization, so Postgres RLS — correctly fail-closed — would show her nothing. This endpoint runs inside `bypass_rls()` with an explicit `user=request.user` filter instead: the filter, not the policy, is what keeps her to her own rows here.\n\nOnce approved, `patient_id` points at her new clinical record.\n\nStatuses: `pending`, `approved`, `rejected`, and `withdrawn` — the last meaning she was accepted elsewhere while this one was still open.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100).\n\nEach row has `status` (`pending`, `approved`, `rejected`, `withdrawn`), `location` / `location_name` and the `profile` snapshot that was sent. `approved` means a hospital has onboarded her: sign in again (or refresh) and `GET /auth/me/` now returns her `organization_id`, `patient_id` and, once a clinician opens it, `pregnancy_id`."
           },
           "response": []
         },
@@ -564,11 +628,33 @@
       "name": "My Care Plan",
       "item": [
         {
+          "name": "Get Current Care Plan",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/current-care-plan/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "current-care-plan",
+                ""
+              ]
+            },
+            "description": "Her whole current plan in one response: nutrition, exercise, the doctor's medications and notes, allergies and conditions, this week's progress, quick reading advice, the contact-your-care-team message, warning signs and a disclaimer.\n\nPermissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's is 404). The patient version never carries staff bookkeeping (who reviewed or finalized it).\n\n`care_plan` is `null` until her first reading has produced a plan. `preparing` / progress flags in the same response say what is happening, so the app can show \"your plan is being prepared\" instead of an empty screen.\n\n**Read-only.** A patient never creates or changes anything in a care plan: the plan is generated from her readings and the doctor adds medications and notes. She only reads it."
+          },
+          "response": []
+        },
+        {
           "name": "Get Current Nutrition",
           "request": {
             "method": "GET",
             "header": [],
-            "description": "The current plan's nutrition alone, or `{\"care_plan\": null}` before any reading. Permissions: any hospital-side role, or the patient herself (own pregnancy only, read-only, without staff bookkeeping).\n\nNutrition and exercise are separate pieces of advice, generated by separate AI requests. This returns the section on its own: `content` (staff edits applied; each item tagged `source: ai|staff`), `basis`, `sources`, `source_links` and `generated_by_ai_notice` (`basis` says where the plan comes from: `web_search` = the AI searched the web, for THIS plan, for the official guidance of the patient's country and `source_links` ([{title, url, host}]) are the pages it really read (recorded by code from the search, never typed by the model); `ai_only` = no official document was found (or the search was unavailable), so the plan is the AI's own work and `generated_by_ai_notice` says so -- show it; `baseline` = MomCare's fixed generic plan. `sources` is the same as readable text. `sources_verified` stays false: the content is not checked against the pages), `generated_at` (when this version was created), `label`, `status`, disclaimer and warning signs.\n\nThis is the current WEEK's plan (it is rewritten weekly, and mid-week only when a worse condition persists).",
+            "description": "Just the nutrition section of her current plan, with its own progress summary and the sources it was based on.\n\nPermissions: IsAuthenticated + **IsPatient**, her own pregnancy only. `care_plan` is `null` until a plan exists.\n\n**Read-only.** A patient never creates or changes anything in a care plan: the plan is generated from her readings and the doctor adds medications and notes. She only reads it.",
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/current-care-plan/nutrition/",
               "host": [
@@ -591,7 +677,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "description": "The current plan's physical-activity plan alone, or `{\"care_plan\": null}` before any reading. Permissions: any hospital-side role, or the patient herself (own pregnancy only, read-only).\n\nNutrition and exercise are separate pieces of advice, generated by separate AI requests. This returns the section on its own: `content` (staff edits applied; each item tagged `source: ai|staff`), `basis`, `sources`, `source_links` and `generated_by_ai_notice` (`basis` says where the plan comes from: `web_search` = the AI searched the web, for THIS plan, for the official guidance of the patient's country and `source_links` ([{title, url, host}]) are the pages it really read (recorded by code from the search, never typed by the model); `ai_only` = no official document was found (or the search was unavailable), so the plan is the AI's own work and `generated_by_ai_notice` says so -- show it; `baseline` = MomCare's fixed generic plan. `sources` is the same as readable text. `sources_verified` stays false: the content is not checked against the pages), `generated_at` (when this version was created), `label`, `status`, disclaimer and warning signs.\n\nThis is the current WEEK's plan (it is rewritten weekly, and mid-week only when a worse condition persists).",
+            "description": "Just the exercise section of her current plan, with its own progress summary and the sources it was based on.\n\nPermissions: IsAuthenticated + **IsPatient**, her own pregnancy only. `care_plan` is `null` until a plan exists.\n\n**Read-only.** A patient never creates or changes anything in a care plan: the plan is generated from her readings and the doctor adds medications and notes. She only reads it.",
             "url": {
               "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/current-care-plan/exercise/",
               "host": [
@@ -610,12 +696,12 @@
           "response": []
         },
         {
-          "name": "Get Current Care Plan",
+          "name": "Get Current Medications",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/current-care-plan/",
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/current-care-plan/medications/",
               "host": [
                 "{{base_url}}"
               ],
@@ -624,10 +710,309 @@
                 "pregnancies",
                 "{{pregnancy_id}}",
                 "current-care-plan",
+                "medications",
                 ""
               ]
             },
-            "description": "The plan holding the pregnancy week she is in (a week belongs to the month containing its first day), or the latest plan, or `{\"care_plan\": null}` if no reading has generated one yet. GET never creates a plan.\n\nPermissions: IsAuthenticated + any hospital-side role, OR the patient herself -- a patient only ever reaches her own pregnancy and gets the same payload read-only, without staff bookkeeping (reviewer names, clinical_review, evaluation time). A patient who asks for someone else's pregnancy gets 404.\n\nWEEKLY STRUCTURE (docs/design/2026-10-06-weekly-care-plan-design.md): nutrition and exercise are written once per PREGNANCY WEEK (week 17 = 17w0d-17w6d, counted from day 1), by the first reading of the week or by the sweep job. The response adds: `week` ({week_number, week_start, week_end, replans, last_replan_reason}); `progress` ({facts, text}: last week's readings as percentages by risk level, the main concerns, the trend against earlier readings this month, and the areas to work on -- computed by code from her readings, never by the AI); `reading_advice` (short quick advice for the latest medium/high or worse-than-plan reading, with `tips`, `contact_care_team`/`contact_message` -- always set for high risk -- and the weekly plan's `basis`, `sources`, `source_links`, `generated_by_ai_notice`, `sources_verified: false`; it disappears once the week has been re-planned, and it never replaces the weekly plan); and `weeks` (this monthly plan's weeks with their trend).\n\nWHEN THE WEEKLY PLAN CHANGES: at the start of each pregnancy week; at once if her allergies, diet, conditions or stage of pregnancy change; and mid-week only if a worse-than-plan condition PERSISTS (3 consecutive worse readings, counted in readings only -- there is no time rule). A single worse reading only produces the quick advice. A new pregnancy week's plan is written at 12 am local time (where she lives) by a scheduled job, not at her first reading."
+            "description": "The medications the doctor has added to her current plan, on their own.\n\nPermissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's is 404).\n\n`care_plan.items` is a list of `{id, text, added_by, created_at}`, oldest first; medications the doctor has removed are not shown. An empty list means the doctor has added none. `care_plan` is `null` until a plan exists. The same items are also inside Get Current Care Plan under `medications`.\n\n**Read-only.** A patient never creates or changes anything in a care plan: the plan is generated from her readings and the doctor adds medications and notes. She only reads it."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Current Notes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/current-care-plan/notes/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "current-care-plan",
+                "notes",
+                ""
+              ]
+            },
+            "description": "The notes the care team has written for her on her current plan, on their own.\n\nPermissions: IsAuthenticated + **IsPatient**, her own pregnancy only.\n\n`care_plan.items` is a list of `{id, text, added_by, created_at}`, oldest first; removed notes are not shown. These are the notes written for the patient to read -- staff's private monitoring notes are a different thing and are never shown here. She cannot reply to a note: if something is wrong she uses the contact-your-care-team message and her readings.\n\n**Read-only.** A patient never creates or changes anything in a care plan: the plan is generated from her readings and the doctor adds medications and notes. She only reads it."
+          },
+          "response": []
+        },
+        {
+          "name": "List My Care Plans",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/my-care-plans/?page=1&page_size=12",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "my-care-plans",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "12"
+                }
+              ]
+            },
+            "description": "Every month's plan of her pregnancy, newest first -- her history, not just the current month.\n\nPermissions: IsAuthenticated + **IsPatient**. Only her own plans. Optional `pregnancy` filter. Standard pagination envelope.\n\nEach row is the same patient version of the plan as Get Current Care Plan (nutrition, exercise, medications, notes, ...). Use `id` with Get My Care Plan and `is_current_month` to tell the current month apart.\n\n**Read-only.** A patient never creates or changes anything in a care plan: the plan is generated from her readings and the doctor adds medications and notes. She only reads it."
+          },
+          "response": []
+        },
+        {
+          "name": "Get My Care Plan",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/my-care-plans/{{care_plan_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "my-care-plans",
+                "{{care_plan_id}}",
+                ""
+              ]
+            },
+            "description": "One of her own plans by id, in the patient version.\n\nPermissions: IsAuthenticated + **IsPatient**. Another woman's plan (even at the same hospital) is **404**, never 403.\n\n**Read-only.** A patient never creates or changes anything in a care plan: the plan is generated from her readings and the doctor adds medications and notes. She only reads it."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "My Readings",
+      "item": [
+        {
+          "name": "List My Readings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/my-readings/?page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "my-readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Her readings, newest first, in the standard pagination envelope. Each row has the vitals, `source` (device or manual) and `recorded_at`; the internal device id is not shown.\n\nThe response also carries a `statistics` block, empty unless `reading_type` is sent (see the variants below).\n\nFilters, all optional: `period` = `2_days`, `1_week`, `1_month`, `3_months`, `6_months`, `1_year`; or `start_date` + `end_date` (YYYY-MM-DD, a custom range wins over `period`); or `since`. A bad value is a 400.\n\n**Read-only.** Readings are recorded by the hospital (or a device), never by the patient: there is no way to add or change one from the app. Permissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's, even at the same hospital, is 404). `pregnancy_id` comes from `GET /auth/me/`."
+          },
+          "response": []
+        },
+        {
+          "name": "List My Readings - 2 Days",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/my-readings/?period=2_days",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "my-readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "2_days"
+                }
+              ]
+            },
+            "description": "Same list, narrowed to today and yesterday. Swap the value for `1_week`, `1_month`, `3_months`, `6_months` or `1_year`.\n\n**Read-only.** Readings are recorded by the hospital (or a device), never by the patient: there is no way to add or change one from the app. Permissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's, even at the same hospital, is 404). `pregnancy_id` comes from `GET /auth/me/`."
+          },
+          "response": []
+        },
+        {
+          "name": "List My Readings - Custom Date Range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/my-readings/?start_date=2026-08-01&end_date=2026-08-31",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "my-readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "start_date",
+                  "value": "2026-08-01"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2026-08-31"
+                }
+              ]
+            },
+            "description": "Same list, between two dates (inclusive, in the hospital's timezone).\n\n**Read-only.** Readings are recorded by the hospital (or a device), never by the patient: there is no way to add or change one from the app. Permissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's, even at the same hospital, is 404). `pregnancy_id` comes from `GET /auth/me/`."
+          },
+          "response": []
+        },
+        {
+          "name": "List My Readings - Blood Pressure, Past Month (with Averages)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/my-readings/?period=1_month&reading_type=blood_pressure",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "my-readings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "1_month"
+                },
+                {
+                  "key": "reading_type",
+                  "value": "blood_pressure"
+                }
+              ]
+            },
+            "description": "`reading_type` adds the `statistics` block for exactly one group: `blood_pressure`, `temperature`, `blood_glucose`, `hemoglobin` or `wellness`.\n\n`statistics` has `average`, `min`, `max` and `readings_count` per vital, and `categories` -- for each clinical category (for example `bp_category`) the guideline it follows and the count and percentage in each band. The same numbers the hospital sees. Blood pressure and heart rate are whole numbers; the other vitals keep one decimal.\n\n**Read-only.** Readings are recorded by the hospital (or a device), never by the patient: there is no way to add or change one from the app. Permissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's, even at the same hospital, is 404). `pregnancy_id` comes from `GET /auth/me/`."
+          },
+          "response": []
+        },
+        {
+          "name": "Get My Latest Reading",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/my-readings/latest/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "my-readings",
+                "latest",
+                ""
+              ]
+            },
+            "description": "The last reading she had. `reading` is `null` -- never an invented normal value -- if there is none yet; `total_count` is how many she has in all.\n\n**Read-only.** Readings are recorded by the hospital (or a device), never by the patient: there is no way to add or change one from the app. Permissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's, even at the same hospital, is 404). `pregnancy_id` comes from `GET /auth/me/`."
+          },
+          "response": []
+        },
+        {
+          "name": "Get My Vitals Summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/my-vitals-summary/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "my-vitals-summary",
+                ""
+              ]
+            },
+            "description": "The quick card: `last_30_days_average` of every vital (`null` for a vital with no reading in the window) and `risk_this_month`, the share of her risk assessments this calendar month that were low, medium and high (`null` if there were none).\n\n**Read-only.** Readings are recorded by the hospital (or a device), never by the patient: there is no way to add or change one from the app. Permissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's, even at the same hospital, is 404). `pregnancy_id` comes from `GET /auth/me/`."
+          },
+          "response": []
+        },
+        {
+          "name": "Get My Risk",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/my-risk/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "my-risk",
+                ""
+              ]
+            },
+            "description": "Her current risk and the last 30 days of risk history.\n\n`current` is always the true current assessment: `final_risk_level` (`low`/`medium`/`high`) with its display text, the category of each vital (`bp_category`, `heart_rate_category`, `temperature_category`, `glucose_category`, `hemoglobin_category`), `assessed_at` and the reading behind it. `history` is the same shape, newest first, within the window (`period`, default `1_month`; same codes as the readings filters; at most 100 rows).\n\nWhen the current level is high, `contact_care_team` is true and `contact_message` says to contact the care team today; every response carries a `notice` that this is an automatic check, not a diagnosis -- show it.\n\n**Never shown to her:** the model's raw answer, its confidence, whether the assessment was flagged, its review status or who confirmed it. The staff filters (`review_status`, `flagged_for_review`, `actionable`) are ignored.\n\n**Read-only.** Readings are recorded by the hospital (or a device), never by the patient: there is no way to add or change one from the app. Permissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's, even at the same hospital, is 404). `pregnancy_id` comes from `GET /auth/me/`."
+          },
+          "response": []
+        },
+        {
+          "name": "Get My Risk - 3 Months",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pregnancies/{{pregnancy_id}}/my-risk/?period=3_months",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "pregnancies",
+                "{{pregnancy_id}}",
+                "my-risk",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "3_months"
+                }
+              ]
+            },
+            "description": "Same, with the history window widened. `period` takes `2_days`, `1_week`, `1_month`, `3_months`, `6_months` or `1_year`.\n\n**Read-only.** Readings are recorded by the hospital (or a device), never by the patient: there is no way to add or change one from the app. Permissions: IsAuthenticated + **IsPatient**, her own pregnancy only (anyone else's, even at the same hospital, is 404). `pregnancy_id` comes from `GET /auth/me/`."
           },
           "response": []
         }
@@ -671,6 +1056,14 @@
     },
     {
       "key": "organization_id",
+      "value": ""
+    },
+    {
+      "key": "location_id",
+      "value": ""
+    },
+    {
+      "key": "care_plan_id",
       "value": ""
     }
   ]

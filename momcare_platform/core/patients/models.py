@@ -37,7 +37,7 @@ class Patient(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStampedModel
     record. ``user`` is therefore optional and only appears once she is given
     access to the mobile app.
 
-    Patient owns name, date of birth, gender, phone, CNIC and blood group.
+    Patient owns name, date of birth, phone, national ID and blood group.
     Where a ``user`` also exists, its own name fields are for authentication
     display only and are never read as clinical truth — one authoritative
     source, so the two can never disagree about who a patient is.
@@ -52,9 +52,9 @@ class Patient(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStampedModel
         related_name="patients",
     )
     # Denormalized from location.organization, the same way Device carries its
-    # own direct organization FK — needed so CNIC uniqueness (below) can be
+    # own direct organization FK — needed so national ID uniqueness (below) can be
     # scoped correctly. A hospital can have several locations; a
-    # location-scoped constraint would miss a duplicate CNIC at a different
+    # location-scoped constraint would miss a duplicate national ID at a different
     # branch of the same hospital.
     organization = models.ForeignKey(
         "organization.Organization",
@@ -78,21 +78,20 @@ class Patient(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStampedModel
     first_name = models.CharField(_("first name"), max_length=50, default="")
     last_name = models.CharField(_("last name"), max_length=50, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
-    gender = models.CharField(max_length=20, blank=True)
     # Indexed but NOT unique, unlike User.phone: households share a phone, and a
     # husband's or neighbour's number is often the only contact available.
     phone = models.CharField(_("phone"), max_length=20, blank=True, db_index=True)
     # Not unique across the whole platform — the same woman may legitimately be
     # registered at two hospitals. It IS unique within one hospital (see the
-    # constraint below): a CNIC is a personal government ID, so two patients at
+    # constraint below): a national ID is a personal government ID, so two patients at
     # one hospital sharing one is far more likely a data-entry mistake than a
-    # real case. null=True, never "", so two CNIC-less patients at the same
+    # real case. null=True, never "", so two patients with no national ID at the same
     # hospital don't false-positive collide under that constraint.
     # noqa DJ001: null=True on a CharField is exactly what's wanted here. Ruff
     # exempts unique=True fields (see mrn below) because NULL is how you avoid
     # blank-value collisions; this field's uniqueness is a Meta constraint
     # instead, which the rule can't see, so the exemption is stated by hand.
-    cnic = models.CharField(_("CNIC"), max_length=20, blank=True, null=True, db_index=True)  # noqa: DJ001
+    national_id = models.CharField(_("national ID"), max_length=20, blank=True, null=True, db_index=True)  # noqa: DJ001
     blood_group = models.CharField(max_length=3, choices=BLOOD_GROUP_CHOICES, blank=True)
     # Read by the monthly care plan so generated meals avoid what she cannot
     # eat. Lives on Patient, not Pregnancy: an allergy does not change between
@@ -149,17 +148,17 @@ class Patient(UUIDPrimaryKeyModel, AddressMixin, Deactivatable, TimeStampedModel
         indexes = [
             models.Index(fields=["mrn"]),
             models.Index(fields=["phone"]),
-            models.Index(fields=["cnic"]),
+            models.Index(fields=["national_id"]),
             models.Index(fields=["last_name", "first_name"]),
         ]
         constraints = [
             # Scoped to the hospital, not the platform: the same woman may
             # legitimately hold a record at two hospitals. Conditional on
-            # cnic IS NOT NULL so CNIC-less patients never collide.
+            # national_id IS NOT NULL so patients without one never collide.
             models.UniqueConstraint(
-                fields=["organization", "cnic"],
-                condition=models.Q(cnic__isnull=False),
-                name="unique_cnic_per_organization",
+                fields=["organization", "national_id"],
+                condition=models.Q(national_id__isnull=False),
+                name="unique_national_id_per_organization",
             ),
         ]
 
@@ -413,6 +412,42 @@ class Pregnancy(UUIDPrimaryKeyModel, TimeStampedModel):
         return [f for f in self.FACTOR_FIELDS if getattr(self, f) == self.UNKNOWN]
 
 
+class PatientProfile(UUIDPrimaryKeyModel, TimeStampedModel):
+    """What a self-registered woman says about herself, once, before any hospital has her.
+
+    One row per app account, kept on the account rather than on a hospital: she
+    fills it in once and every join request she sends carries a copy. Only what
+    ``User`` lacks lives here -- her name, phone, date of birth and address are
+    already ``User`` columns, and a second copy would be a second place for
+    the same fact to disagree with itself.
+
+    Identity only. Nothing medical: history, allergies and pregnancy dating are
+    a clinician's to record at the visit, on ``Patient`` and ``Pregnancy``.
+
+    Not tenant data: there is no organization to scope on, and hospital staff
+    never read this table -- they see the frozen snapshot on the (RLS
+    protected) join request. Only the account owner reads or writes it, through
+    an explicit ``user=request.user`` filter.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="account_profile",
+    )
+    # Optional: not every country issues a national ID. null=True, never "", so
+    # the per-hospital uniqueness on Patient never trips over a blank.
+    national_id = models.CharField(_("national ID"), max_length=20, blank=True, null=True)  # noqa: DJ001
+    blood_group = models.CharField(max_length=3, choices=BLOOD_GROUP_CHOICES, blank=True)
+    emergency_contact_name = models.CharField(max_length=100, blank=True)
+    emergency_contact_phone = models.CharField(max_length=20, blank=True)
+    emergency_contact_relation = models.CharField(max_length=50, blank=True)
+    emergency_contact_email = models.EmailField(blank=True, default="")
+
+    def __str__(self) -> str:
+        return f"Profile of {self.user.email}"
+
+
 class PatientJoinRequest(UUIDPrimaryKeyModel, TimeStampedModel):
     """A self-registered woman asking a hospital to take her on.
 
@@ -429,15 +464,17 @@ class PatientJoinRequest(UUIDPrimaryKeyModel, TimeStampedModel):
     clinical record, and the remaining requests are marked WITHDRAWN rather
     than left pending against a woman who is already somebody's patient.
 
-    ``draft`` holds what she reported, as the same JSON shape the hospital-side
-    onboarding endpoint accepts. Deliberately JSON rather than twenty mirrored
-    columns: it is transient, it is re-validated by the real serializer before
-    anything is created, and duplicating the patient schema here would mean
-    changing two places every time a field moves.
+    ``draft`` is a snapshot of her profile at the moment she sent the request,
+    in the same key names the hospital-side onboarding form uses. Deliberately
+    JSON rather than a dozen mirrored columns: it is frozen, read-only
+    context for the person filling in that form, and duplicating the patient
+    schema here would mean changing two places every time a field moves.
 
-    Approval does not create anything itself — it calls the same
-    ``onboard_patient()`` a walk-in uses. One creation path, so a woman who
-    self-registered and one who walked in are the same kind of record.
+    There is no approve action. The hospital opens the request in its normal
+    onboarding form, completes the clinical fields, and saving that form
+    (``POST /patients/`` with this request's id) is the approval: it calls the
+    same ``onboard_patient()`` a walk-in uses. One creation path, so a woman
+    who self-registered and one who walked in are the same kind of record.
     """
 
     STATUS_PENDING = "pending"
@@ -465,7 +502,20 @@ class PatientJoinRequest(UUIDPrimaryKeyModel, TimeStampedModel):
         on_delete=models.CASCADE,
         related_name="join_requests",
     )
+    # The branch she asked for. Optional: she may name only the hospital, and a
+    # branch closed or deleted since then must not strand the request -- both
+    # fall back to the hospital's default location when she is onboarded.
+    location = models.ForeignKey(
+        "locations.Location",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="join_requests",
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    # A frozen copy of her profile, taken by the server when she sent the
+    # request (see patients.profile.snapshot). Its keys are the ones the
+    # hospital-side onboarding form uses, so it pre-fills that form as is.
     draft = models.JSONField(default=dict, blank=True)
 
     decided_at = models.DateTimeField(null=True, blank=True)

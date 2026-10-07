@@ -39,9 +39,11 @@ from momcare_platform.core.organization.api.views import (
 )
 from momcare_platform.core.patients.api.views import (
     HospitalDirectoryView,
-    JoinRequestDecisionView,
+    JoinRequestDetailView,
+    JoinRequestRejectView,
     JoinRequestReviewView,
     JoinRequestWithdrawView,
+    MyProfileView,
     PatientDashboardKpisView,
     PatientDeactivateView,
     PatientDetailView,
@@ -106,10 +108,14 @@ from momcare_platform.modules.pregnancy.care_plans.api.views import (
     CarePlanListView,
     CurrentCarePlanView,
     CurrentExerciseView,
+    CurrentMedicationsView,
+    CurrentNotesView,
     CurrentNutritionView,
     FinalizeView,
     MedicationCreateView,
     MedicationDetailView,
+    MyCarePlanDetailView,
+    MyCarePlanListView,
     NoteCreateView,
     NoteDetailView,
     PreferenceApproveView,
@@ -119,6 +125,12 @@ from momcare_platform.modules.pregnancy.care_plans.api.views import (
     PreferenceRejectView,
     ReopenView,
     ReviewView,
+)
+from momcare_platform.modules.pregnancy.vitals.api.patient_views import (
+    MyLatestReadingView,
+    MyReadingsView,
+    MyRiskView,
+    MyVitalsSummaryView,
 )
 from momcare_platform.modules.pregnancy.vitals.api.views import (
     DeviceAssignView,
@@ -320,6 +332,7 @@ core_urlpatterns = [
     # deliberately different words, not one nested under the other: two paths
     # that differ by a single segment read the same at a glance, and these are
     # two different people's endpoints with two different permission classes.
+    re_path(r"^my-profile/?$", MyProfileView.as_view(), name="my-profile"),
     re_path(r"^hospitals/?$", HospitalDirectoryView.as_view(), name="hospital-directory"),
     re_path(
         r"^my-requests/?$",
@@ -334,15 +347,16 @@ core_urlpatterns = [
     # The hospital's side: requests sent to it by patients.
     re_path(r"^patient-requests/?$", JoinRequestReviewView.as_view(), name="patient-request-list"),
     re_path(
-        r"^patient-requests/(?P<request_id>[0-9a-f-]{36})/approve/?$",
-        JoinRequestDecisionView.as_view(),
-        {"decision": "approved"},
-        name="patient-request-approve",
+        r"^patient-requests/(?P<request_id>[0-9a-f-]{36})/?$",
+        JoinRequestDetailView.as_view(),
+        name="patient-request-detail",
     ),
+    # No approve route: the hospital opens the request in the normal onboarding
+    # form and saves it (POST /patients/ with join_request) -- that save IS the
+    # approval.
     re_path(
         r"^patient-requests/(?P<request_id>[0-9a-f-]{36})/reject/?$",
-        JoinRequestDecisionView.as_view(),
-        {"decision": "rejected"},
+        JoinRequestRejectView.as_view(),
         name="patient-request-reject",
     ),
     re_path(r"^patients/?$", PatientListCreateView.as_view(), name="patient-list"),
@@ -408,6 +422,28 @@ core_urlpatterns = [
         r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/vitals-summary/?$",
         VitalsSummaryView.as_view(),
         name="vitals-summary",
+    ),
+    # The patient's own, read-only side of vitals. Readings are recorded by the hospital or a
+    # device, never by her; the staff routes above stay staff-only.
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/my-readings/?$",
+        MyReadingsView.as_view(),
+        name="my-readings",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/my-readings/latest/?$",
+        MyLatestReadingView.as_view(),
+        name="my-readings-latest",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/my-vitals-summary/?$",
+        MyVitalsSummaryView.as_view(),
+        name="my-vitals-summary",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/my-risk/?$",
+        MyRiskView.as_view(),
+        name="my-risk",
     ),
     re_path(
         r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/device/?$",
@@ -586,6 +622,24 @@ core_urlpatterns = [
         r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/current-care-plan/exercise/?$",
         CurrentExerciseView.as_view(),
         name="current-care-plan-exercise",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/current-care-plan/medications/?$",
+        CurrentMedicationsView.as_view(),
+        name="current-care-plan-medications",
+    ),
+    re_path(
+        r"^pregnancies/(?P<pregnancy_id>[0-9a-f-]{36})/current-care-plan/notes/?$",
+        CurrentNotesView.as_view(),
+        name="current-care-plan-notes",
+    ),
+    # The patient's own, read-only view of every month's plan -- the staff routes above
+    # stay staff-only.
+    re_path(r"^my-care-plans/?$", MyCarePlanListView.as_view(), name="my-care-plans"),
+    re_path(
+        r"^my-care-plans/(?P<plan_id>[0-9a-f-]{36}|[^/]+)/?$",
+        MyCarePlanDetailView.as_view(),
+        name="my-care-plan-detail",
     ),
     re_path(
         r"^care-plans/(?P<plan_id>[0-9a-f-]{36})/adjustments/?$",

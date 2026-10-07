@@ -8,6 +8,7 @@ import json
 import pytest
 
 from momcare_platform.core.patients.models import Patient
+from momcare_platform.core.patients.tests.conftest import PROFILE_BODY
 from momcare_platform.core.users.models import User
 
 pytestmark = pytest.mark.django_db
@@ -90,35 +91,50 @@ def test_registration_requires_every_address_field(client):
     assert set(ADDRESS) <= set(response.json())
 
 
-def test_address_given_at_registration_is_copied_to_the_patient_on_approval(client, make_hospital, auth):
-    hospital = make_hospital("Address Join Hospital")
+def _register_and_send(client, hospital, email, address, phone):
+    """Sign up with an address, fill in the profile, send a request; returns (user, request id)."""
     registered = client.post(
         REGISTER,
         data=json.dumps(
-            {"email": "applicant@example.test", "password": "HerOwnPick!2026", "first_name": "Ayesha", **ADDRESS},
+            {
+                "email": email,
+                "password": "HerOwnPick!2026",
+                "first_name": email[:3],
+                "last_name": "Bibi",
+                **address,
+            },
         ),
         content_type="application/json",
     )
     assert registered.status_code == 201, registered.content
-    user = User.objects.get(email="applicant@example.test")
-    assert user.city == "Islamabad", "stored on her account at registration"
-    User.objects.filter(pk=user.pk).update(is_email_verified=True)
+    User.objects.filter(email=email).update(is_email_verified=True)
     login = client.post(
         "/api/auth/login/",
-        data=json.dumps({"email": user.email, "password": "HerOwnPick!2026"}),
+        data=json.dumps({"email": email, "password": "HerOwnPick!2026"}),
         content_type="application/json",
     ).json()
     her = {"HTTP_AUTHORIZATION": f"Bearer {login['access']}"}
+    filled = patch(client, "/api/my-profile/", {"phone": phone, **PROFILE_BODY}, her)
+    assert filled.status_code == 200, filled.content
+    sent = post(client, MY_REQUESTS, {"organization": str(hospital.org.id)}, her)
+    assert sent.status_code == 201, sent.content
+    return User.objects.get(email=email), sent.json()["id"]
 
-    request_id = post(
-        client,
-        MY_REQUESTS,
-        {"organization": str(hospital.org.id), "draft": {"first_name": "Ayesha"}},
-        her,
-    ).json()["id"]
-    response = post(client, f"{REVIEW}{request_id}/approve/", {}, auth(hospital.admin.email))
 
-    assert response.status_code == 200, response.content
+def _save_onboarding_form(client, staff, request_id):
+    """What the web app does: pre-fill the form from the request, save it with the request's id."""
+    detail = client.get(f"{REVIEW}{request_id}/", **staff).json()
+    return post(client, PATIENTS, {**detail["profile"], "join_request": request_id}, staff)
+
+
+def test_address_given_at_registration_is_copied_to_the_patient_on_approval(client, make_hospital, auth):
+    hospital = make_hospital("Address Join Hospital")
+    user, request_id = _register_and_send(client, hospital, "applicant@example.test", ADDRESS, "03001110001")
+    assert user.city == "Islamabad", "stored on her account at registration"
+
+    response = _save_onboarding_form(client, auth(hospital.admin.email), request_id)
+
+    assert response.status_code == 201, response.content
     patient = Patient.objects.get()
     assert patient.address_line1 == ADDRESS["address_line1"]
     assert patient.city == "Islamabad"
@@ -128,27 +144,15 @@ def test_address_given_at_registration_is_copied_to_the_patient_on_approval(clie
 def test_each_approved_patient_gets_her_own_address_not_anyone_elses(client, make_hospital, auth):
     hospital = make_hospital("Two Addresses Hospital")
     other = {**ADDRESS, "address_line1": "Flat 9, Sunrise Apartments", "city": "Lahore"}
-    for email, address in [("one@example.test", ADDRESS), ("two@example.test", other)]:
-        registered = client.post(
-            REGISTER,
-            data=json.dumps({"email": email, "password": "HerOwnPick!2026", "first_name": email[:3], **address}),
-            content_type="application/json",
-        )
-        assert registered.status_code == 201, registered.content
-        User.objects.filter(email=email).update(is_email_verified=True)
-        login = client.post(
-            "/api/auth/login/",
-            data=json.dumps({"email": email, "password": "HerOwnPick!2026"}),
-            content_type="application/json",
-        ).json()
-        her = {"HTTP_AUTHORIZATION": f"Bearer {login['access']}"}
-        request_id = post(
-            client,
-            MY_REQUESTS,
-            {"organization": str(hospital.org.id), "draft": {"first_name": email[:3]}},
-            her,
-        ).json()["id"]
-        assert post(client, f"{REVIEW}{request_id}/approve/", {}, auth(hospital.admin.email)).status_code == 200
+    for email, address, phone in [
+        ("one@example.test", ADDRESS, "03001110002"),
+        ("two@example.test", other, "03001110003"),
+    ]:
+        _, request_id = _register_and_send(client, hospital, email, address, phone)
+        # Distinct national IDs: one hospital never holds two patients with the same one.
+        detail = client.get(f"{REVIEW}{request_id}/", **auth(hospital.admin.email)).json()
+        form = {**detail["profile"], "national_id": phone, "join_request": request_id}
+        assert post(client, PATIENTS, form, auth(hospital.admin.email)).status_code == 201
 
     assert Patient.objects.get(user__email="one@example.test").city == "Islamabad"
     assert Patient.objects.get(user__email="two@example.test").city == "Lahore"

@@ -160,6 +160,31 @@ def section_payload(plan: CarePlan, section: str, *, for_patient: bool = False) 
     return payload
 
 
+def items_section_payload(plan: CarePlan, section: str) -> dict:
+    """The doctor's medications or notes on their own: the same items the full plan carries.
+
+    Same envelope as ``section_payload`` (which plan, which month, its status) so the app
+    handles every section alike, but the content is a plain list of what staff wrote.
+    Removed items are never shown.
+    """
+    rows = plan.medications if section == "medications" else plan.notes
+    return {
+        "care_plan_id": str(plan.id),
+        "month_number": plan.month_number,
+        "period_start": plan.period_start,
+        "period_end": plan.period_end,
+        "weeks_label": _week_label(plan),
+        "status": plan.status,
+        "section": section,
+        "items": [
+            {"id": str(r.id), "text": r.text, "added_by": _name(r.added_by), "created_at": r.created_at}
+            for r in rows.filter(is_active=True).select_related("added_by").order_by("created_at")
+        ],
+        "disclaimer": DISCLAIMER,
+        "warning_signs": WARNING_SIGNS,
+    }
+
+
 def plan_payload(plan: CarePlan, *, for_patient: bool = False) -> dict:
     pregnancy = plan.pregnancy
     patient = pregnancy.patient

@@ -3,6 +3,8 @@
 **Date:** 2026-09-15
 **Status:** Approved for implementation (Part A). Part B (self-registration) is
 approved as a design but is explicitly next, not this round.
+**Superseded in part (7 Oct 2026):** Part B's join request no longer carries a typed "draft" and
+has no one-click approve; see `2026-10-07-patient-profile-and-join-request-design.md`.
 
 ## Context
 

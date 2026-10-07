@@ -526,6 +526,38 @@ def compute_reading_statistics(queryset, reading_type: str) -> dict:
     }
 
 
+def readings_in_window(pregnancy, params) -> tuple:
+    """``(readings, statistics)``: a pregnancy's readings narrowed by ``since`` / ``period`` /
+    ``start_date``+``end_date`` (a custom range wins over a preset), and the statistics block when
+    ``reading_type`` is given -- no separate flag, matching Neuro_RPM's own trigger.
+
+    One place for the staff list and the patient's own list, so the two can never filter or
+    average differently. Raises ``serializers.ValidationError`` (a 400 in the views).
+    """
+    readings = pregnancy.readings.all()
+    tzinfo = pregnancy.patient.location.timezone
+
+    since = params.get("since")
+    if since:
+        readings = readings.filter(recorded_at__gte=since)
+
+    start_date = params.get("start_date")
+    end_date = params.get("end_date")
+    period = params.get("period")
+    if start_date or end_date:
+        start, end = resolve_custom_reading_range(start_date, end_date, tzinfo)
+        readings = readings.filter(recorded_at__gte=start, recorded_at__lte=end)
+    elif period:
+        start, end = resolve_reading_period(period, tzinfo)
+        readings = readings.filter(recorded_at__gte=start, recorded_at__lte=end)
+
+    statistics: dict = {}
+    reading_type = params.get("reading_type")
+    if reading_type:
+        statistics = compute_reading_statistics(readings, reading_type)
+    return readings, statistics
+
+
 # The vitals a rolling summary averages -- age/stress/activity excluded (age
 # isn't a trend metric; stress/activity have no established clinical unit to
 # summarize this way).

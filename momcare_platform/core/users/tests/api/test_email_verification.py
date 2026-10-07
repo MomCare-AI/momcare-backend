@@ -48,7 +48,7 @@ def code_from_email(message):
 
 
 def register(client, email="ayesha@example.test"):
-    response = post(client, REGISTER, email=email, password=PASSWORD, first_name="Ayesha", **ADDRESS)
+    response = post(client, REGISTER, email=email, password=PASSWORD, first_name="Ayesha", last_name="Bibi", **ADDRESS)
     assert response.status_code == 201, response.content
     return code_from_email(mail.outbox[-1])
 
@@ -178,6 +178,7 @@ def test_registering_again_with_the_same_unverified_email_replaces_the_old_attem
         email="retry@example.test",
         password=PASSWORD,
         first_name="Ayesha Again",
+        last_name="Bibi",
         **ADDRESS,
     )
     assert new_response.status_code == 201
@@ -195,7 +196,15 @@ def test_registering_again_with_an_already_verified_email_is_still_blocked(clien
     code = register(client, email="taken@example.test")
     post(client, VERIFY, email="taken@example.test", code=code)
 
-    response = post(client, REGISTER, email="taken@example.test", password=PASSWORD, first_name="Impostor", **ADDRESS)
+    response = post(
+        client,
+        REGISTER,
+        email="taken@example.test",
+        password=PASSWORD,
+        first_name="Impostor",
+        last_name="X",
+        **ADDRESS,
+    )
 
     assert response.status_code == 400
 
@@ -213,6 +222,7 @@ def test_retrying_does_not_delete_a_hospital_admins_account(client, make_hospita
         email=hospital.admin.email,
         password=PASSWORD,
         first_name="Impostor",
+        last_name="X",
         **ADDRESS,
     )
 

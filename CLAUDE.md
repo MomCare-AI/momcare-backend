@@ -29,7 +29,7 @@ Every tenant-owned model carries an `organization` column (directly or via `Loca
   `scripts/verify_rls.py`. `TenantAwareJWTAuthentication` (`core/users/api/auth.py`) resolves
   identity under RLS.
 - `Patient` has **both** `location__organization` (the scoping path) and a direct `organization`
-  FK (for per-hospital CNIC uniqueness across branches). Do not "simplify" it away.
+  FK (for per-hospital national-ID uniqueness across branches). Do not "simplify" it away.
 - Scope **before** lookup; cross-tenant reads return **404, never 403**.
 
 ### Scoping paths
@@ -102,7 +102,24 @@ URLs: `/admin/`, `/api/`, `/api/docs/` (Swagger, admin login), `/health/` (also 
   pregnancy is a bounded episode; alert-escalation accountability must not be rewritten
   retroactively. Patient list embeds a flattened read-only copy.
 - **`Pregnancy` is the enrol→discharge episode**; no separate enrolment table. `Patient.user`
-  is optional. Self-registration = `PatientJoinRequest`; approval calls the same `onboard_patient()`.
+  is optional. Self-registration = `PatientJoinRequest`.
+- **Patient profile and join request** (7 Oct 2026, `docs/design/2026-10-07-patient-profile-and-join-request-design.md`):
+  she fills in `GET/PATCH /api/my-profile/` once (identity only — never medical history, allergies
+  or pregnancy dating; those are the clinician's). Name/phone/DOB/address live on `User`; only the
+  rest is `PatientProfile` (no RLS: not tenant data). `POST /api/my-requests/` takes just
+  `{organization, location?}`, refuses an incomplete profile, and freezes a server-built snapshot
+  in `draft`. **There is no approve endpoint**: staff open `GET /api/patient-requests/{id}/` in the
+  normal onboarding form and `POST /api/patients/` with `join_request` — that save is the
+  approval (`onboard_from_join_request`, one transaction; sets `User.organization`). She lands in
+  the requested branch, else the hospital default. Patients have **no gender field** (women only;
+  `User.gender` stays for staff). The identity-document field is `national_id`, never `cnic`.
+  Her care plan is **read-only** (`current-care-plan/` + `nutrition|exercise|medications|notes`,
+  `/my-care-plans/`); she can never write to it, and **replies to notes were rejected on purpose**
+  (nobody watches that channel — urgency goes through readings/alerts).
+  Her readings/risk are read-only too: `pregnancies/{id}/my-readings|my-readings/latest|my-vitals-summary|my-risk`
+  (patient serializers hide the device id and every staff review field; staff review filters are
+  ignored for her). **A patient can never record a reading** (manual entry is hospital-side), and
+  **the AI summary is staff-only**.
 - **Risk scoring**: one producer (the model). `reassess_risk()` writes **one `RiskAssessment`
   per reading, unconditionally** (reversed 27 Sep 2026 — do not re-narrow to transitions-only),
   fires via `post_save` signal on `VitalReading`, then calls `sync_alert_for()` in the same
