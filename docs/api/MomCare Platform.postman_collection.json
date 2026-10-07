@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "670df6e3-ed24-4883-8d15-19acfb51f114",
     "name": "MomCare Platform",
-    "description": "MomCare backend API: Auth (JWT), Organization (onboarding a hospital, hospital settings, confidence threshold, AI Summary instruction presets), Locations (a hospital's own sites -- create/update/deactivate/reactivate/move-patients, no platform-admin approval), Staff (onboarding a hospital's own team directly, no invite link), Monitoring (readings, risk assessments, devices), Platform Admin (the platform-wide AI Summary model/word-cap config and its own instruction presets -- ROLE_PLATFORM_ADMIN only).\n\nSetup:\n1. Set `base_url` (default http://localhost:8000).\n2. Call Auth -> Login -- it auto-saves `access_token` (collection variable) used by every protected request below.\n3. The refresh token is an HttpOnly cookie set by Login; Refresh/Logout read it automatically (Postman keeps cookies per domain).\n4. Set `pregnancy_id` to a real pregnancy UUID (from the patients API) before running the Monitoring folder.\n5. Set `preset_id` to a real AI instruction preset UUID before running Activate/Deactivate Organization or Platform Instruction Preset.\n\nConventions:\n- Every endpoint works WITH or WITHOUT a trailing slash.\n- All endpoints below require `Authorization: Bearer {{access_token}}` except Login and Organization -> Onboard Organization.\n- IDs are UUID strings throughout -- never integers.\n- `source` on a reading is required on every POST: `\"device\"` or `\"manual\"`. It is never inferred -- a band can be assigned to a pregnancy while a nurse still enters a separate manual measurement by hand, so the two are independent facts the caller must declare.\n- Roles: platform_admin, hospital_admin, provider, nurse, care_manager, patient. Access is hospital-scoped via `request.user.organization`; a request against another hospital's pregnancy resolves to 404, never 403 (a 403 would confirm the record exists elsewhere).\n- Pagination envelope on list endpoints: `{count, page, page_size, total_pages, next, previous, results}`.\n- There is no self-registration for anyone except a hospital itself. Staff (hospital_admin, provider, nurse, care_manager) are onboarded directly by their hospital_admin or their own location's manager (see Staff -> Onboard Staff) -- there is no invite link or acceptance step; the new account's sign-in credentials are emailed to them and work immediately. Patients are enrolled by staff, never self-service.",
+    "description": "MomCare backend API: Auth (JWT), Organization (onboarding a hospital, hospital settings, confidence threshold, AI Summary instruction presets), Locations (a hospital's own sites -- create/update/deactivate/reactivate/move-patients, no platform-admin approval), Staff (onboarding a hospital's own team directly, no invite link), Monitoring (readings, risk assessments, devices), Platform Admin (the platform-wide AI Summary model/word-cap config and its own instruction presets -- ROLE_PLATFORM_ADMIN only).\n\nSetup:\n1. Set `base_url` (default http://localhost:8000).\n2. Call Auth -> Login -- it auto-saves `access_token` (collection variable) used by every protected request below.\n3. The refresh token is an HttpOnly cookie set by Login; Refresh/Logout read it automatically (Postman keeps cookies per domain).\n4. Set `pregnancy_id` to a real pregnancy UUID (from the patients API) before running the Monitoring folder.\n5. Set `preset_id` to a real AI instruction preset UUID before running Activate/Deactivate Organization or Platform Instruction Preset.\n\nConventions:\n- Every endpoint works WITH or WITHOUT a trailing slash.\n- All endpoints below require `Authorization: Bearer {{access_token}}` except Login and Organization -> Onboard Organization.\n- IDs are UUID strings throughout -- never integers.\n- `source` on a reading is required on every POST: `\"device\"` or `\"manual\"`. It is never inferred -- a band can be assigned to a pregnancy while a nurse still enters a separate manual measurement by hand, so the two are independent facts the caller must declare.\n- Roles: platform_admin, hospital_admin, provider, nurse, care_manager, patient. Access is hospital-scoped via `request.user.organization`; a request against another hospital's pregnancy resolves to 404, never 403 (a 403 would confirm the record exists elsewhere).\n- Pagination envelope on list endpoints: `{count, page, page_size, total_pages, next, previous, results}`.\n- There is no self-registration for anyone except a hospital itself. Staff (hospital_admin, provider, nurse, care_manager) are onboarded directly by their hospital_admin or their own location's manager (see Staff -> Onboard Staff) -- there is no invite link or acceptance step; the new account's sign-in credentials are emailed to them and work immediately. Patients are enrolled by staff, or sign themselves up from the mobile app and are approved by a hospital (Patient Requests). The patient-side endpoints (sign-up, join requests) live in the separate `MomCare Mobile` collection.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -1304,263 +1304,6 @@
               ]
             },
             "description": "Remove a clinician from the referral list. Returns 204.\n\nPermissions: hospital_admin or care_manager only.\n\nA REAL delete, unlike Patient or Staff — this is a contact-list entry, not a clinical record. Patients referencing it keep their own record and simply lose the link (`on_delete=SET_NULL`), so nothing clinical is destroyed and the delete is never blocked."
-          },
-          "response": []
-        }
-      ]
-    },
-    {
-      "name": "Patient Signup",
-      "item": [
-        {
-          "name": "Sign Up",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/auth/patient/register/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "auth",
-                "patient",
-                "register",
-                ""
-              ]
-            },
-            "description": "A woman signing herself up from the mobile app. **No auth required.**\n\nCreates an account and nothing else — **no tokens yet**. Her account has no organization and there is no Patient record; that only happens once a hospital approves a later join request.\n\nRequired: `email` (globally unique among *verified* accounts — see below), `password` (min 8, Django validators), `first_name`. Optional: `last_name`, `phone`.\n\n**201 does not mean she's signed in.** A six-digit code is emailed to her; she must confirm it at **Verify Email** before she can sign in at all — `LoginView` refuses an unverified patient outright. This is deliberately the *one* signup path on this platform that gets this check: hospital owners are identity-checked by a human reviewer, and staff are invited to a specific address by an admin — neither needs an OTP on top of that.\n\n**Retrying is safe.** If she abandons this attempt (lost the code, let it expire, mistyped something) and signs up again with the *same* email before verifying, this endpoint quietly replaces the old unverified attempt rather than saying \"email taken\" — an abandoned first try can never permanently lock her out of her own address. Once verified, that same email is locked for good. Address: all six fields are required -- `address_line1`, `address_line2`, `city`, `state`, `postal_code`, `country`. It is stored on her account here, once, and copied onto her own Patient record when a hospital approves her join request.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"ayesha@example.test\",\n  \"password\": \"HerOwnPick!2026\",\n  \"first_name\": \"Ayesha\",\n  \"last_name\": \"Bibi\",\n  \"phone\": \"03001234567\",\n  \"address_line1\": \"House 12, Street 4\",\n  \"address_line2\": \"F-7\",\n  \"city\": \"Islamabad\",\n  \"state\": \"ICT\",\n  \"postal_code\": \"44000\",\n  \"country\": \"Pakistan\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Verify Email",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "if (pm.response.code === 200) {",
-                  "  const data = pm.response.json();",
-                  "  if (data.access) { pm.collectionVariables.set('access_token', data.access); }",
-                  "}"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/auth/patient/verify-email/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "auth",
-                "patient",
-                "verify-email",
-                ""
-              ]
-            },
-            "description": "The second half of signup. **No auth required** — she has no token yet; this is what produces her first one.\n\nSubmit the six-digit code emailed to her along with `Sign Up`. On success, sets `is_email_verified=True` and returns real tokens — she's finally signed in.\n\n**400 for every failure case** — wrong code, expired (15 minutes), already used, or exhausted (5 wrong attempts invalidates the code entirely, even to the right one afterward) — all the same generic message. Which one it was is not information worth handing to whoever is submitting codes, same reasoning as `Login`'s wrong-password-vs-unknown-email answer.\n\nIf the code expired or never arrived, use **Resend Verification Code** for a fresh one.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"ayesha@example.test\",\n  \"code\": \"123456\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Resend Verification Code",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/auth/patient/resend-verification/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "auth",
-                "patient",
-                "resend-verification",
-                ""
-              ]
-            },
-            "description": "A fresh code, if the first one expired or never arrived. **No auth required.**\n\n**Always answers 200 with the same generic message**, whether or not that email has a pending signup — confirming \"yes, someone started signing up with this address\" is itself information a stranger should not get from this endpoint. Same enumeration reasoning as `Forgot Password`.\n\nIssuing a new code invalidates any earlier one for that account — at most one code is ever live at a time.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"ayesha@example.test\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Browse Hospitals",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/hospitals/?page=1&page_size=25",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "hospitals",
-                ""
-              ],
-              "query": [
-                {
-                  "key": "page",
-                  "value": "1"
-                },
-                {
-                  "key": "page_size",
-                  "value": "25"
-                }
-              ]
-            },
-            "description": "The hospitals she can ask to join.\n\nPermissions: any authenticated user.\n\nOnly **approved and active** hospitals appear — one still under review is not hers to discover. Returns public fields only (name, city, country, phone): never patient counts, licences or staff.\n\n`search` matches name or city; `city` filters exactly. Deliberately a searchable list, NOT distance-sorted — real 'hospitals near me' needs coordinates the Location model does not carry, and inventing them would be worse than a city filter that is honest about what it is.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
-          },
-          "response": []
-        },
-        {
-          "name": "Send Request to Hospital",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/my-requests/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "my-requests",
-                ""
-              ]
-            },
-            "description": "Send her details to a hospital and ask to be taken on.\n\nPermissions: IsAuthenticated + **IsPatient**.\n\n`draft` is what she reports about herself. Deliberately a SUBSET of hospital-side onboarding — no `location`, no `organization`, no care team, no MRN. Every one of those is a hospital's decision and she has no hospital yet.\n\nThe draft is validated NOW (a bad one is a 400 immediately) and **re-validated at approval** before anything is created from it.\n\n**409** if she already has a request waiting with this hospital. **404** if the hospital does not exist or is not approved — the same response either way.\n\nStill no Patient record at this point. No address in the draft -- her address comes from her account (given at registration) and is copied onto the Patient on approval.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"organization\": \"{{organization_id}}\",\n  \"draft\": {\n    \"first_name\": \"Ayesha\",\n    \"last_name\": \"Bibi\",\n    \"phone\": \"03001234567\",\n    \"cnic\": \"61101-7654321-0\",\n    \"blood_group\": \"O+\",\n    \"consent_date\": \"2026-02-10\",\n    \"lmp\": \"2026-02-01\",\n    \"gravida\": 2,\n    \"para\": 1,\n    \"previous_c_section\": \"yes\",\n    \"chronic_hypertension\": \"no\"\n  }\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "My Requests",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/my-requests/?page=1&page_size=25",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "my-requests",
-                ""
-              ],
-              "query": [
-                {
-                  "key": "page",
-                  "value": "1"
-                },
-                {
-                  "key": "page_size",
-                  "value": "25"
-                }
-              ]
-            },
-            "description": "Every request she has sent, with its status and the hospital's decision note.\n\nPermissions: IsAuthenticated + IsPatient.\n\nShe has no organization, so Postgres RLS — correctly fail-closed — would show her nothing. This endpoint runs inside `bypass_rls()` with an explicit `user=request.user` filter instead: the filter, not the policy, is what keeps her to her own rows here.\n\nOnce approved, `patient_id` points at her new clinical record.\n\nStatuses: `pending`, `approved`, `rejected`, and `withdrawn` — the last meaning she was accepted elsewhere while this one was still open.\n\nPaginated -- {count, page, page_size, total_pages, next, previous, results}, same envelope as every other list endpoint. `page`/`page_size` are optional (defaults: page 1, page_size 25, max 100)."
-          },
-          "response": []
-        },
-        {
-          "name": "Withdraw My Request",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"note\": \"Applying to a hospital closer to home.\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/my-requests/{{patient_request_id}}/withdraw/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "my-requests",
-                "{{patient_request_id}}",
-                "withdraw",
-                ""
-              ]
-            },
-            "description": "**The patient takes back a request she has not had answered yet.** Her own token, not the hospital's.\n\nOnly works while the request is still `pending`:\n\n- **200** — withdrawn. The slot is released, so she can apply to that same hospital again (the one-pending-request-per-hospital rule counts only pending ones).\n- **404** — not her request. Scoped to her own rows *before* the lookup, so another woman's request is 'not found' rather than found-and-refused.\n- **409** — already `approved`, `rejected`, or `withdrawn`. Approval created a real Patient row and a care relationship; undoing that is a discharge the hospital performs, not a POST from the phone. Withdrawing a rejection would rewrite the hospital's record of a decision it actually made.\n- **403** — hospital staff calling it. Withdraw is hers alone; a hospital declining someone is a *rejection*, recorded with who decided it.\n\n**There is deliberately no edit endpoint.** The `draft` is what staff read when deciding, so it must not change under them — otherwise they could approve details they never saw. Withdraw and send a new request instead."
           },
           "response": []
         }
@@ -4222,11 +3965,12 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 ""
@@ -4328,11 +4072,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/adjustments/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/adjustments/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "adjustments",
@@ -4363,11 +4108,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/adjustments/{{adjustment_id}}/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/adjustments/{{adjustment_id}}/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "adjustments",
@@ -4399,11 +4145,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/adjustments/{{adjustment_id}}/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/adjustments/{{adjustment_id}}/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "adjustments",
@@ -4435,11 +4182,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/medications/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/medications/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "medications",
@@ -4470,11 +4218,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/medications/{{care_plan_medication_id}}/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/medications/{{care_plan_medication_id}}/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "medications",
@@ -4506,11 +4255,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/medications/{{care_plan_medication_id}}/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/medications/{{care_plan_medication_id}}/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "medications",
@@ -4542,11 +4292,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/notes/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/notes/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "notes",
@@ -4577,11 +4328,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/notes/{{care_plan_note_id}}/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/notes/{{care_plan_note_id}}/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "notes",
@@ -4613,11 +4365,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/notes/{{care_plan_note_id}}/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/notes/{{care_plan_note_id}}/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "notes",
@@ -4649,11 +4402,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/allergies-conditions/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/allergies-conditions/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "allergies-conditions",
@@ -4679,11 +4433,12 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/review/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/review/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "review",
@@ -4700,11 +4455,12 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/finalize/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/finalize/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "finalize",
@@ -4721,11 +4477,12 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/care-plans/{{care_plan_id}}/reopen/",
+              "raw": "{{base_url}}/api/care-plans/{{care_plan_id}}/reopen/",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
                 "care-plans",
                 "{{care_plan_id}}",
                 "reopen",
