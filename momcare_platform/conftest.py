@@ -34,9 +34,16 @@ def _no_real_openrouter_calls() -> Generator[None]:
     (see core/ai/tests/test_never_hits_real_network.py). A test that wants
     a specific return value patches the same target explicitly inside its
     own body -- that patch nests correctly on top of this one.
+
+    ``generate_researched`` is the care plan's call, and it fires on every
+    saved reading (plans are written inline under the test settings), so any
+    test that records a reading -- vitals, alerts, patients -- would otherwise
+    spend real API credit with the key from ``.env``. ``None`` is what a failed
+    call returns, which the care plan already answers with its fixed baseline.
     """
     with (
         patch("momcare_platform.core.ai.openrouter_client.generate", return_value=None),
+        patch("momcare_platform.core.ai.openrouter_client.generate_researched", return_value=None),
         patch("momcare_platform.core.ai.openrouter_client.list_available_models", return_value=None),
     ):
         yield
